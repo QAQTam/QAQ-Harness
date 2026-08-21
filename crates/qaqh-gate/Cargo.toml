@@ -1,0 +1,25 @@
+[package]
+name = "qaqh-gate"
+version.workspace = true
+edition.workspace = true
+description = "QAQ-Harness LLM API gateway — HTTP streaming, message conversion"
+
+[dependencies]
+qaqh-types = { path = "../qaqh-types" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.13.4", default-features = false, features = ["stream", "rustls", "json"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time"] }
+futures = "0.3"
+anyhow = "1"
+log = "0.4"
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+tiny_http = "0.12"
+
+[lints.clippy]
+unwrap_used = "deny"
+# All string slices in this crate use indices from find() on ASCII patterns
+# (<, >, \n, "data: ", etc.), always on UTF-8 character boundaries.
+string_slice = "allow"

@@ -1,0 +1,18 @@
+[package]
+name = "qaqh-types"
+version.workspace = true
+edition.workspace = true
+description = "QAQ-Harness shared type definitions"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1.1"
+tokenizers = { version = "0.23", optional = true }
+
+[features]
+default = ["tokenizers"]
+tokenizers = ["dep:tokenizers"]
+
+[lints]
+workspace = true

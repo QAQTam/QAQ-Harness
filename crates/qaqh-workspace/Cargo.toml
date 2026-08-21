@@ -1,0 +1,46 @@
+[package]
+name = "qaqh-workspace"
+version.workspace = true
+edition.workspace = true
+description = "QAQ-Harness tool execution — library + standalone binary"
+
+[[bin]]
+name = "qaqh-workspace"
+path = "src/main.rs"
+
+[dependencies]
+qaqh-skills = { path = "../qaqh-skills" }
+qaqh-proto = { path = "../qaqh-proto" }
+qaqh-session = { path = "../qaqh-session" }
+qaqh-types = { path = "../qaqh-types" }
+qaqh-config = { path = "../qaqh-config" }
+similar = { version = "3.1", features = ["text"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex = "1"
+ureq = { version = "3", features = ["json"] }
+tiny_http = "0.12"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }
+html2text = "0.17"
+log = "0.4"
+sha2 = "0.11"
+strsim = "0.11"
+unicode-normalization = "0.1"
+hex = "0.4"
+ropey = "1.6"
+chrono = { version = "0.4", features = ["clock"] }
+git2 = { version = "0.21", features = ["vendored-libgit2"] }
+globset = "0.4.20"
+ignore = "0.4.33"
+grep-regex = "0.1"
+grep-searcher = "0.1"
+
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_Storage_FileSystem"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile = "3"

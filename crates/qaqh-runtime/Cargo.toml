@@ -1,0 +1,30 @@
+[package]
+name = "qaqh-runtime"
+version.workspace = true
+edition.workspace = true
+description = "GUI-independent QAQ-Harness daemon application runtime"
+
+[dependencies]
+qaqh-config = { path = "../qaqh-config" }
+qaqh-domain = { path = "../qaqh-domain" }
+qaqh-msgloop = { path = "../qaqh-msgloop" }
+qaqh-proto = { path = "../qaqh-proto" }
+qaqh-ringing = { path = "../qaqh-ringing" }
+qaqh-session = { path = "../qaqh-session" }
+qaqh-subagent = { path = "../qaqh-subagent" }
+qaqh-workspace = { path = "../qaqh-workspace" }
+qaqh-types = { path = "../qaqh-types" }
+log = "0.4"
+chrono = { version = "0.4", features = ["clock"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+ureq = { version = "3", features = ["json"] }
+tokio = { version = "1", features = ["sync", "time"] }
+
+[features]
+default = ["memory"]
+memory = ["qaqh-msgloop/memory"]
+
+[lints]
+workspace = true

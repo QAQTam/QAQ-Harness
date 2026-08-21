@@ -1,0 +1,17 @@
+[package]
+name = "qaqh-subagent"
+version.workspace = true
+edition.workspace = true
+description = "QAQ-Harness subagent tool — spawn isolated Ringing sub-sessions for focused tasks"
+
+[dependencies]
+qaqh-client = { path = "../qaqh-client" }
+qaqh-config = { path = "../qaqh-config" }
+qaqh-workspace = { path = "../qaqh-workspace" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+ureq = { version = "3", features = ["json"] }
+
+[lints]
+workspace = true

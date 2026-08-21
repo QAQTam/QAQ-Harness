@@ -1,0 +1,17 @@
+[package]
+name = "qaqh-skills"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+
+[features]
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

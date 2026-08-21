@@ -1,0 +1,19 @@
+[package]
+name = "qaqh-lsp"
+version.workspace = true
+edition.workspace = true
+description = "QAQ-Harness LSP client runtime — semantic queries over existing language servers"
+
+[dependencies]
+lsp-types = "0.97"
+lsp-server = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+log = "0.4"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile = "3"

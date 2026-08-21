@@ -1,0 +1,28 @@
+[package]
+name = "qaqh-daemon"
+version.workspace = true
+edition.workspace = true
+description = "Headless QAQ-Harness application daemon"
+build = "build.rs"
+
+[dependencies]
+qaqh-config = { path = "../qaqh-config" }
+qaqh-proto = { path = "../qaqh-proto" }
+qaqh-domain = { path = "../qaqh-domain" }
+qaqh-ringing = { path = "../qaqh-ringing" }
+qaqh-runtime = { path = "../qaqh-runtime" }
+qaqh-subagent = { path = "../qaqh-subagent" }
+qaqh-session = { path = "../qaqh-session" }
+qaqh-types = { path = "../qaqh-types" }
+log = "0.4"
+rand = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+
+[features]
+default = ["memory"]
+memory = ["qaqh-runtime/memory"]
+
+[lints]
+workspace = true

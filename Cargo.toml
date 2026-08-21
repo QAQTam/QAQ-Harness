@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/qaqh-gate",
+    "crates/qaqh-config",
+    "crates/qaqh-domain",
+    "crates/qaqh-skills",
+    "crates/qaqh-msgloop",
+    "crates/qaqh-message",
+    "crates/qaqh-types",
+    "crates/qaqh-proto",
+    "crates/qaqh-runtime",
+    "crates/qaqh-ringing",
+    "crates/qaqh-daemon",
+    "crates/qaqh-workspace",
+    "crates/qaqh-session",
+    "crates/qaqh-subagent",
+    "crates/qaqh-client",
+    "crates/qaqh-lsp",
+    "crates/qaqh-gate-testui",
+    "crates/qaqh-update",
+    "dsh-minimal-mode",
+]
+
+[workspace.package]
+version = "0.0.0-alpha0"
+edition = "2024"
+license = "MIT"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+string_slice = "deny"

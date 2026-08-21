@@ -1,0 +1,20 @@
+[package]
+name = "dsh-minimal-mode"
+version.workspace = true
+edition.workspace = true
+description = "Faithful replication of the deepseek-harness minimal-mode tools: persistent bash (bash_v2) and str_replace_editor. Pure-text returns aligned verbatim with minimal-mode."
+
+[dependencies]
+qaqh-workspace = { path = "../crates/qaqh-workspace" }
+qaqh-types = { path = "../crates/qaqh-types" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+uuid = { version = "1", features = ["v4"] }
+portable-pty = "0.9"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile = "3"

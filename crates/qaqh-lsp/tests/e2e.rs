@@ -12,10 +12,14 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use qaqh_lsp::lsp_types::{
-    DocumentSymbolResponse, GotoDefinitionResponse, HoverContents, Location, MarkedString,
+// `MarkedString` is deprecated by LSP 3.18 but still handled as a fallback
+// for servers that have not migrated to `MarkupContent`.
+#[allow(deprecated)]
+use qaqh_lsp::gen_lsp_types::{
+    Contents, Definition, DefinitionResponse, DocumentSymbolResponse, Location, MarkedString,
 };
-use qaqh_lsp::{LspClient, ServerConfig, position_1based, uri_of};
+use qaqh_lsp::LspClient;
+use qaqh_lsp::ServerConfig;
 
 /// Workspace root: `crates/qaqh-lsp/../..`.
 fn workspace_root() -> PathBuf {
@@ -82,7 +86,7 @@ fn rust_analyzer_smoke() {
     // documentSymbol: expect a hierarchical list containing `path_to_uri`.
     let symbols = client.document_symbols(&uri).expect("documentSymbol");
     match symbols {
-        DocumentSymbolResponse::Nested(symbols) => {
+        DocumentSymbolResponse::DocumentSymbolList(symbols) => {
             assert!(!symbols.is_empty(), "documentSymbol returned no symbols");
             assert!(
                 symbols.iter().any(|s| s.name == "path_to_uri"),
@@ -90,9 +94,11 @@ fn rust_analyzer_smoke() {
                 symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
             );
         }
-        DocumentSymbolResponse::Flat(symbols) => {
+        DocumentSymbolResponse::SymbolInformationList(symbols) => {
             assert!(
-                symbols.iter().any(|s| s.name == "path_to_uri"),
+                symbols
+                    .iter()
+                    .any(|s| s.base_symbol_information.name == "path_to_uri"),
                 "documentSymbol should contain `path_to_uri`"
             );
         }
@@ -103,9 +109,9 @@ fn rust_analyzer_smoke() {
     let hover = client.hover(&uri, line, 8).expect("hover request");
     let hover = hover.expect("hover should resolve for a known function");
     let hover_text = match &hover.contents {
-        HoverContents::Markup(m) => m.value.clone(),
-        HoverContents::Scalar(s) => marked_string_text(s),
-        HoverContents::Array(items) => items
+        Contents::MarkupContent(m) => m.value.clone(),
+        Contents::MarkedString(s) => marked_string_text(s),
+        Contents::MarkedStringList(items) => items
             .iter()
             .map(marked_string_text)
             .collect::<Vec<_>>()
@@ -120,9 +126,9 @@ fn rust_analyzer_smoke() {
         .definition(&uri, line, 8)
         .expect("definition request");
     let location = match definition {
-        GotoDefinitionResponse::Scalar(loc) => loc,
-        GotoDefinitionResponse::Array(mut locs) => locs.remove(0),
-        GotoDefinitionResponse::Link(mut links) => {
+        DefinitionResponse::Definition(Definition::Location(loc)) => loc,
+        DefinitionResponse::Definition(Definition::LocationList(mut locs)) => locs.remove(0),
+        DefinitionResponse::DefinitionLinkList(mut links) => {
             let link = links.remove(0);
             Location {
                 uri: link.target_uri,
@@ -138,9 +144,12 @@ fn rust_analyzer_smoke() {
     client.shutdown().expect("graceful shutdown");
 }
 
+/// Legacy `MarkedString` hover contents: deprecated by 3.18 but still sent
+/// by some servers, so the smoke test keeps a fallback path for it.
+#[allow(deprecated)]
 fn marked_string_text(s: &MarkedString) -> String {
     match s {
         MarkedString::String(t) => t.clone(),
-        MarkedString::LanguageString(ls) => ls.value.clone(),
+        MarkedString::MarkedStringWithLanguage(ls) => ls.value.clone(),
     }
 }

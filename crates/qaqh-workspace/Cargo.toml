@@ -39,6 +39,9 @@ grep-searcher = "0.1"
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = ["Win32_Storage_FileSystem"] }
 
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
 [lints]
 workspace = true
 

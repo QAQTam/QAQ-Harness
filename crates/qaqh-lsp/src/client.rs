@@ -17,10 +17,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lsp_server::{Message, Notification, Request, RequestId, Response, ResponseError};
-use lsp_types::{
-    ClientCapabilities, ClientInfo, GotoCapability, HoverClientCapabilities, InitializeParams,
-    InitializeResult, MarkupKind, ServerCapabilities, TextDocumentClientCapabilities,
-    TextDocumentSyncClientCapabilities, Uri,
+use gen_lsp_types::{
+    ClientCapabilities, ClientInfo, DefinitionClientCapabilities, DiagnosticsCapabilities,
+    DocumentSymbolClientCapabilities, HoverClientCapabilities, InitializeParams, InitializeResult,
+    MarkupKind, PublishDiagnosticsClientCapabilities, ServerCapabilities,
+    TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, Uri,
+    WorkspaceClientCapabilities, WorkspaceFolder, WorkspaceFolders,
+    WorkspaceFoldersInitializeParams,
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -159,7 +162,7 @@ impl LspClient {
             reason: e.to_string(),
         })?;
         let params = InitializeParams {
-            process_id: Some(std::process::id()),
+            process_id: Some(std::process::id() as i32),
             #[allow(deprecated)]
             root_uri: Some(root_uri.clone()),
             capabilities: client_capabilities(),
@@ -167,14 +170,18 @@ impl LspClient {
                 name: config.client_name,
                 version: Some(config.client_version),
             }),
-            workspace_folders: Some(vec![lsp_types::WorkspaceFolder {
-                uri: root_uri,
-                name: config
-                    .root
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "workspace".to_owned()),
-            }]),
+            workspace_folders_initialize_params: WorkspaceFoldersInitializeParams {
+                workspace_folders: Some(WorkspaceFolders::WorkspaceFolderList(vec![
+                    WorkspaceFolder {
+                        uri: root_uri,
+                        name: config
+                            .root
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "workspace".to_owned()),
+                    },
+                ])),
+            },
             ..Default::default()
         };
         let result: InitializeResult =
@@ -367,26 +374,29 @@ fn client_capabilities() -> ClientCapabilities {
                 dynamic_registration: Some(false),
                 content_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
             }),
-            definition: Some(GotoCapability {
+            definition: Some(DefinitionClientCapabilities {
                 dynamic_registration: Some(false),
                 link_support: Some(true),
             }),
-            document_symbol: Some(lsp_types::DocumentSymbolClientCapabilities {
+            document_symbol: Some(DocumentSymbolClientCapabilities {
                 dynamic_registration: Some(false),
                 symbol_kind: None,
                 hierarchical_document_symbol_support: Some(true),
                 tag_support: None,
+                label_support: None,
             }),
-            publish_diagnostics: Some(lsp_types::PublishDiagnosticsClientCapabilities {
-                related_information: Some(false),
-                tag_support: None,
+            publish_diagnostics: Some(PublishDiagnosticsClientCapabilities {
                 version_support: Some(false),
-                code_description_support: None,
-                data_support: None,
+                diagnostics_capabilities: DiagnosticsCapabilities {
+                    related_information: Some(false),
+                    tag_support: None,
+                    code_description_support: None,
+                    data_support: None,
+                },
             }),
             ..Default::default()
         }),
-        workspace: Some(lsp_types::WorkspaceClientCapabilities {
+        workspace: Some(WorkspaceClientCapabilities {
             workspace_folders: Some(true),
             ..Default::default()
         }),

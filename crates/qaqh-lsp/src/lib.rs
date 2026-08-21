@@ -37,5 +37,5 @@ pub use client::{LspClient, LspError, ServerConfig};
 pub use query::{position_1based, uri_of};
 
 /// Re-export of the protocol models so callers do not need a direct
-/// `lsp-types` dependency.
-pub use lsp_types;
+/// `gen-lsp-types` dependency.
+pub use gen_lsp_types;

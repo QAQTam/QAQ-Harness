@@ -377,7 +377,7 @@ fn validate_standard_fields(
 }
 
 fn parse_frontmatter(frontmatter: &str) -> Result<Frontmatter, String> {
-    serde_yaml::from_str(frontmatter).map_err(|error| format!("invalid YAML frontmatter: {error}"))
+    serde_saphyr::from_str(frontmatter).map_err(|error| format!("invalid YAML frontmatter: {error}"))
 }
 
 /// Parse the YAML frontmatter boundary. Only `---\n` start is accepted;

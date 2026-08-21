@@ -6,6 +6,8 @@ fn main() {
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/index");
 
+    embed_windows_icon();
+
     let build_id = std::env::var("QAQH_BUILD_ID")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -18,6 +20,22 @@ fn main() {
             env!("CARGO_PKG_VERSION").to_string()
         });
     println!("cargo:rustc-env=QAQH_BUILD_ID={build_id}");
+}
+
+/// Embed the product icon (and basic file metadata) into Windows executables.
+const ICON_PATH: &str = "../../assets/qaqh-harness.ico";
+
+fn embed_windows_icon() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    println!("cargo:rerun-if-changed={ICON_PATH}");
+    let mut res = winresource::WindowsResource::new();
+    res.set_icon(ICON_PATH);
+    res.set("FileDescription", "QAQ-Harness Daemon");
+    res.set("ProductName", "QAQ-Harness");
+    res.compile()
+        .expect("failed to compile Windows resources (icon)");
 }
 
 fn git_commit() -> Option<String> {

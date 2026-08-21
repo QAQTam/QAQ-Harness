@@ -8,9 +8,9 @@
 use std::path::Path;
 use std::str::FromStr;
 
-use lsp_types::{
-    Diagnostic, DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbolResponse,
-    GotoDefinitionResponse, Hover, Position, PublishDiagnosticsParams, TextDocumentIdentifier,
+use gen_lsp_types::{
+    DefinitionResponse, Diagnostic, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DocumentSymbolResponse, Hover, Position, PublishDiagnosticsParams, TextDocumentIdentifier,
     TextDocumentItem, Uri,
 };
 use serde_json::json;
@@ -51,7 +51,7 @@ impl LspClient {
         let params = DidOpenTextDocumentParams {
             text_document: TextDocumentItem {
                 uri: uri.clone(),
-                language_id: language_id.to_owned(),
+                language_id: language_id.to_owned().into(),
                 version,
                 text: text.to_owned(),
             },
@@ -84,7 +84,7 @@ impl LspClient {
         uri: &Uri,
         line: u32,
         column: u32,
-    ) -> Result<GotoDefinitionResponse, LspError> {
+    ) -> Result<DefinitionResponse, LspError> {
         let params = json!({
             "textDocument": { "uri": uri.as_str() },
             "position": position_1based(line, column),

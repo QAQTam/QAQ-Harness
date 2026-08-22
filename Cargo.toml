@@ -16,9 +16,6 @@ members = [
     "crates/qaqh-session",
     "crates/qaqh-subagent",
     "crates/qaqh-client",
-    "crates/qaqh-lsp",
-    "crates/qaqh-gate-testui",
-    "crates/qaqh-update",
     "dsh-minimal-mode",
 ]
 

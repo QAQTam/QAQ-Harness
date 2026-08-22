@@ -1,4 +1,5 @@
 mod debug_http;
+mod http;
 mod ringing_http;
 mod server;
 
@@ -36,9 +37,7 @@ fn main() {
             }
         }
         Some(command) => {
-            eprintln!(
-                "unknown command: {command}; expected run, server, status, or stop"
-            );
+            eprintln!("unknown command: {command}; expected run, server, status, or stop");
             std::process::exit(2);
         }
     }

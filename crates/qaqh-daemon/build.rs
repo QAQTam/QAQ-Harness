@@ -23,12 +23,11 @@ fn main() {
 }
 
 /// Embed the product icon (and basic file metadata) into Windows executables.
-const ICON_PATH: &str = "../../assets/qaqh-harness.ico";
-
+/// `winresource` 仅在 Windows target 下作为 build-dependency 声明；
+/// 非 Windows 编译期不可见，必须用 cfg 门控（而非仅运行时早退）。
+#[cfg(target_os = "windows")]
 fn embed_windows_icon() {
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
-        return;
-    }
+    const ICON_PATH: &str = "../../assets/qaqh-harness.ico";
     println!("cargo:rerun-if-changed={ICON_PATH}");
     let mut res = winresource::WindowsResource::new();
     res.set_icon(ICON_PATH);
@@ -37,6 +36,9 @@ fn embed_windows_icon() {
     res.compile()
         .expect("failed to compile Windows resources (icon)");
 }
+
+#[cfg(not(target_os = "windows"))]
+fn embed_windows_icon() {}
 
 fn git_commit() -> Option<String> {
     let output = Command::new("git")

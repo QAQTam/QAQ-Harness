@@ -1,6 +1,6 @@
 # QAQ-Harness
 
-AI 编码代理的跨平台 **Rust 后端核心**(monorepo,19 个 workspace 成员)。单个常驻 daemon 承载多会话对话循环、LLM 网关、22 个内置工具、Agent Skills 与子代理隔离执行;Windows 桌面壳(WinUI3)/ TUI / Web 壳位于独立仓库,通过统一的 **Ringing V1** HTTP/SSE 协议接入。
+AI 编码代理的跨平台 **Rust 后端核心**(monorepo,16 个 workspace 成员)。单个常驻 daemon 承载多会话对话循环、LLM 网关、22 个内置工具、Agent Skills 与子代理隔离执行;Windows 桌面壳(WinUI3)/ TUI / Web 壳位于独立仓库,通过统一的 **Ringing V1** HTTP/SSE 协议接入。
 
 - Edition 2024 · License MIT · 状态:alpha
 - 无 axum/框架依赖:HTTP/SSE 为手写 tokio TCP 实现,release 产物为静态 CRT 单文件 exe(`opt-level=z` + LTO + strip)
@@ -22,7 +22,7 @@ AI 编码代理的跨平台 **Rust 后端核心**(monorepo,19 个 workspace 成�
  │        ├─ qaqh-gate      LLM 网关(OpenAI Chat / Responses,SSE 流式+重试) │
  │        ├─ qaqh-workspace 22 个工具执行 + 四级权限准入 + 审计              │
  │        │      └─ serve 子进程(local 原生 或 WSL,HTTP 工具后端,可回退)    │
- │        └─ qaqh-skills / qaqh-subagent / qaqh-lsp                          │
+ │        └─ qaqh-skills / qaqh-subagent                                     │
  └──────────────────────────────────────────────────────────────────────────┘
         │
         ├─ {data_dir}/  全局数据根(Windows: %USERPROFILE%\.deepx;
@@ -50,17 +50,17 @@ AI 编码代理的跨平台 **Rust 后端核心**(monorepo,19 个 workspace 成�
 | LLM | `qaqh-gate` | LLM API 网关:OpenAI Chat Completions 与 Responses 双协议、自研 SSE 解码器(~143MB/s)、429/5xx 指数退避重试、reasoning/tool-call 流提取 |
 | 工具 | `qaqh-workspace` | 工具执行框架 + 19 个内置工具 + 权限/审计 + `serve` HTTP 工具后端二进制 |
 | | `qaqh-subagent` | `spawn_subagent`:派生隔离 Ringing 子会话(in-process 守护线程,ephemeral,结果异步注入父会话) |
-| | `qaqh-lsp` | LSP 客户端库(hover/definition/symbols/diagnostics,默认 rust-analyzer);纯库,尚未暴露为工具 |
 | | `qaqh-skills` | Agent Skills 发现/解析/激活(SKILL.md + YAML frontmatter,catalog 渐进披露) |
 | 客户端/周边 | `qaqh-client` | daemon HTTP/SSE 传输层:discovery → open 协商 → 三频道 SSE + timeline 流 + lease 自愈;供外部壳复用 |
-| | `qaqh-update` | 更新目录/规划/应用引擎(full / 文件级增量 / 组件 artifact,.previous 回滚) |
-| | `qaqh-gate-testui` | gate 可视化测试 UI(mock OpenAI SSE 服务 + 内嵌网页,6 个场景) |
 | 极简模式 | `dsh-minimal-mode` | deepseek-harness minimal-mode 复刻:`bash_v2`(持久 PTY)+ `str_replace_editor`,输出逐字对齐 |
 
 ## 核心概念
 
 ### Ringing V1 协议
 客户端先 `POST /clients/open` 能力协商,获得 `client_instance_id / session_id / lease`;命令按 control/conversation/tool 三频道 POST,事件经对应频道 SSE 推送(batch 信封,16MB 帧上限);另有 per-session timeline SSE(快照页 + Last-Event-ID 断点续传)。鉴权三层:Bearer token + client-session lease + seed 所有权。worker 已收敛为 daemon 内线程,但保留完整 frame 边界语义,未来可无感切回子进程隔离。
+
+### 多前端与 webUI 托管
+daemon 是唯一协议面:WinUI3 桌面壳 / Tauri / Electron / TUI / 浏览器一律以 Ringing V1 HTTP/SSE 接入,daemon 侧不存在任何第二前端协议。浏览器形态由 daemon 内置静态托管承担:`GET /debug/` 直接服务 renderer 静态产物(定位 `out/renderer`,electron-vite 布局),入口页注入 `__qaqh_bridge__.js`(内联 token)后即与桌面壳 renderer 完全等价——改前端 → 刷新浏览器即可,无需重打包。安全边界:**仅限 loopback 来源**(非回环连接一律 403,LAN 模式下远端壳是已持 token 的原生应用);只读,无命令端点。
 
 ### 会话与存储
 - seed 为 8 位 hex;磁盘布局 `sessions/index.json` + `sessions/{seed}/{meta.json, messages.jsonl, compact-context.json, todo.json}`,全部 temp+rename 原子写
@@ -108,8 +108,10 @@ qaqh-workspace list                      # 列出全部工具定义
 qaqh-workspace read '{"path":"src/lib.rs"}'
 qaqh-workspace serve --port N --token T  # HTTP 工具后端(daemon 自动拉起)
 
-# gate 测试 UI(mock OpenAI + 浏览器页面)
-cargo run -p qaqh-gate-testui            # http://127.0.0.1:3000
+# webUI(浏览器直连,与桌面壳同一 renderer)
+# 启动 daemon 后打开 http://127.0.0.1:<port>/debug/
+# (端口读 daemon.json;renderer 产物放在 out/renderer 或用
+#  QAQH_DEBUG_RENDERER_DIR 指定;仅限本机访问)
 ```
 
 ## 开发工作流
@@ -124,10 +126,8 @@ cargo run -p qaqh-gate-testui            # http://127.0.0.1:3000
 | `just status` / `clean` | 产物检查 / 清理(仅 Windows 的 status) |
 | `just sync-version` | 从 `version.txt` 同步版本到 Cargo.toml + package.json |
 
-- Clippy 全仓 deny `unwrap_used`、`string_slice`(少数 crate 局部豁免并注明理由)
-- 测试规模约 **860 个**(123 个内联 cfg(test) 模块 + 23 个集成测试文件);触碰全局状态的测试统一走 `TEST_RUNTIME_SERIAL` 互斥串行
-- 3 个重型 e2e 标记 `#[ignore]`,需手动触发,如 rust-analyzer 冒烟:
-  `cargo test -p qaqh-lsp --test e2e -- --ignored --nocapture`
+- Clippy 全仓 deny `unwrap_used`、`string_slice`(少数 crate 局部豁免并注明理由;测试代码经 clippy.toml 豁免)
+- 测试规模约 **820 个**(100 个内联 cfg(test) 模块 + 22 个集成测试文件);触碰全局状态的测试统一走 `TEST_RUNTIME_SERIAL` 互斥串行
 - 测试/多实例用 `QAQH_DATA_DIR` 环境变量整体重定向数据根
 - 无 CI 配置,质量门禁即上述本地 recipe 链
 

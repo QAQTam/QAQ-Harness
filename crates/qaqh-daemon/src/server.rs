@@ -361,9 +361,9 @@ async fn handle_connection(
         .await;
     }
 
-    // Debug 只读页：静态服务前端产物（浏览器调试入口，无需 Electron）
+    // webUI 静态托管（浏览器直连入口；仅限 loopback，端点内部校验）
     if preview.starts_with("GET /debug") {
-        return crate::debug_http::handle_debug_http(stream, &preview, &token).await;
+        return crate::debug_http::handle_debug_http(stream, &token).await;
     }
 
     // M3：legacy `/control/v1` WS 数据协议已拆除；此处只剩生命周期与

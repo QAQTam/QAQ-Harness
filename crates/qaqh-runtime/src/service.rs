@@ -1,9 +1,7 @@
 use std::io::{BufRead, Read};
 use std::sync::{Arc, Mutex};
 
-use qaqh_domain::{
-    ControlCommand, ConversationCommand, ConversationMode, ImageBlock, ToolCommand,
-};
+use qaqh_domain::ControlCommand;
 use qaqh_proto::SessionActivityState;
 use qaqh_ringing::{RingingCommand, RingingWorkerCommandEnvelope};
 use serde_json::{Value, json};
@@ -117,16 +115,6 @@ impl QaqhService {
     pub fn delete_session(&self, seed: &str, causation_id: Option<&str>) -> Result<(), String> {
         let _ = self.close_session(seed, causation_id);
         qaqh_session::SessionManager::global().delete(seed)
-    }
-
-    pub fn session_scoped(method: &str) -> bool {
-        matches!(
-            method.split('.').next(),
-            Some("session" | "interaction" | "workspace" | "git" | "plan" | "skills" | "todo")
-        ) && !matches!(
-            method,
-            "session.list" | "session.activity" | "session.new" | "skills.list_tools"
-        )
     }
 
     pub fn handle(&self, method: &str, params: &Value) -> Result<Value, String> {
@@ -289,33 +277,6 @@ impl QaqhService {
                 self.registry()?.get_or_spawn(&seed)?;
                 Ok(Value::Null)
             }
-            "session.send_message" => {
-                let seed = seed()?;
-                let text = pstr(params, "text")?;
-                let files = pstrings(params, "files");
-                let text = with_file_previews(text, &files);
-                let images: Vec<ImageBlock> = params
-                    .get("images")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|img| {
-                                Some(ImageBlock {
-                                    mime_type: img.get("mimeType")?.as_str()?.to_string(),
-                                    data: img.get("data")?.as_str()?.to_string(),
-                                })
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                self.send_user_input(seed, text, images)
-            }
-            "session.set_mode" => self.send_ringing_cmd(
-                seed()?,
-                RingingCommand::Conversation(ConversationCommand::ConversationSetMode {
-                    mode: parse_conversation_mode(&pstr(params, "mode")?)?,
-                }),
-            ),
             "session.set_tool_mode" => {
                 let seed = seed()?;
                 let tool_mode = pstr(params, "tool_mode")?;
@@ -341,75 +302,8 @@ impl QaqhService {
                     }),
                 )
             }
-            "session.cancel" => self.send_ringing_cmd(
-                seed()?,
-                RingingCommand::Conversation(ConversationCommand::ConversationCancel {
-                    turn_id: None,
-                }),
-            ),
-            "session.compact" => self.compact_idle_session(seed()?),
-            "session.undo_turn" => self.send_ringing_cmd(
-                seed()?,
-                RingingCommand::Conversation(ConversationCommand::ConversationUndoTurn {
-                    turn_id: pstr2(params, "turn_id", "turnId")?,
-                }),
-            ),
-            "session.load_more_turns" => self.send_ringing_cmd(
-                seed()?,
-                RingingCommand::Conversation(ConversationCommand::ConversationLoadMore {
-                    before_turn_id: pstr2(params, "before_turn_id", "beforeTurnId")?,
-                    count: 20,
-                }),
-            ),
-            "session.close" => {
-                self.registry()?.close(&seed()?);
-                Ok(Value::Null)
-            }
-            "session.delete" => {
-                let seed = seed()?;
-                self.registry()?.close(&seed);
-                qaqh_session::SessionManager::global().delete(&seed)?;
-                Ok(Value::Null)
-            }
             "session.dashboard" => dashboard(&seed()?),
             "session.get_activity" => activity(&seed()?),
-            "interaction.permission" => self.send_ringing_cmd(
-                seed()?,
-                RingingCommand::Tool(ToolCommand::ToolPermissionRespond {
-                    tool_call_id: pstr2(params, "tool_call_id", "toolCallId")?,
-                    approved: pbool(params, "approved"),
-                    trust_folder: pbool2(params, "trust_folder", "trustFolder"),
-                }),
-            ),
-            "interaction.ask_response" => self.send_ringing_cmd(
-                seed()?,
-                RingingCommand::Control(ControlCommand::InteractionAskRespond {
-                    interaction_id: pstr2(params, "ask_id", "askId")?,
-                    answers: serde_json::from_value(
-                        params.get("answers").cloned().unwrap_or_else(|| json!([])),
-                    )
-                    .map_err(err)?,
-                }),
-            ),
-            "interaction.ask_dismiss" => self.send_ringing_cmd(
-                seed()?,
-                RingingCommand::Control(ControlCommand::InteractionAskDismiss {
-                    interaction_id: pstr2(params, "ask_id", "askId")?,
-                }),
-            ),
-            "interaction.plan_review" => self.send_ringing_cmd(
-                seed()?,
-                RingingCommand::Control(ControlCommand::PlanReviewRespond {
-                    interaction_id: pstr2(params, "call_id", "callId")?,
-                    approved: pbool(params, "approved"),
-                    message: params
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .filter(|m| !m.is_empty())
-                        .map(str::to_string),
-                    autonomous: pbool(params, "autonomous"),
-                }),
-            ),
             "skills.operation" => self.send_ringing_cmd(
                 seed()?,
                 RingingCommand::Control(ControlCommand::SkillsOperation {
@@ -683,102 +577,6 @@ impl QaqhService {
         Ok(Value::Null)
     }
 
-    fn send_user_input(
-        &self,
-        seed: String,
-        text: String,
-        images: Vec<ImageBlock>,
-    ) -> Result<Value, String> {
-        let mut registry = self.registry()?;
-        // An inactive persisted session has no activity entry yet. Spawn it
-        // first so the Starting -> Working reservation below also covers the
-        // initialization Ready / first UserInput race.
-        registry.get_or_spawn(&seed)?;
-        let current = registry.activity(&seed);
-        // Preserve the existing ability to queue follow-ups while a real turn
-        // is running. A Working state without turn_id is different: it is an
-        // atomic pre-TurnStart or manual-compact transaction, so another input
-        // cannot safely be admitted yet.
-        if current.as_ref().is_some_and(|activity| {
-            activity.state == qaqh_proto::SessionActivityState::Working
-                && activity.turn_id.is_none()
-        }) {
-            return Err("session message is blocked by an active context transaction".into());
-        }
-
-        // Starting/Idle must be reserved before writing the frame. Reserving
-        // afterwards can race a very short turn that already emitted Done and
-        // incorrectly move the activity back from Idle to Working.
-        let reservation = match current.as_ref().map(|activity| activity.state) {
-            Some(
-                qaqh_proto::SessionActivityState::Starting
-                | qaqh_proto::SessionActivityState::Idle,
-            ) => registry.reserve_for_input(&seed),
-            _ => None,
-        };
-        if matches!(
-            current.as_ref().map(|activity| activity.state),
-            Some(
-                qaqh_proto::SessionActivityState::Starting
-                    | qaqh_proto::SessionActivityState::Idle
-            )
-        ) && reservation.is_none()
-        {
-            return Err("session activity changed before message admission".into());
-        }
-        if let Some((activity, _)) = reservation.as_ref() {
-            crate::activity::publish_activity(self.hub.get().map(|v| &**v), activity);
-        }
-        let env = RingingWorkerCommandEnvelope::new(
-            seed.clone(),
-            command_id(),
-            RingingCommand::Conversation(ConversationCommand::ConversationSendMessage {
-                text,
-                images,
-                attachments: None,
-                as_system: false,
-            }),
-        );
-        if let Err(error) = registry.send_ringing(&seed, &env) {
-            if let Some((activity, previous)) = reservation
-                && let Some(rollback) =
-                    registry.rollback_input_reservation(&seed, activity.seq, previous)
-            {
-                crate::activity::publish_activity(self.hub.get().map(|v| &**v), &rollback);
-            }
-            return Err(error);
-        }
-        Ok(Value::Null)
-    }
-
-    fn compact_idle_session(&self, seed: String) -> Result<Value, String> {
-        let mut registry = self.registry()?;
-        let reservation = registry.reserve_idle(&seed).ok_or_else(|| {
-            let state = registry
-                .activity(&seed)
-                .map(|activity| format!("{:?}", activity.state))
-                .unwrap_or_else(|| "unknown".into());
-            format!("session compact requires an idle session; current state: {state}")
-        })?;
-        let reservation_seq = reservation.seq;
-        crate::activity::publish_activity(self.hub.get().map(|v| &**v), &reservation);
-
-        let env = RingingWorkerCommandEnvelope::new(
-            seed.clone(),
-            command_id(),
-            RingingCommand::Conversation(ConversationCommand::ConversationCompact {
-                turn_id: None,
-            }),
-        );
-        if let Err(error) = registry.send_ringing(&seed, &env) {
-            if let Some(rollback) = registry.rollback_idle_reservation(&seed, reservation_seq) {
-                crate::activity::publish_activity(self.hub.get().map(|v| &**v), &rollback);
-            }
-            return Err(error);
-        }
-        Ok(Value::Null)
-    }
-
     fn list_sessions(&self) -> Vec<Value> {
         let manager = qaqh_session::SessionManager::global();
         let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
@@ -1006,11 +804,6 @@ fn pstr2(params: &Value, snake: &str, camel: &str) -> Result<String, String> {
 fn pbool(params: &Value, key: &str) -> bool {
     params.get(key).and_then(Value::as_bool).unwrap_or(false)
 }
-fn pbool2(params: &Value, snake: &str, camel: &str) -> bool {
-    value2(params, snake, camel)
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-}
 fn pu64(params: &Value, key: &str) -> u64 {
     params.get(key).and_then(Value::as_u64).unwrap_or_default()
 }
@@ -1188,30 +981,6 @@ where
     }
     let value = operation(&workspace)?;
     serde_json::from_str(&value).or_else(|_| Ok(json!(value)))
-}
-
-fn with_file_previews(text: String, files: &[String]) -> String {
-    if files.is_empty() {
-        return text;
-    }
-    let mut parts = vec!["[Files]".to_string()];
-    for path in files {
-        let preview = std::fs::read_to_string(path)
-            .map(|value| {
-                value
-                    .lines()
-                    .take(10)
-                    .collect::<Vec<_>>()
-                    .join("\n")
-                    .chars()
-                    .take(1000)
-                    .collect()
-            })
-            .unwrap_or_else(|e| format!("[ERROR: {e}]"));
-        parts.push(format!("\n{path}:\n{preview}"));
-    }
-    parts.push(format!("\n\n[Message]\n{text}"));
-    parts.join("")
 }
 
 fn dashboard(seed: &str) -> Result<Value, String> {
@@ -1487,34 +1256,10 @@ mod tool_mode_tests {
     }
 }
 
-#[cfg(test)]
-mod control_scope_tests {
-    use super::QaqhService;
-
-    #[test]
-    fn global_activity_snapshot_does_not_require_a_session_lease() {
-        assert!(!QaqhService::session_scoped("session.activity"));
-        assert!(!QaqhService::session_scoped("session.list"));
-        assert!(QaqhService::session_scoped("session.get_activity"));
-        assert!(QaqhService::session_scoped("session.send_message"));
-    }
-}
-
 fn command_id() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
     format!("svc-{nanos:x}")
-}
-
-fn parse_conversation_mode(mode: &str) -> Result<ConversationMode, String> {
-    match mode {
-        "plan" => Ok(ConversationMode::Plan),
-        // 默认 = Code；旧值 "normal" 兼容解析为 Code（wire/旧配置）。
-        "code" | "" | "normal" => Ok(ConversationMode::Code),
-        other => Err(format!(
-            "invalid conversation mode '{other}' (supported: plan | code)"
-        )),
-    }
 }

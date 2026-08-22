@@ -258,6 +258,11 @@ mod tests {
 
     #[test]
     fn apply_patch_dry_run_then_confirm() {
+        // 本测试写全局 CURRENT_WORKSPACE：仅靠模块内 WS_LOCK 不足以与
+        // 其他模块的并行测试互斥，必须按家规叠加全仓串行锁。
+        let _serial = crate::TEST_RUNTIME_SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _guard = WS_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("a.txt"), "line1\nline2\n").unwrap();

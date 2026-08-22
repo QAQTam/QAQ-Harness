@@ -176,7 +176,7 @@ impl SessionManager {
     /// Persist a new checkpoint without rewriting the raw history archive.
     pub fn save_compact_context(&self, seed: &str, messages: &[Message]) {
         let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap();
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let archive_count = self
             .load_meta(seed)
             .map(|meta| meta.message_count)
@@ -207,7 +207,7 @@ impl SessionManager {
             return;
         };
         let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap();
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         context.archive_message_count = self
             .load_meta(seed)
             .map(|meta| meta.message_count)
@@ -244,7 +244,7 @@ impl SessionManager {
     /// Called when the user switches PLAN/CODE mode so it survives agent restart.
     pub fn persist_mode(&self, seed: &str, mode: u8) {
         let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap();
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = self.session_path_dir(seed);
         let mut meta = self.load_meta(seed).unwrap_or_default();
         meta.mode = mode;
@@ -265,7 +265,7 @@ impl SessionManager {
         custom_tools: &[String],
     ) -> Result<(), String> {
         let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap();
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = self.session_path_dir(seed);
         let _ = std::fs::create_dir_all(&dir);
         let mut meta = self.load_meta(seed).unwrap_or_default();
@@ -288,7 +288,7 @@ impl SessionManager {
 
     pub fn persist_skills(&self, seed: &str, skills: qaqh_types::SkillSessionStateV2) {
         let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap();
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = self.session_path_dir(seed);
         let _ = std::fs::create_dir_all(&dir);
         let mut meta = self.load_meta(seed).unwrap_or_default();
@@ -308,7 +308,7 @@ impl SessionManager {
     /// 实例——实例启停由调用方（daemon 拦截层）负责。
     pub fn set_archived(&self, seed: &str, archived: bool) {
         let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap();
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = self.session_path_dir(seed);
         let mut meta = self.load_meta(seed).unwrap_or_default();
         if meta.seed.is_empty() {
@@ -327,7 +327,7 @@ impl SessionManager {
     /// （子代理 ephemeral，不进列表）。
     pub fn set_cwd(&self, seed: &str, cwd: &str, index: bool) {
         let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap();
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = self.session_path_dir(seed);
         let _ = std::fs::create_dir_all(&dir);
         let mut meta = self.load_meta(seed).unwrap_or_default();
@@ -366,7 +366,7 @@ impl SessionManager {
     /// 子代理 worker 的 dashboard/compact 路径不会污染会话列表。
     pub fn set_context_stats(&self, seed: &str, stats: &serde_json::Value) {
         let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap();
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = self.session_path_dir(seed);
         let _ = std::fs::create_dir_all(&dir);
         let mut meta = self.load_meta(seed).unwrap_or_default();
@@ -395,7 +395,7 @@ impl SessionManager {
     /// cwd 命中某 workspace 路径时自动 attach（D1 双轨自动侧）。
     pub fn persist_new_session_with_cwd(&self, seed: &str, cwd: Option<&str>) {
         let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap();
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = self.session_path_dir(seed);
         let _ = std::fs::create_dir_all(&dir);
         let mut meta = self.load_meta(seed).unwrap_or_default();
@@ -423,7 +423,7 @@ impl SessionManager {
         cache_reported_requests: u32,
     ) {
         let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap();
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = self.session_path_dir(seed);
         let _ = std::fs::create_dir_all(&dir);
         let mut meta = self.load_meta(seed).unwrap_or_default();
@@ -440,7 +440,7 @@ impl SessionManager {
     /// Append a single message to JSONL immediately (per-message persistence).
     pub fn save_one(&self, seed: &str, msg: &Message) {
         let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap();
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = self.session_path_dir(seed);
         let _ = std::fs::create_dir_all(&dir);
         let mut meta = self.load_meta(seed).unwrap_or_default();
@@ -472,7 +472,7 @@ impl SessionManager {
         turn_count: usize,
     ) {
         let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap();
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let now = Self::now_epoch();
         let dir = self.session_path_dir(seed);
         let mut meta = self.load_meta(seed).unwrap_or_default();
@@ -496,7 +496,7 @@ impl SessionManager {
     /// 写 meta + index（daemon 的 `list()` 每次读盘，无需跨进程通知即可见）。
     pub fn update_title(&self, seed: &str, title: &str) {
         let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap();
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = self.session_path_dir(seed);
         let mut meta = self.load_meta(seed).unwrap_or_default();
         meta.seed = seed.to_string();
@@ -521,7 +521,7 @@ impl SessionManager {
         turn_count: usize,
     ) {
         let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap();
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let now = Self::now_epoch();
         let dir = self.session_path_dir(seed);
         let _ = std::fs::create_dir_all(&dir);
@@ -577,7 +577,7 @@ impl SessionManager {
         turn_count: usize,
     ) {
         let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap();
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         if new_messages.is_empty() {
             return;
         }
@@ -667,7 +667,7 @@ impl SessionManager {
     // ── Private ──
 
     fn session_lock(&self, seed: &str) -> Arc<Mutex<()>> {
-        let mut locks = self.session_locks.lock().unwrap();
+        let mut locks = self.session_locks.lock().unwrap_or_else(|e| e.into_inner());
         locks
             .entry(seed.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(())))

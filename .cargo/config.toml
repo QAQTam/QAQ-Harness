@@ -1,2 +1,9 @@
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# qaqh-workspace 的大量测试共享进程全局状态（CURRENT_WORKSPACE / PENDING /
+# 文件 hash 账本），并行调度下随机互踩（失败用例逐轮漂移）。README 家规
+# 「触碰全局状态的测试统一串行」依赖手工加锁，覆盖不全；此处对全部测试
+# 强制单线程，一次性消除该类竞态。代价仅是总时长（全套 ~2min）。
+[env]
+RUST_TEST_THREADS = "1"

@@ -18,14 +18,14 @@ fn setup(tag: &str) -> PathBuf {
         tag
     ));
     let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&root).expect("create temp data root");
     // SAFETY: 单线程串行执行，设置后立即使用，无并发读
     unsafe { std::env::set_var("QAQH_DATA_DIR", &root) };
     root
 }
 
 fn write_config(root: &PathBuf, toml: &str) {
-    std::fs::write(root.join("config.toml"), toml).unwrap();
+    std::fs::write(root.join("config.toml"), toml).expect("write test config");
 }
 
 const CUSTOM_URL: &str = "https://opencode.ai/zen/go/v1";

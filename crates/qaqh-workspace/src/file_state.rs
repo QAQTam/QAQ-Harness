@@ -329,6 +329,11 @@ mod tests {
 
     #[test]
     fn take_pending_clears_the_queue() {
+        // PENDING 是进程全局队列：并行测试的 take_pending 会偷走本测试
+        // 刚 record 的条目，必须按家规持全仓串行锁。
+        let _serial = crate::TEST_RUNTIME_SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // 全局队列：记录唯一条目后断言其出现且取走即清（不依赖队列为空起步）
         let key = "pending-roundtrip-b.txt";
         record_read(key, "x\n", 1);

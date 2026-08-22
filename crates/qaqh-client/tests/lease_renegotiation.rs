@@ -46,8 +46,8 @@ fn cleanup_isolated_home(base: &PathBuf) {
 }
 
 fn find_daemon_binary() -> PathBuf {
-    let test_exe = std::env::current_exe().unwrap();
-    let test_dir = test_exe.parent().unwrap();
+    let test_exe = std::env::current_exe().expect("current_exe in test");
+    let test_dir = test_exe.parent().expect("exe parent dir");
 
     // target/debug/deps/ → target/debug/  (or release)
     let rel = test_dir.join("../qaqh-daemon.exe");

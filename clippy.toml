@@ -1,0 +1,3 @@
+# 测试代码允许 unwrap（生产代码仍 deny）。
+# 覆盖 #[cfg(test)] 模块与 tests/ 集成测试目录。
+allow-unwrap-in-tests = true

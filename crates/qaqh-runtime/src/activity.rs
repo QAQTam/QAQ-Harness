@@ -184,81 +184,6 @@ impl SessionActivityTracker {
             .map(|tracked| tracked.activity.clone())
     }
 
-    /// Reserve an idle session for a command before the agent's first event
-    /// returns. This closes the window where a second command could observe
-    /// stale Idle state after the first frame was already written to stdin.
-    pub fn mark_working_if_idle(&self, seed: &str) -> Option<SessionActivity> {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let tracked = inner.get_mut(seed)?;
-        if tracked.activity.state != SessionActivityState::Idle {
-            return None;
-        }
-        tracked.activity.state = SessionActivityState::Working;
-        tracked.activity.turn_id = None;
-        tracked.activity.seq = tracked.activity.seq.saturating_add(1);
-        tracked.activity.updated_at = now_millis();
-        Some(tracked.activity.clone())
-    }
-
-    pub fn mark_working_for_input(
-        &self,
-        seed: &str,
-    ) -> Option<(SessionActivity, SessionActivityState)> {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let tracked = inner.get_mut(seed)?;
-        let previous = tracked.activity.state;
-        if !matches!(
-            previous,
-            SessionActivityState::Starting | SessionActivityState::Idle
-        ) {
-            return None;
-        }
-        tracked.activity.state = SessionActivityState::Working;
-        tracked.activity.turn_id = None;
-        tracked.activity.seq = tracked.activity.seq.saturating_add(1);
-        tracked.activity.updated_at = now_millis();
-        Some((tracked.activity.clone(), previous))
-    }
-
-    pub fn restore_idle_if_unchanged(
-        &self,
-        seed: &str,
-        expected_seq: u64,
-    ) -> Option<SessionActivity> {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let tracked = inner.get_mut(seed)?;
-        if tracked.activity.seq != expected_seq
-            || tracked.activity.state != SessionActivityState::Working
-            || tracked.activity.turn_id.is_some()
-        {
-            return None;
-        }
-        tracked.activity.state = SessionActivityState::Idle;
-        tracked.activity.seq = tracked.activity.seq.saturating_add(1);
-        tracked.activity.updated_at = now_millis();
-        Some(tracked.activity.clone())
-    }
-
-    pub fn restore_state_if_unchanged(
-        &self,
-        seed: &str,
-        expected_seq: u64,
-        previous: SessionActivityState,
-    ) -> Option<SessionActivity> {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let tracked = inner.get_mut(seed)?;
-        if tracked.activity.seq != expected_seq
-            || tracked.activity.state != SessionActivityState::Working
-            || tracked.activity.turn_id.is_some()
-        {
-            return None;
-        }
-        tracked.activity.state = previous;
-        tracked.activity.seq = tracked.activity.seq.saturating_add(1);
-        tracked.activity.updated_at = now_millis();
-        Some(tracked.activity.clone())
-    }
-
     pub fn disconnect(&self, seed: &str, generation: u64) -> Option<SessionActivity> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let tracked = inner.get_mut(seed)?;
@@ -305,45 +230,18 @@ mod tests {
     }
 
     #[test]
-    fn idle_reservation_is_atomic_and_can_be_rolled_back() {
-        let (tracker, _) = idle_tracker("seed");
-        let reserved = tracker.mark_working_if_idle("seed").expect("reserve idle");
-
-        assert_eq!(reserved.state, SessionActivityState::Working);
-        assert!(tracker.mark_working_if_idle("seed").is_none());
-
-        let rolled_back = tracker
-            .restore_idle_if_unchanged("seed", reserved.seq)
-            .expect("rollback unchanged reservation");
-        assert_eq!(rolled_back.state, SessionActivityState::Idle);
-    }
-
-    #[test]
-    fn rollback_does_not_overwrite_a_real_turn_transition() {
+    fn compact_end_releases_a_manual_compact_reservation() {
         let (tracker, generation) = idle_tracker("seed");
-        let reserved = tracker.mark_working_if_idle("seed").expect("reserve idle");
+        // 生产路径进入「Working 且无 turn_id」的 manual-compact 事务态：
+        // idle_tracker 已 ready → Idle，再由 compact_start 进入 Working
+        // （turn_id 保持 None）。
         tracker
             .observe(
                 "seed",
                 generation,
-                &serde_json::json!({ "type": "turn_start", "turn_id": "t1" }),
+                &serde_json::json!({ "type": "compact_start" }),
             )
-            .expect("turn transition");
-
-        assert!(
-            tracker
-                .restore_idle_if_unchanged("seed", reserved.seq)
-                .is_none()
-        );
-        let current = tracker.get("seed").expect("current activity");
-        assert_eq!(current.state, SessionActivityState::Working);
-        assert_eq!(current.turn_id.as_deref(), Some("t1"));
-    }
-
-    #[test]
-    fn compact_end_releases_a_manual_compact_reservation() {
-        let (tracker, generation) = idle_tracker("seed");
-        tracker.mark_working_if_idle("seed").expect("reserve idle");
+            .expect("compact start");
 
         let completed = tracker
             .observe(
@@ -360,50 +258,6 @@ mod tests {
 
         assert_eq!(completed.state, SessionActivityState::Idle);
         assert_eq!(completed.turn_id, None);
-    }
-
-    #[test]
-    fn starting_user_input_reservation_survives_initial_ready() {
-        let tracker = SessionActivityTracker::default();
-        let (generation, _) = tracker.begin("seed");
-        let (reserved, previous) = tracker
-            .mark_working_for_input("seed")
-            .expect("reserve starting session");
-
-        assert_eq!(previous, SessionActivityState::Starting);
-        assert!(
-            tracker
-                .observe("seed", generation, &serde_json::json!({ "type": "ready" }))
-                .is_none()
-        );
-        assert_eq!(
-            tracker.get("seed").expect("activity").state,
-            SessionActivityState::Working
-        );
-
-        let turn = tracker
-            .observe(
-                "seed",
-                generation,
-                &serde_json::json!({ "type": "turn_start", "turn_id": "t1" }),
-            )
-            .expect("turn start");
-        assert_eq!(turn.turn_id.as_deref(), Some("t1"));
-        assert!(turn.seq > reserved.seq);
-    }
-
-    #[test]
-    fn failed_starting_user_input_restores_starting_state() {
-        let tracker = SessionActivityTracker::default();
-        tracker.begin("seed");
-        let (reserved, previous) = tracker
-            .mark_working_for_input("seed")
-            .expect("reserve starting session");
-
-        let restored = tracker
-            .restore_state_if_unchanged("seed", reserved.seq, previous)
-            .expect("restore starting");
-        assert_eq!(restored.state, SessionActivityState::Starting);
     }
 
     #[test]

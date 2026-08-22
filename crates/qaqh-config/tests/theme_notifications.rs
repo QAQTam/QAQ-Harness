@@ -11,14 +11,14 @@ fn setup(tag: &str) -> PathBuf {
         tag
     ));
     let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&root).expect("create temp data root");
     // SAFETY: this test file is a single serial test function; no parallel env var races.
     unsafe { std::env::set_var("QAQH_DATA_DIR", &root) };
     root
 }
 
 fn write_config(root: &PathBuf, toml: &str) {
-    std::fs::write(root.join("config.toml"), toml).unwrap();
+    std::fs::write(root.join("config.toml"), toml).expect("write test config");
 }
 
 #[test]

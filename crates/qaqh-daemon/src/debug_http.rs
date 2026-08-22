@@ -1,22 +1,25 @@
-//! Debug 只读页：daemon 直接服务前端产物（浏览器调试入口）。
+//! webUI 静态托管：daemon 直接服务前端产物（浏览器直连入口）。
 //!
-//! 动机（决策记录 2026-07-31）：Electron 本质是浏览器，前端 renderer 是纯静态
-//! 产物。开发/调试循环不应依赖 Electron 打包（改前端 → 浏览器刷新即可），
-//! 也不应为了替换 asar 而终止桌面应用。daemon 以 HTTP 静态服务直接托管
-//! `out/renderer`，浏览器打开 `http://127.0.0.1:<port>/debug/` 即获得与
-//! Electron renderer 相同的前端，并内联当前 token 供 WebSocket/SSE 直连。
+//! 动机（决策记录 2026-07-31）：Electron/Tauri 本质是浏览器，前端 renderer
+//! 是纯静态产物。开发/调试循环不应依赖壳打包（改前端 → 浏览器刷新即可）。
+//! daemon 以 HTTP 静态服务直接托管 `out/renderer`，浏览器打开
+//! `http://127.0.0.1:<port>/debug/` 即获得与桌面壳 renderer 相同的前端，
+//! 并内联当前 token 供 Ringing V1 HTTP/SSE 直连——页面与桌面壳走同一
+//! 协议面（open 协商 / 三频道命令 / SSE / timeline），daemon 侧无任何
+//! 第二前端协议。这也是多前端的正式形态：任何能讲 Ringing V1 的壳都能接入。
 //!
 //! 安全边界（loopback 信任模型）：
-//! - daemon 只绑定 127.0.0.1；token 已明文存在于 `~/.deepx/daemon.json`，
-//!   本页内联 token 与既有威胁模型一致；
+//! - **仅限本机回环连接**：非 loopback 来源一律 403。token 已明文存在于
+//!   `~/.deepx/daemon.json`，本页内联 token 与既有威胁模型一致；LAN server
+//!   模式下远端壳是持有 token 的原生应用，无需也不得从本端点获取 token；
 //! - 静态服务仅限 renderer 目录内（防目录穿越）；
 //! - 只读：无命令、无写端点。切流等写操作仍走带 lease 的 Ringing 端点。
 
 use std::path::{Component, Path, PathBuf};
 
-use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
+use crate::http::{read_request, stringify, write_response_no_cache};
 use crate::server::random_hex;
 
 /// renderer 产物根目录（dev 调试）。定位优先级：
@@ -95,41 +98,40 @@ fn safe_join(root: &Path, url_path: &str) -> Option<PathBuf> {
     Some(canonical_joined)
 }
 
-/// 从 preview 提取 GET 路径（只服务 GET）。
-fn get_path(preview: &str) -> Option<&str> {
-    let first = preview.lines().next()?;
-    let mut parts = first.split_whitespace();
-    if parts.next()? != "GET" {
-        return None;
+/// GET /debug/... 静态服务 + token 注入（仅限 loopback 来源）。
+pub async fn handle_debug_http(mut stream: TcpStream, token: &str) -> Result<(), String> {
+    // LAN server 模式（0.0.0.0）下，本端点的桥脚本会内联真实 token——
+    // 必须拒绝非回环来源，否则等于向整个局域网发放 daemon 凭据。
+    let peer_is_loopback = stream
+        .peer_addr()
+        .map(|addr| addr.ip().is_loopback())
+        .unwrap_or(false);
+    if !peer_is_loopback {
+        return write_response_no_cache(
+            &mut stream,
+            "403 Forbidden",
+            "text/plain",
+            b"webUI hosting is restricted to loopback connections",
+        )
+        .await;
     }
-    let path = parts.next()?;
-    // 去掉 query string
-    Some(path.split('?').next().unwrap_or(path))
-}
 
-/// GET /debug/... 静态服务 + token 注入。
-pub async fn handle_debug_http(
-    mut stream: TcpStream,
-    preview: &str,
-    token: &str,
-) -> Result<(), String> {
-    let Some(path) = get_path(preview) else {
-        return write_static(
+    // 与 Ringing 端点共用完整请求解析（消费 header + body；此前仅凭
+    // server 分流的 peek 首行嗅探，无法区分 GET 细节与残留数据）。
+    let request = read_request(&mut stream).await?;
+    if request.method != "GET" {
+        return write_response_no_cache(
             &mut stream,
             "405 Method Not Allowed",
             "text/plain",
             b"GET only",
         )
         .await;
-    };
+    }
+    let path = request.path.split('?').next().unwrap_or(&request.path);
     if !path.starts_with("/debug") {
-        return write_static(
-            &mut stream,
-            "404 Not Found",
-            "text/plain",
-            b"not a debug path",
-        )
-        .await;
+        return write_response_no_cache(&mut stream, "404 Not Found", "text/plain", b"not found")
+            .await;
     }
 
     // 桥配置 JS（CSP 兼容：index.html 注入的是 `<script src>` 同源外部脚本，
@@ -139,7 +141,7 @@ pub async fn handle_debug_http(
             "window.__QAQH_DEBUG__={{\"token\":\"{token}\",\"nonce\":\"{}\"}};\n",
             random_hex()
         );
-        return write_static(
+        return write_response_no_cache(
             &mut stream,
             "200 OK",
             "text/javascript; charset=utf-8",
@@ -152,7 +154,7 @@ pub async fn handle_debug_http(
     let rel = path.trim_start_matches("/debug").trim_start_matches('/');
     let rel = if rel.is_empty() { "index.html" } else { rel };
     let Some(file) = safe_join(&root, rel) else {
-        return write_static(
+        return write_response_no_cache(
             &mut stream,
             "400 Bad Request",
             "text/plain",
@@ -162,7 +164,8 @@ pub async fn handle_debug_http(
     };
 
     if !file.exists() || !file.is_file() {
-        return write_static(&mut stream, "404 Not Found", "text/plain", b"not found").await;
+        return write_response_no_cache(&mut stream, "404 Not Found", "text/plain", b"not found")
+            .await;
     }
     let bytes = tokio::fs::read(&file).await.map_err(stringify)?;
     let mime = mime_for(&file);
@@ -178,40 +181,10 @@ pub async fn handle_debug_http(
         } else {
             html.push_str(script);
         }
-        return write_static(&mut stream, "200 OK", mime, html.as_bytes()).await;
+        return write_response_no_cache(&mut stream, "200 OK", mime, html.as_bytes()).await;
     }
 
-    write_static(&mut stream, "200 OK", mime, &bytes).await
-}
-
-async fn write_static(
-    stream: &mut TcpStream,
-    status: &str,
-    content_type: &str,
-    body: &[u8],
-) -> Result<(), String> {
-    use tokio::io::AsyncReadExt;
-    let head = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    stream.write_all(head.as_bytes()).await.map_err(stringify)?;
-    stream.write_all(body).await.map_err(stringify)?;
-    stream.flush().await.map_err(stringify)?;
-    // 优雅关闭写方向后，读空接收缓冲（server.rs peek 残留的请求数据）。
-    // Windows 上直接 close 带未读数据的 socket 会发 RST，客户端收不全 body。
-    stream.shutdown().await.map_err(stringify)?;
-    let mut sink = [0_u8; 4096];
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_millis(300),
-        stream.read(&mut sink),
-    )
-    .await;
-    Ok(())
-}
-
-fn stringify(error: impl std::fmt::Display) -> String {
-    error.to_string()
+    write_response_no_cache(&mut stream, "200 OK", mime, &bytes).await
 }
 
 #[cfg(test)]
@@ -238,13 +211,5 @@ mod tests {
         assert!(safe_join(&root, "a/../../outside").is_none());
         assert!(safe_join(&root, "/etc/passwd").is_none());
         std::fs::remove_dir_all(root).ok();
-    }
-
-    #[test]
-    fn get_path_extracts_get_only() {
-        assert_eq!(get_path("GET /debug/ HTTP/1.1\r\nHost: x"), Some("/debug/"));
-        assert_eq!(get_path("GET /debug/?a=1 HTTP/1.1\r\n"), Some("/debug/"));
-        assert_eq!(get_path("POST /debug/ HTTP/1.1\r\n"), None);
-        assert_eq!(get_path(""), None);
     }
 }

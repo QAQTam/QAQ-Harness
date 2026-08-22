@@ -33,14 +33,12 @@ use qaqh_ringing::{
 };
 use qaqh_runtime::ringing::query;
 use qaqh_runtime::{QaqhService, RingingHub};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
 use crate::server::random_hex;
 
-fn stringify(error: impl std::fmt::Display) -> String {
-    error.to_string()
-}
+pub(crate) use crate::http::stringify;
 
 const RENEW_TTL_MS: u64 = 30_000;
 
@@ -55,7 +53,6 @@ fn lease_ttl_ms() -> u64 {
 }
 const RENEW_INTERVAL_MS: u64 = 10_000;
 const RINGING_TIMELINE_BASE_PATH: &str = RINGING_BASE_PATH;
-const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 const SSE_KEEPALIVE_MS: u64 = 15_000;
 
 /// Ringing 逻辑 client session lease。
@@ -483,100 +480,7 @@ impl RingingLeaseStore {
     }
 }
 
-/// 已解析的 HTTP 请求。
-struct HttpRequest {
-    method: String,
-    path: String,
-    headers: HashMap<String, String>,
-    body: Vec<u8>,
-}
-
-impl HttpRequest {
-    fn header(&self, name: &str) -> Option<&str> {
-        self.headers
-            .get(&name.to_ascii_lowercase())
-            .map(|v| v.as_str())
-    }
-}
-
-/// 读取并解析一个 HTTP 请求（请求行 + headers + Content-Length body）。
-async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
-    let mut buf = Vec::with_capacity(4096);
-    let mut tmp = [0_u8; 2048];
-    // 先找 header 结束���（\r\n\r\n）
-    let header_end = loop {
-        let text = String::from_utf8_lossy(&buf);
-        if let Some(pos) = text.find("\r\n\r\n") {
-            break pos + 4;
-        }
-        let n = stream.read(&mut tmp).await.map_err(stringify)?;
-        if n == 0 {
-            return Err("connection closed before headers".into());
-        }
-        buf.extend_from_slice(&tmp[..n]);
-        if buf.len() > 64 * 1024 {
-            return Err("request headers too large".into());
-        }
-    };
-
-    let header_text = String::from_utf8_lossy(&buf[..header_end]).to_string();
-    let mut lines = header_text.lines();
-    let request_line = lines
-        .next()
-        .ok_or_else(|| "missing request line".to_string())?;
-    let mut parts = request_line.split_whitespace();
-    let method = parts
-        .next()
-        .ok_or_else(|| "missing method".to_string())?
-        .to_string();
-    let path = parts
-        .next()
-        .ok_or_else(|| "missing path".to_string())?
-        .to_string();
-    let mut headers = HashMap::new();
-    for line in lines {
-        if let Some((k, v)) = line.split_once(':') {
-            headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
-        }
-    }
-    let content_length: usize = headers
-        .get("content-length")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    if content_length > MAX_BODY_BYTES {
-        return Err("body too large".into());
-    }
-    while buf.len() < header_end + content_length {
-        let n = stream.read(&mut tmp).await.map_err(stringify)?;
-        if n == 0 {
-            return Err("connection closed during body".into());
-        }
-        buf.extend_from_slice(&tmp[..n]);
-    }
-    let body = buf[header_end..header_end + content_length].to_vec();
-    Ok(HttpRequest {
-        method,
-        path,
-        headers,
-        body,
-    })
-}
-
-async fn write_response(
-    stream: &mut TcpStream,
-    status: &str,
-    content_type: &str,
-    body: &[u8],
-) -> Result<(), String> {
-    let head = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    stream.write_all(head.as_bytes()).await.map_err(stringify)?;
-    stream.write_all(body).await.map_err(stringify)?;
-    stream.flush().await.map_err(stringify)?;
-    Ok(())
-}
+pub(crate) use crate::http::{HttpRequest, read_request, write_response};
 
 fn parse_channel(s: &str) -> Option<RingingChannel> {
     match s {
@@ -2184,6 +2088,8 @@ fn is_allowed_action(method: &str) -> bool {
     method.starts_with("git.")
         || method.starts_with("workspace.")
         || method.starts_with("config.")
+        // 命名 profiles（qaqh-client ActionRequest::Profile* 已类型化暴露）。
+        || method.starts_with("profile.")
         || method.starts_with("skills.")
         || method.starts_with("stats.")
         || method.starts_with("plan.")

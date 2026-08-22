@@ -150,7 +150,7 @@ fn serve_scenario(req: tiny_http::Request, scenario: &[SseChunk]) {
         let _ = req.respond(resp);
     } else if !sse.is_empty() {
         let resp = Response::from_string(sse)
-            .with_header("Content-Type: text/event-stream".parse::<Header>().unwrap());
+            .with_header("Content-Type: text/event-stream".parse::<Header>().expect("valid header"));
         let _ = req.respond(resp);
     }
 }
@@ -164,7 +164,7 @@ fn run_server(
 ) {
     let mut seq_index: usize = 0;
     loop {
-        if *stop.lock().unwrap() {
+        if *stop.lock().expect("stop lock") {
             break;
         }
         let mut req = match server.recv_timeout(Duration::from_millis(100)) {
@@ -180,12 +180,12 @@ fn run_server(
         if req.as_reader().read_to_string(&mut body).is_ok() {
             // body read successfully
         }
-        *last_body.lock().unwrap() = Some(body);
+        *last_body.lock().expect("body lock") = Some(body);
         request_count.fetch_add(1, Ordering::SeqCst);
 
         // Get the scenario for this request
         let scenario = {
-            let mut src = source.lock().unwrap();
+            let mut src = source.lock().expect("source lock");
             match &mut *src {
                 ScenarioSource::Fixed(s) => s.clone(),
                 ScenarioSource::Sequential(list) => {
@@ -204,7 +204,7 @@ impl MockServer {
     /// Serve the same scenario for every request.
     pub fn new(scenario: Vec<SseChunk>) -> Self {
         let server = Server::http("127.0.0.1:0").expect("failed to bind mock server");
-        let port = server.server_addr().to_ip().unwrap().port();
+        let port = server.server_addr().to_ip().expect("server addr").port();
         let stop = Arc::new(Mutex::new(false));
         let request_count = Arc::new(AtomicUsize::new(0));
         let last_body = Arc::new(Mutex::new(None));
@@ -230,7 +230,7 @@ impl MockServer {
     /// Serve scenarios in rotation, one per request.
     pub fn new_sequential(scenarios: Vec<Vec<SseChunk>>) -> Self {
         let server = Server::http("127.0.0.1:0").expect("failed to bind mock server");
-        let port = server.server_addr().to_ip().unwrap().port();
+        let port = server.server_addr().to_ip().expect("server addr").port();
         let stop = Arc::new(Mutex::new(false));
         let request_count = Arc::new(AtomicUsize::new(0));
         let last_body = Arc::new(Mutex::new(None));
@@ -258,14 +258,14 @@ impl MockServer {
     }
 
     pub fn last_request_json(&self) -> Option<serde_json::Value> {
-        let guard = self.last_request_body.lock().unwrap();
+        let guard = self.last_request_body.lock().expect("request body lock");
         guard.as_ref().and_then(|s| serde_json::from_str(s).ok())
     }
 }
 
 impl Drop for MockServer {
     fn drop(&mut self) {
-        *self.stop.lock().unwrap() = true;
+        *self.stop.lock().expect("stop lock") = true;
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }

@@ -1261,8 +1261,11 @@ impl MessageStore {
             turn.user.content.iter().find_map(|b| {
                 if let qaqh_types::ContentBlock::Text { text } = b {
                     if text.starts_with("[Compacted") {
-                        let after_header = text.find('\n').map(|n| n + 1).unwrap_or(0);
-                        let summary = text[after_header..].trim();
+                        // 首个 '\n'（ASCII）之后必为 char boundary。
+                        let summary = match text.find('\n') {
+                            Some(n) => text.get(n + 1..).unwrap_or("").trim(),
+                            None => "",
+                        };
                         if summary.len() > 20 {
                             Some(summary.to_string())
                         } else {

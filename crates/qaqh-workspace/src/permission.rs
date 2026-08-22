@@ -137,14 +137,15 @@ pub fn extract_target_paths(tool_name: &str, args: &serde_json::Value) -> Vec<Pa
     let mut paths = Vec::new();
 
     if tool_name == "read"
-        && let Some(requests) = args.get("requests").and_then(|value| value.as_array()) {
-            paths.extend(requests.iter().filter_map(|request| {
-                request
-                    .get("path")
-                    .and_then(|value| value.as_str())
-                    .map(PathBuf::from)
-            }));
-        }
+        && let Some(requests) = args.get("requests").and_then(|value| value.as_array())
+    {
+        paths.extend(requests.iter().filter_map(|request| {
+            request
+                .get("path")
+                .and_then(|value| value.as_str())
+                .map(PathBuf::from)
+        }));
+    }
     // Direct path argument
     if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
         paths.push(PathBuf::from(p));
@@ -185,9 +186,10 @@ pub fn extract_target_paths(tool_name: &str, args: &serde_json::Value) -> Vec<Pa
     }
     // exec: extract cwd
     if tool_name == "exec"
-        && let Some(cwd) = args.get("cwd").and_then(|v| v.as_str()) {
-            paths.push(PathBuf::from(cwd));
-        }
+        && let Some(cwd) = args.get("cwd").and_then(|v| v.as_str())
+    {
+        paths.push(PathBuf::from(cwd));
+    }
 
     paths.into_iter().map(resolve_target_path).collect()
 }
@@ -460,7 +462,10 @@ impl TrustedFolderSet {
 
     fn save(&self) {
         let path = trusted_folders_path(&self.seed);
-        let dir = path.parent().unwrap();
+        // 由 qaqh_dir()/seed 拼接而来，必然带父目录；None 仅在路径为根时出现。
+        let Some(dir) = path.parent() else {
+            return;
+        };
         let _ = std::fs::create_dir_all(dir);
         let list: Vec<String> = self
             .dirs

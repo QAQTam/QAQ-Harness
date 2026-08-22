@@ -51,6 +51,6 @@ pub mod engine_turn;
 pub mod injection;
 pub mod loop_core;
 pub mod paced_emitter;
-pub mod types;
 pub(crate) mod turn_lap;
+pub mod types;
 pub mod wire;

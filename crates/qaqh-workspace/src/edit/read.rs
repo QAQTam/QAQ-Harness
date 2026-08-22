@@ -1,15 +1,15 @@
 //! read — split from file_edit_v2.rs
 
-use serde_json::json;
-use crate::file_shared::{content_hash, normalize_newlines};
 use crate::ToolResult;
-use crate::edit::view::FileView;
+use crate::edit::CONTENT_CAP;
+use crate::edit::locate::locate_anchor;
 use crate::edit::matching::Candidate;
 use crate::edit::matching::LocateError;
-use crate::edit::locate::{locate_anchor};
 use crate::edit::transaction::truncate_content;
-use crate::edit::CONTENT_CAP;
-use crate::edit::{READ_MAX_LINES, READ_MAX_CHARS, READ_MAX_CONTEXT};
+use crate::edit::view::FileView;
+use crate::edit::{READ_MAX_CHARS, READ_MAX_CONTEXT, READ_MAX_LINES};
+use crate::file_shared::{content_hash, normalize_newlines};
+use serde_json::json;
 
 pub(crate) fn read_range(
     content: &str,
@@ -93,7 +93,9 @@ pub(crate) fn read_anchored(
                 "ANCHOR_AMBIGUOUS",
                 render_read_candidates(raw_path, "ANCHOR_AMBIGUOUS", &detail, &candidates),
                 true,
-                Some(str::to_string("Add context_before/context_after to narrow the window, or read by line range (start_line/end_line).")),
+                Some(str::to_string(
+                    "Add context_before/context_after to narrow the window, or read by line range (start_line/end_line).",
+                )),
                 json!({
                     "timeis": crate::now_utc8(),
                     "status": "error",
@@ -110,7 +112,9 @@ pub(crate) fn read_anchored(
                 "NO_MATCH",
                 render_read_candidates(raw_path, "NO_MATCH", &detail, &candidates),
                 true,
-                Some(str::to_string("Refine the anchor from the candidates, or locate with grep first.")),
+                Some(str::to_string(
+                    "Refine the anchor from the candidates, or locate with grep first.",
+                )),
                 json!({
                     "timeis": crate::now_utc8(),
                     "status": "error",
@@ -177,7 +181,12 @@ pub(crate) fn read_anchored(
     )
 }
 
-pub(crate) fn render_read_candidates(path: &str, code: &str, detail: &str, cands: &[Candidate]) -> String {
+pub(crate) fn render_read_candidates(
+    path: &str,
+    code: &str,
+    detail: &str,
+    cands: &[Candidate],
+) -> String {
     let mut out = format!("[ERROR] edit {path}\n  {code}: {detail}\n");
     for (i, c) in cands.iter().enumerate() {
         out.push_str(&format!(
@@ -363,12 +372,21 @@ pub(crate) fn read_path(path: &str, raw_path: &str, args: &serde_json::Value) ->
     if has_range {
         return read_range(&content, total_lines, raw_path, &hash, start, end, fail);
     }
+    // 前置分支已排除 anchor 为空且带 range 的路径；此处必为锚定读。
+    let Some(anchor) = anchor else {
+        return fail(
+            "PARSE_ERROR",
+            "edit: read requires start_line/end_line or anchor".into(),
+            false,
+            None,
+        );
+    };
     read_anchored(
         &content,
         total_lines,
         raw_path,
         &hash,
-        anchor.unwrap(),
+        anchor,
         ctx_before,
         ctx_after,
         fail,
@@ -377,4 +395,3 @@ pub(crate) fn read_path(path: &str, raw_path: &str, args: &serde_json::Value) ->
 // ─────────────────────────────────────────────────────────────
 // 执行入口
 // ─────────────────────────────────────────────────────────────
-

@@ -45,7 +45,8 @@ pub(crate) fn parse_and_ingest(
     timeline_tools_open: &mut HashSet<String>,
 ) -> ParseOutput {
     // ── Parse ──
-    let parsed = util::parse_tool_calls_from_response(content, reasoning, tool_calls_raw, &ctx.agent);
+    let parsed =
+        util::parse_tool_calls_from_response(content, reasoning, tool_calls_raw, &ctx.agent);
     // Structured/non-streamed tool calls can arrive without a prior
     // ToolCallProgress event. Open their native blocks here so every
     // later lifecycle patch has one stable target.

@@ -702,7 +702,11 @@ mod tests {
         assert_eq!(endpoint.protocol, "openai");
         assert_eq!(endpoint.base_url, "https://opencode.ai/zen/go/v1");
         assert_eq!(endpoint.default_model, "deepseek-v4-flash");
-        assert_eq!(endpoint.models.len(), 15, "official Go model list (chat channel)");
+        assert_eq!(
+            endpoint.models.len(),
+            15,
+            "official Go model list (chat channel)"
+        );
         assert!(endpoint.models.contains(&"deepseek-v4-flash".to_string()));
         assert!(endpoint.models.contains(&"kimi-k3".to_string()));
         assert!(!endpoint.models.contains(&"grok-4.5".to_string()));
@@ -724,7 +728,10 @@ mod tests {
         assert_eq!(endpoint.protocol, "responses");
         assert_eq!(endpoint.base_url, "https://opencode.ai/zen/go/v1");
         assert_eq!(endpoint.responses_path.as_deref(), Some("/responses"));
-        assert_eq!(endpoint.models, vec!["grok-4.5".to_string(), "gpt-5.6-luna".to_string()]);
+        assert_eq!(
+            endpoint.models,
+            vec!["grok-4.5".to_string(), "gpt-5.6-luna".to_string()]
+        );
         assert_eq!(endpoint.default_model, "grok-4.5");
         assert!(endpoint.beta);
         assert!(!endpoint.supports_thinking);

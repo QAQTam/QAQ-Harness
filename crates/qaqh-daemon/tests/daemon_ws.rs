@@ -24,8 +24,8 @@ fn kill_leftover_daemon() {
 }
 
 fn find_daemon_binary() -> std::path::PathBuf {
-    let test_exe = std::env::current_exe().unwrap();
-    let test_dir = test_exe.parent().unwrap();
+    let test_exe = std::env::current_exe().expect("current_exe in test");
+    let test_dir = test_exe.parent().expect("exe parent dir");
 
     // target/debug/deps/ → target/debug/  (or release)
     let rel = test_dir.join("../qaqh-daemon.exe");
@@ -94,10 +94,13 @@ fn read_token() -> String {
                 .join(".deepx")
                 .join("daemon.json"),
         )
-        .unwrap(),
+        .expect("read daemon.json"),
     )
-    .unwrap();
-    discovery["token"].as_str().unwrap().to_string()
+    .expect("parse daemon.json");
+    discovery["token"]
+        .as_str()
+        .expect("token in daemon.json")
+        .to_string()
 }
 
 // ── minimal WebSocket framing (no external deps) ──────────────────────
@@ -116,8 +119,8 @@ fn send_ws(writer: &mut TcpStream, text: &str) {
         frame.extend_from_slice(&(len as u64).to_be_bytes());
     }
     frame.extend_from_slice(data);
-    writer.write_all(&frame).unwrap();
-    writer.flush().unwrap();
+    writer.write_all(&frame).expect("write ws frame");
+    writer.flush().expect("flush ws frame");
 }
 
 fn recv_ws(reader: &mut BufReader<TcpStream>) -> Option<Value> {

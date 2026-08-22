@@ -150,7 +150,11 @@ impl ToolProgressCoalescer {
         let out = if out.chunk.len() > MAX_TAIL_BYTES {
             let start = tail_start_boundary(&out.chunk, MAX_TAIL_BYTES);
             let dropped = start as u64;
-            let chunk = out.chunk[start..].to_string();
+            let chunk = out
+                .chunk
+                .get(start..)
+                .expect("tail_start_boundary returns a char boundary")
+                .to_string();
             CoalescedProgress {
                 seq_start: out.seq_end.saturating_sub(chunk.len() as u64),
                 chunk,

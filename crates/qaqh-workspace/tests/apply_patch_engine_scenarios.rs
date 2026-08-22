@@ -19,7 +19,7 @@ fn apply_patch_engine_scenarios() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/apply_patch_scenarios");
     let mut ran = 0usize;
     for entry in fs::read_dir(&scenarios_dir).expect("scenarios dir") {
-        let entry = entry.unwrap();
+        let entry = entry.expect("valid dir entry");
         if !entry.path().is_dir() {
             continue;
         }
@@ -30,7 +30,11 @@ fn apply_patch_engine_scenarios() {
 }
 
 fn run_scenario(dir: &Path) {
-    let name = dir.file_name().unwrap().to_string_lossy().to_string();
+    let name = dir
+        .file_name()
+        .expect("scenario dir has a name")
+        .to_string_lossy()
+        .to_string();
     let tmp = tempdir().expect("tempdir");
 
     let input_dir = dir.join("input");
@@ -82,26 +86,33 @@ fn snapshot_dir(root: &Path) -> BTreeMap<PathBuf, Entry> {
 
 fn snapshot_dir_recursive(base: &Path, dir: &Path, entries: &mut BTreeMap<PathBuf, Entry>) {
     for entry in fs::read_dir(dir).expect("read_dir") {
-        let entry = entry.unwrap();
-        let rel = entry.path().strip_prefix(base).unwrap().to_path_buf();
-        if entry.file_type().unwrap().is_dir() {
+        let entry = entry.expect("valid dir entry");
+        let rel = entry
+            .path()
+            .strip_prefix(base)
+            .expect("entry under base")
+            .to_path_buf();
+        if entry.file_type().expect("file_type").is_dir() {
             entries.insert(rel.clone(), Entry::Dir);
             snapshot_dir_recursive(base, &entry.path(), entries);
         } else {
-            entries.insert(rel, Entry::File(fs::read(entry.path()).unwrap()));
+            entries.insert(
+                rel,
+                Entry::File(fs::read(entry.path()).expect("read scenario file")),
+            );
         }
     }
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) {
     for entry in fs::read_dir(src).expect("read_dir") {
-        let entry = entry.unwrap();
+        let entry = entry.expect("valid dir entry");
         let target = dst.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            fs::create_dir_all(&target).unwrap();
+        if entry.file_type().expect("file_type").is_dir() {
+            fs::create_dir_all(&target).expect("create dir");
             copy_dir_recursive(&entry.path(), &target);
         } else {
-            fs::copy(entry.path(), target).unwrap();
+            fs::copy(entry.path(), target).expect("copy scenario file");
         }
     }
 }

@@ -1,11 +1,11 @@
 //! resolve — split from file_edit_v2.rs
 
-use std::ops::Range;
-use ropey::Rope;
 use crate::edit::hunk::Hunk;
+use crate::edit::matching::Located;
 use crate::edit::matching::*;
 use crate::edit::view::FileView;
-use crate::edit::matching::{Located};
+use ropey::Rope;
+use std::ops::Range;
 
 pub(crate) enum ResolvedOp {
     Replace { range: Range<usize>, new: String },
@@ -23,7 +23,11 @@ impl ResolvedOp {
 
 /// Replace 的替换区间：行窗口 char range，末行尾换行按 `want_trailing_nl`
 /// 决定是否纳入（文件尾无换行时自动退化）。纯插入（win_lines=0）→ 零长度区间。
-pub(crate) fn replace_range(view: &FileView, loc: &Located, want_trailing_nl: bool) -> Range<usize> {
+pub(crate) fn replace_range(
+    view: &FileView,
+    loc: &Located,
+    want_trailing_nl: bool,
+) -> Range<usize> {
     if loc.win_lines == 0 {
         return loc.start_char..loc.end_char;
     }
@@ -49,6 +53,8 @@ pub(crate) fn window_indent(view: &FileView, loc: &Located) -> String {
         return String::new();
     }
     let lines = &view.lines[loc.start_line..loc.start_line + loc.win_lines];
+    // min 是各行前导空白字节数的最小值；命中行自身缩进 >= min，
+    // 且空白均为单字节 ASCII → [..min] 必为边界（get 仅通过 lint）。
     let min = lines
         .iter()
         .filter(|l| !l.trim().is_empty())
@@ -58,7 +64,7 @@ pub(crate) fn window_indent(view: &FileView, loc: &Located) -> String {
     lines
         .iter()
         .find(|l| !l.trim().is_empty())
-        .map(|l| l[..min].to_string())
+        .map(|l| l.get(..min).unwrap_or_default().to_string())
         .unwrap_or_default()
 }
 
@@ -103,10 +109,10 @@ pub(crate) fn inline_replace(
                 out.push_str(line);
                 continue;
             }
-            let (body, nl) = if line.ends_with('\n') {
-                (&line[..line.len() - 1], "\n")
-            } else {
-                (line, "")
+            // strip_suffix：等价 len-1 字节切片（'\n' 单字节），且 lint 干净。
+            let (body, nl) = match line.strip_suffix('\n') {
+                Some(b) => (b, "\n"),
+                None => (line, ""),
             };
             if replace_all {
                 out.push_str(&re.replace_all(body, new));
@@ -132,20 +138,23 @@ pub(crate) fn inline_replace(
                 out.push_str(line);
                 continue;
             }
-            let (body, nl) = if line.ends_with('\n') {
-                (&line[..line.len() - 1], "\n")
-            } else {
-                (line, "")
+            // strip_suffix：等价 len-1 字节切片（'\n' 单字节），且 lint 干净。
+            let (body, nl) = match line.strip_suffix('\n') {
+                Some(b) => (b, "\n"),
+                None => (line, ""),
             };
             if replace_all {
                 out.push_str(&body.replace(old, new));
             } else {
                 match body.find(old) {
                     Some(pos) => {
+                        // find 命中点必为 char boundary；split_at 等价原切片。
+                        let (before, matched) = body.split_at(pos);
+                        let (_, after) = matched.split_at(old.len());
                         let mut replaced = String::with_capacity(body.len() + new.len());
-                        replaced.push_str(&body[..pos]);
+                        replaced.push_str(before);
                         replaced.push_str(new);
-                        replaced.push_str(&body[pos + old.len()..]);
+                        replaced.push_str(after);
                         out.push_str(&replaced);
                         done = true;
                     }
@@ -217,7 +226,10 @@ pub(crate) fn resolve(view: &FileView, hunk: &Hunk, loc: &Located) -> ResolvedOp
             // 窗口 = anchor 命中行区间（含行间换行，不含文件尾的尾空行行号）。
             let start = view.char_starts[loc.start_line];
             let end = view.char_starts[loc.start_line + loc.win_lines.max(1)];
-            let window = &view.content[start..end];
+            let window = view
+                .content
+                .get(start..end)
+                .expect("char_starts entries are char boundaries");
             let replaced = inline_replace(window, old, new, *replace_all, *regex)
                 .expect("locate_hunk verified the window contains a match; regex already compiled");
             ResolvedOp::Replace {

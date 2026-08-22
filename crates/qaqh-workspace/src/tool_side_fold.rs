@@ -141,11 +141,13 @@ fn truncate_with_marker(
 ) -> String {
     let cut = text.floor_char_boundary(limit);
     // 行对齐：宁可少给一点，也不让模型看到半行代码/半条日志。
-    let cut = text[..cut].rfind('\n').map(|n| n + 1).unwrap_or(cut);
+    let head = text.get(..cut).unwrap_or(text);
+    let cut = head.rfind('\n').map(|n| n + 1).unwrap_or(cut);
     let total = text.chars().count();
     format!(
         "{}…\n{}",
-        &text[..cut],
+        text.get(..cut)
+            .expect("floor_char_boundary / line start is a char boundary"),
         policy.truncation_marker(tool_name, total)
     )
 }

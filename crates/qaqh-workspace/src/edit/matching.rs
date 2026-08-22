@@ -1,7 +1,7 @@
 //! matching — split from file_edit_v2.rs
 
-use crate::edit::{T3_THRESHOLD, T3_MARGIN, CANDIDATE_MAX, SNIPPET_MAX};
 use crate::edit::view::FileView;
+use crate::edit::{CANDIDATE_MAX, SNIPPET_MAX, T3_MARGIN, T3_THRESHOLD};
 
 pub(crate) fn pattern_lines(s: &str) -> Vec<&str> {
     let mut lines: Vec<&str> = s.split('\n').collect();
@@ -77,7 +77,7 @@ pub(crate) fn strip_indent(lines: &[&str]) -> Vec<String> {
                 String::new()
             } else {
                 // 前导空白（空格/tab）是单字节 UTF-8，min 必落在 char boundary。
-                l[min.min(l.len())..].to_string()
+                l.get(min.min(l.len())..).unwrap_or_default().to_string()
             }
         })
         .collect()
@@ -132,7 +132,7 @@ pub(crate) fn context_filter(
 pub(crate) fn snippet_of(view: &FileView, s: usize, win: usize) -> String {
     let text = view.lines[s..s + win].join("\n");
     let cut = text.floor_char_boundary(text.len().min(SNIPPET_MAX));
-    let mut out = text[..cut].to_string();
+    let mut out = text.get(..cut).unwrap_or_default().to_string();
     if cut < text.len() {
         out.push('…');
     }
@@ -210,7 +210,12 @@ pub(crate) fn no_match_detail(probe: &Tier3Probe) -> String {
 /// 权重：old 0.6，context_before 0.2，context_after 0.2；缺失的 context
 /// 不占权重（总权重归一化，score 恒在 0~1）。
 /// 窗口行数容差：pattern 行数 −2..=+2（≥1）。
-pub(crate) fn tier3_probe(view: &FileView, pat: &[&str], before: &[&str], after: &[&str]) -> Tier3Probe {
+pub(crate) fn tier3_probe(
+    view: &FileView,
+    pat: &[&str],
+    before: &[&str],
+    after: &[&str],
+) -> Tier3Probe {
     let fl = &view.lines;
     let p = pat.len();
     if p == 0 || p > fl.len() + 2 {

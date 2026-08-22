@@ -107,8 +107,8 @@ impl Drop for MockServer {
 
 fn send_cmd(writer: &mut os_pipe::PipeWriter, seed: &str, command: RingingCommand) {
     let env = RingingWorkerCommandEnvelope::new(seed, format!("c{}", next_command_id()), command);
-    writeln!(writer, "{}", serde_json::to_string(&env).unwrap()).unwrap();
-    writer.flush().unwrap();
+    writeln!(writer, "{}", serde_json::to_string(&env).expect("serialize envelope")).expect("write frame");
+    writer.flush().expect("flush pipe");
 }
 
 fn next_command_id() -> u64 {
@@ -404,13 +404,14 @@ fn run_case_with_delay(
     SESSION_INIT.call_once(|| {
         qaqh_session::SessionManager::init(qaqh_types::platform::data_dir());
     });
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempfile::tempdir().expect("tempdir");
     std::fs::write(
         temp.path().join("input.txt"),
         "hello from permission test\n",
     )
-    .unwrap();
-    std::fs::write(temp.path().join("input2.txt"), "second permission input\n").unwrap();
+    .expect("write test input");
+    std::fs::write(temp.path().join("input2.txt"), "second permission input\n")
+    .expect("write test input");
     let mock = MockServer::sequential_with_delay(scenarios, response_delay);
     let request_count = mock.requests.clone();
     qaqh_workspace::set_workspace(&temp.path().to_string_lossy());
@@ -425,9 +426,10 @@ fn run_case_with_delay(
     agent.config.endpoint.clear();
     agent.config.compliance_enabled = false;
 
-    let (input_reader, mut input_writer) = os_pipe::pipe().unwrap();
-    let (output_reader, output_writer) = os_pipe::pipe().unwrap();
-    let mut agent_loop = common::spawn_pipe_loop(agent, BufReader::new(input_reader), output_writer);
+    let (input_reader, mut input_writer) = os_pipe::pipe().expect("os pipe");
+    let (output_reader, output_writer) = os_pipe::pipe().expect("os pipe");
+    let mut agent_loop =
+        common::spawn_pipe_loop(agent, BufReader::new(input_reader), output_writer);
     let (event_tx, event_rx) = std::sync::mpsc::channel();
     thread::spawn(move || {
         for line in BufReader::new(output_reader).lines().map_while(Result::ok) {

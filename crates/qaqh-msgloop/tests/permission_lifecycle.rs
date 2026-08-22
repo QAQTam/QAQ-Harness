@@ -174,8 +174,8 @@ fn next_command_id() -> u64 {
 
 fn send_cmd(writer: &mut os_pipe::PipeWriter, seed: &str, command: RingingCommand) {
     let env = RingingWorkerCommandEnvelope::new(seed, format!("c{}", next_command_id()), command);
-    writeln!(writer, "{}", serde_json::to_string(&env).unwrap()).unwrap();
-    writer.flush().unwrap();
+    writeln!(writer, "{}", serde_json::to_string(&env).expect("serialize envelope")).expect("write frame");
+    writer.flush().expect("flush pipe");
 }
 
 fn cmd_user_input(text: &str) -> RingingCommand {
@@ -345,9 +345,10 @@ fn run_case(
     agent.config.endpoint.clear();
     agent.config.compliance_enabled = false;
 
-    let (input_reader, mut input_writer) = os_pipe::pipe().unwrap();
-    let (output_reader, output_writer) = os_pipe::pipe().unwrap();
-    let mut agent_loop = common::spawn_pipe_loop(agent, BufReader::new(input_reader), output_writer);
+    let (input_reader, mut input_writer) = os_pipe::pipe().expect("os pipe");
+    let (output_reader, output_writer) = os_pipe::pipe().expect("os pipe");
+    let mut agent_loop =
+        common::spawn_pipe_loop(agent, BufReader::new(input_reader), output_writer);
     let (event_tx, event_rx) = std::sync::mpsc::channel();
     thread::spawn(move || {
         for line in BufReader::new(output_reader).lines().map_while(Result::ok) {
@@ -395,7 +396,7 @@ fn run_case(
 #[test]
 fn skill_activation_reaches_followup_round_and_next_user_turn() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempfile::tempdir().expect("tempdir");
     let skill_dir = temp.path().join(".agents/skills/sticky-skill");
     std::fs::create_dir_all(&skill_dir).unwrap();
     std::fs::write(
@@ -466,7 +467,7 @@ fn skill_activation_reaches_followup_round_and_next_user_turn() {
 #[test]
 fn llm_approval_resumes_original_turn_once() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempfile::tempdir().expect("tempdir");
     let path = temp.path().join("input.txt");
     std::fs::write(&path, "hello\n").unwrap();
     let call_path = path.clone();
@@ -512,7 +513,7 @@ fn llm_approval_resumes_original_turn_once() {
 #[test]
 fn llm_rejection_resumes_with_original_failure() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempfile::tempdir().expect("tempdir");
     let path = temp.path().join("input.txt");
     std::fs::write(&path, "hello\n").unwrap();
     run_case(
@@ -544,7 +545,7 @@ fn llm_rejection_resumes_with_original_failure() {
 #[test]
 fn llm_multiple_pending_waits_for_every_response() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempfile::tempdir().expect("tempdir");
     let first = temp.path().join("first.txt");
     let second = temp.path().join("second.txt");
     std::fs::write(&first, "one\n").unwrap();
@@ -577,7 +578,7 @@ fn llm_multiple_pending_waits_for_every_response() {
 #[test]
 fn llm_four_pending_execs_defer_execution_until_all_resolved() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempfile::tempdir().expect("tempdir");
     let markers = (1..=4)
         .map(|index| temp.path().join(format!("exec-{index}.txt")))
         .collect::<Vec<_>>();
@@ -642,7 +643,7 @@ fn llm_four_pending_execs_defer_execution_until_all_resolved() {
 #[test]
 fn llm_mixed_auto_and_pending_emits_one_unified_result() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempfile::tempdir().expect("tempdir");
     let input = temp.path().join("input.txt");
     let output = temp.path().join("output.txt");
     std::fs::write(&input, "hello\n").unwrap();
@@ -680,7 +681,7 @@ fn llm_mixed_auto_and_pending_emits_one_unified_result() {
 #[test]
 fn llm_session_switch_invalidates_suspended_turn() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempfile::tempdir().expect("tempdir");
     let output = temp.path().join("must-not-exist.txt");
     let stale_output = output.clone();
     run_case(
@@ -731,7 +732,7 @@ fn llm_approval_forwards_exec_via_http_backend() {
     // serve 位置（本地/ WSL）不影响本断言（审批在 worker 进程内，Http backend 只转发）；
     // WSL 的路径桥接由 PLAN-WSL2-PATH-BRIDGE 的端到端单独验证。
     let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempfile::tempdir().expect("tempdir");
     let marker = temp.path().join("http-exec.txt");
     let expected_marker = marker.clone();
     let calls = tool_round(&[("http-exec", "exec", marker_exec_args(&marker))]);

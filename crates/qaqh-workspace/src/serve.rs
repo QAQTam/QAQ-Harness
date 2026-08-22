@@ -101,7 +101,8 @@ fn json_response(
     let body = serde_json::to_vec(payload).unwrap_or_else(|_| b"{}".to_vec());
     let len = body.len();
     let headers = vec![
-        tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
+        tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+            .expect("static header is valid"),
     ];
     tiny_http::Response::new(status, headers, std::io::Cursor::new(body), Some(len), None)
 }
@@ -114,7 +115,7 @@ fn text_response(
     let len = body.len();
     let headers = vec![
         tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/plain; charset=utf-8"[..])
-            .unwrap(),
+            .expect("static header is valid"),
     ];
     tiny_http::Response::new(status, headers, std::io::Cursor::new(body), Some(len), None)
 }

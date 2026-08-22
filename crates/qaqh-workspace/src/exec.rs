@@ -531,18 +531,24 @@ fn token_truncate(text: &str, max_tokens: u32) -> String {
         let end = find_token_boundary(text, max_tokens);
         format!(
             "{}\n...[TRUNCATED: {}/{} tokens. Call exec again with narrower argv or a filtering command.]",
-            &text[..end],
+            text.get(..end).expect("token boundary is a char boundary"),
             max_tokens,
             total
         )
     } else {
-        let tail = &text[tail_start..];
+        let tail = text
+            .get(tail_start..)
+            .expect("token boundary is a char boundary");
         format!(
             "{}\n\n...[TRUNCATED: {}/{} tokens, {} lines dropped. Call exec again with narrower argv or a filtering command.]\n\n{}",
-            &text[..head_end],
+            text.get(..head_end)
+                .expect("token boundary is a char boundary"),
             max_tokens,
             total,
-            text[head_end..tail_start].lines().count(),
+            text.get(head_end..tail_start)
+                .expect("token boundaries are char boundaries")
+                .lines()
+                .count(),
             tail.trim_start(),
         )
     }

@@ -156,25 +156,26 @@ impl ToolManager {
         progress_tx: Option<crate::ExecProgressSender>,
     ) -> Result<PreparedCall, ToolExecReport> {
         if let Some(ref allowed) = self.allowed
-            && !allowed.contains(&name.to_string()) {
-                let msg = format!(
-                    "[ERROR] Tool '{}' is not in the allowed list for this subagent. Allowed tools: [{}]",
-                    name,
-                    allowed.join(", ")
-                );
-                return Err(ToolExecReport {
+            && !allowed.contains(&name.to_string())
+        {
+            let msg = format!(
+                "[ERROR] Tool '{}' is not in the allowed list for this subagent. Allowed tools: [{}]",
+                name,
+                allowed.join(", ")
+            );
+            return Err(ToolExecReport {
+                success: false,
+                content: msg.clone(),
+                files_affected: Vec::new(),
+                meta: ToolExecMeta {
+                    name: name.to_string(),
+                    elapsed_ms: 0,
+                    output_size: msg.len(),
                     success: false,
-                    content: msg.clone(),
-                    files_affected: Vec::new(),
-                    meta: ToolExecMeta {
-                        name: name.to_string(),
-                        elapsed_ms: 0,
-                        output_size: msg.len(),
-                        success: false,
-                        args_summary: String::new(),
-                    },
-                });
-            }
+                    args_summary: String::new(),
+                },
+            });
+        }
 
         let (handler, placement) = match self.handlers.get(name) {
             Some(handler) => (
@@ -411,7 +412,7 @@ fn audit_args_summary(_tool: &str, args: &serde_json::Value) -> String {
     let s = parts.join(", ");
     if s.len() > 80 {
         let end = s.floor_char_boundary(77);
-        format!("{}…", &s[..end])
+        format!("{}…", s.get(..end).unwrap_or(&s))
     } else {
         s
     }

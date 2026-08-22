@@ -544,7 +544,11 @@ fn serialize_messages(head: &[&qaqh_types::Message], kept: &[&qaqh_types::Messag
                 qaqh_types::ContentBlock::ToolUse { name, input, .. } => {
                     let args = serde_json::to_string(input).unwrap_or_default();
                     let end = args.floor_char_boundary(args.len().min(120));
-                    Some(format!("[{role} tool call]: {}({})", name, &args[..end]))
+                    Some(format!(
+                        "[{role} tool call]: {}({})",
+                        name,
+                        args.get(..end).unwrap_or(&args)
+                    ))
                 }
                 qaqh_types::ContentBlock::WebSearchCall { action, .. } => {
                     let action_str = serde_json::to_string(action).unwrap_or_default();
@@ -560,7 +564,10 @@ fn serialize_messages(head: &[&qaqh_types::Message], kept: &[&qaqh_types::Messag
                         .collect::<Vec<_>>()
                         .join(" | ");
                     let end = compact.floor_char_boundary(compact.len().min(600));
-                    Some(format!("[Tool result]: {}", &compact[..end]))
+                    Some(format!(
+                        "[Tool result]: {}",
+                        compact.get(..end).unwrap_or(&compact)
+                    ))
                 }
                 qaqh_types::ContentBlock::Image { .. } => {
                     Some(format!("[{role}]: [Image attached]"))
@@ -584,7 +591,10 @@ fn serialize_messages(head: &[&qaqh_types::Message], kept: &[&qaqh_types::Messag
                     .collect::<Vec<_>>()
                     .join(" | ");
                 let end = compact.floor_char_boundary(compact.len().min(400));
-                out.push(format!("[Tool result (recent)]: {}", &compact[..end]));
+                out.push(format!(
+                    "[Tool result (recent)]: {}",
+                    compact.get(..end).unwrap_or(&compact)
+                ));
             }
         }
     }

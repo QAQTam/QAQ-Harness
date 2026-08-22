@@ -78,7 +78,8 @@ pub fn list_branches(workspace: &str) -> Result<String, String> {
     let repo = open_repo(workspace)?;
     let head_name = repo
         .head()
-        .ok().map(|h| h.shorthand().ok().unwrap_or("HEAD").to_string());
+        .ok()
+        .map(|h| h.shorthand().ok().unwrap_or("HEAD").to_string());
 
     let mut branches: Vec<serde_json::Value> = Vec::new();
     if let Ok(iter) = repo.branches(Some(git2::BranchType::Local)) {
@@ -129,14 +130,14 @@ pub fn switch_branch(workspace: &str, branch: &str, stash: bool) -> Result<Strin
             .map_err(|e| format!("set HEAD: {e}"))?;
     }
 
-    if stashed
-        && let Err(e) = repo.stash_pop(0, None) {
-            log::warn!("stash pop failed (likely conflict, stash kept): {e}");
-        }
+    if stashed && let Err(e) = repo.stash_pop(0, None) {
+        log::warn!("stash pop failed (likely conflict, stash kept): {e}");
+    }
 
     let new_head = repo
         .head()
-        .ok().map(|h| h.shorthand().unwrap_or("HEAD").to_string())
+        .ok()
+        .map(|h| h.shorthand().unwrap_or("HEAD").to_string())
         .unwrap_or_default();
     Ok(new_head)
 }

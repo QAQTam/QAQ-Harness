@@ -15,10 +15,8 @@ use super::types::*;
 use crate::ringing_v1::turn_lap::admit as turn_admit;
 use crate::ringing_v1::turn_lap::backfill as turn_backfill;
 use crate::ringing_v1::turn_lap::gate::{
-    GateRequestResult, abort_running_turn, gate_request, provider_for,
-    seal_timeline_terminal_round,
+    GateRequestResult, abort_running_turn, gate_request, provider_for, seal_timeline_terminal_round,
 };
-
 
 /// Why the turn is being resumed.
 pub enum ResumeReason {
@@ -800,7 +798,11 @@ impl TurnEngine {
                 } else {
                     log::info!(
                         "[TURN] auto-compact preflight: source={}, decision={}, raw={}, predicted={}, upper={}/{limit} tokens ({} samples, {:.0}% threshold)",
-                        if api_context_tokens.is_some() { "api" } else { "estimate" },
+                        if api_context_tokens.is_some() {
+                            "api"
+                        } else {
+                            "estimate"
+                        },
                         decision_tokens,
                         request_estimate.raw_tokens,
                         request_estimate.predicted_tokens,
@@ -856,11 +858,10 @@ impl TurnEngine {
         // Rebuild provider from current config（gate_lap 准备逻辑，见 turn_lap::gate）
         let provider = provider_for(ctx);
 
-        loop {
+        // 单回合执行块：所有路径均 return（clippy::never_loop），无需循环。
+        {
             // ── Interrupt check ──
-            if ctx.cancel.is_set()
-                || qaqh_workspace::is_cancel()
-            {
+            if ctx.cancel.is_set() || qaqh_workspace::is_cancel() {
                 ctx.emitter
                     .emit_timeline(qaqh_domain::TimelineIntent::TurnSealed {
                         turn_id: turn_id.clone(),
@@ -903,7 +904,6 @@ impl TurnEngine {
                 round_num,
                 last_usage,
             );
-
 
             if ctx.cancel.is_set() {
                 seal_timeline_terminal_round(
@@ -1120,10 +1120,7 @@ mod tests {
         );
 
         // The tool block seals the first stream block before the next one opens.
-        reset_stream_block_checkpoint(
-            &mut stream_block_id,
-            &mut stream_block_text,
-        );
+        reset_stream_block_checkpoint(&mut stream_block_id, &mut stream_block_text);
 
         checkpoint_tokens = CHECKPOINT_TOKEN_INTERVAL - 1;
         let second_round = format!("{first_delta}{second_delta}");

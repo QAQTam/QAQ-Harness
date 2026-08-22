@@ -67,9 +67,7 @@ use super::paced_emitter::PacedEmitter;
 use super::types::*;
 use crate::state::agent::AgentState;
 
-pub fn ringing_command_is_interrupt(
-    env: &qaqh_ringing::RingingWorkerCommandEnvelope,
-) -> bool {
+pub fn ringing_command_is_interrupt(env: &qaqh_ringing::RingingWorkerCommandEnvelope) -> bool {
     matches!(
         &env.command,
         qaqh_ringing::RingingCommand::Control(
@@ -612,10 +610,12 @@ impl Loop {
                 // 进入该注入命令的 causation 作用域：开 turn 期间发射的事件
                 // 必须归属到注入者的 command_id（与 dispatch_deferred_ringing /
                 // 其它单命令派发路径一致）。
-                let _scope = self.paced_emitter.enter_causation(Some(command_id.as_str()));
-                let outcome = self
-                    .input
-                    .handle_system_input(&mut ctx, &text, Some(command_id.as_str()));
+                let _scope = self
+                    .paced_emitter
+                    .enter_causation(Some(command_id.as_str()));
+                let outcome =
+                    self.input
+                        .handle_system_input(&mut ctx, &text, Some(command_id.as_str()));
                 drop(ctx);
                 Some(outcome)
             }
@@ -767,7 +767,8 @@ impl Loop {
                 Ok(f) => {
                     log::info!(
                         "[AGENT] received worker command frame: seed={} cmd={}",
-                        f.frame.seed, f.frame.command_id
+                        f.frame.seed,
+                        f.frame.command_id
                     );
                     f
                 }
@@ -1014,10 +1015,12 @@ impl Loop {
             };
             // 与 `inject()` idle 路径一致：注入开 turn 期间的事件归属到
             // 注入者的 command_id（causation 作用域）。
-            let _scope = self.paced_emitter.enter_causation(Some(command_id.as_str()));
-            let outcome = self
-                .input
-                .handle_system_input(&mut ctx, &text, Some(command_id.as_str()));
+            let _scope = self
+                .paced_emitter
+                .enter_causation(Some(command_id.as_str()));
+            let outcome =
+                self.input
+                    .handle_system_input(&mut ctx, &text, Some(command_id.as_str()));
             drop(ctx);
             self.apply_outcome(outcome);
         }

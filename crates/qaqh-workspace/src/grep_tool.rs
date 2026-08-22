@@ -198,7 +198,7 @@ fn exec_grep(args: &serde_json::Value) -> ToolResult {
     let neg_matchers: Vec<globset::GlobMatcher> = neg_globs
         .iter()
         .filter_map(|g| {
-            globset::GlobBuilder::new(&g[1..])
+            globset::GlobBuilder::new(g.strip_prefix('!').unwrap_or(g))
                 .literal_separator(true)
                 .build()
                 .ok()

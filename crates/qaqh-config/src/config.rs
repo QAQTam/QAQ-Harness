@@ -458,7 +458,8 @@ impl Config {
                     && !k.is_empty()
                 {
                     if k == CONFIG_MARKER {
-                        cfg.subagent.api_key = secrets.load(SecretSlot::Subagent).unwrap_or_default();
+                        cfg.subagent.api_key =
+                            secrets.load(SecretSlot::Subagent).unwrap_or_default();
                     } else {
                         match secrets.set(SecretSlot::Subagent, &k) {
                             Ok(()) => needs_rewrite = true,
@@ -516,7 +517,8 @@ impl Config {
                 }
                 if let Some(key) = mm.api_key.clone() {
                     if key == CONFIG_MARKER {
-                        cfg.multimodal.api_key = secrets.load(SecretSlot::Multimodal).unwrap_or_default();
+                        cfg.multimodal.api_key =
+                            secrets.load(SecretSlot::Multimodal).unwrap_or_default();
                     } else {
                         match secrets.set(SecretSlot::Multimodal, &key) {
                             Ok(()) => needs_rewrite = true,
@@ -566,7 +568,8 @@ impl Config {
             if needs_rewrite {
                 if let Some(mut fresh) = store.load() {
                     let is_plain = |k: &Option<String>| {
-                        k.as_deref().is_some_and(|v| !v.is_empty() && v != CONFIG_MARKER)
+                        k.as_deref()
+                            .is_some_and(|v| !v.is_empty() && v != CONFIG_MARKER)
                     };
                     if is_plain(&fresh.api_key) {
                         fresh.api_key = Some(CONFIG_MARKER.to_owned());
@@ -855,9 +858,15 @@ mod secret_tests {
         // 运行时拿到明文（内存），secrets 已迁移，config.toml 不再有明文。
         assert_eq!(cfg.api_key, "sk-legacy-secret");
         assert!(secrets.has(SecretSlot::Main));
-        assert_eq!(secrets.load(SecretSlot::Main).as_deref(), Some("sk-legacy-secret"));
+        assert_eq!(
+            secrets.load(SecretSlot::Main).as_deref(),
+            Some("sk-legacy-secret")
+        );
         let on_disk = std::fs::read_to_string(&config_path).expect("read back");
-        assert!(!on_disk.contains("sk-legacy-secret"), "plaintext must not remain");
+        assert!(
+            !on_disk.contains("sk-legacy-secret"),
+            "plaintext must not remain"
+        );
         assert!(on_disk.contains("api_key = \"set\""), "marker written back");
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -872,7 +881,9 @@ mod secret_tests {
         let secrets_path = dir.join("secrets.toml");
         std::fs::write(&config_path, "api_key = \"set\"\n").expect("write marker config");
         let secrets = SecretStore::new(secrets_path);
-        secrets.set(SecretSlot::Main, "sk-from-store").expect("set secret");
+        secrets
+            .set(SecretSlot::Main, "sk-from-store")
+            .expect("set secret");
 
         let store = ConfigStore::new(config_path);
         let cfg = Config::load_from_paths_with(store, secrets).expect("load");
@@ -896,7 +907,10 @@ mod secret_tests {
         cfg.save_with(&store, &secrets).expect("save");
 
         let on_disk = std::fs::read_to_string(&config_path).expect("read back");
-        assert!(!on_disk.contains("sk-new-secret"), "plaintext must not be written");
+        assert!(
+            !on_disk.contains("sk-new-secret"),
+            "plaintext must not be written"
+        );
         assert!(on_disk.contains("api_key = \"set\""));
         assert_eq!(
             secrets.load(SecretSlot::Main).as_deref(),

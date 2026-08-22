@@ -51,17 +51,21 @@ pub fn check(path: &str, content: &str) -> Option<String> {
     for e in cache.iter() {
         if e.path == path {
             if e.hash == hash {
-                log::info!("[CACHE] file_read hit: {} (hash={})", path, &hash[..8]);
+                log::info!(
+                    "[CACHE] file_read hit: {} (hash={})",
+                    path,
+                    short_hash(&hash)
+                );
                 return Some(
                     serde_json::json!({
                         "timeis": crate::now_utc8(),
                         "status": "ok",
                         "path": path,
                         "hash": crate::file_shared::content_hash(content),
-                        "cache_hash": &hash[..8],
+                        "cache_hash": short_hash(&hash),
                         "total_lines": e.line_count,
                         "unchanged": true,
-                        "content": format!("{} unchanged (hash={})", path, &hash[..8]),
+                        "content": format!("{} unchanged (hash={})", path, short_hash(&hash)),
                     })
                     .to_string(),
                 );
@@ -75,7 +79,7 @@ pub fn check(path: &str, content: &str) -> Option<String> {
 /// Store a successful file_read result for future cache hits.
 pub fn store(path: &str, content: &str, line_count: usize) {
     let hash = hash_content(content);
-    let hash_short = hash[..8].to_string();
+    let hash_short = short_hash(&hash).to_string();
     let mut cache = cache().lock().unwrap_or_else(|e| e.into_inner());
     cache.retain(|e| e.path != path);
     if cache.len() >= MAX_CACHE {
@@ -103,6 +107,11 @@ pub fn invalidate(path: &str) {
     if cache.len() < before {
         log::info!("[CACHE] invalidated: {}", path);
     }
+}
+
+/// 16 位小写 hex 的前 8 位（hex 为 ASCII，切片恒为 char boundary）。
+fn short_hash(h: &str) -> &str {
+    h.get(..8).unwrap_or(h)
 }
 
 fn hash_content(s: &str) -> String {

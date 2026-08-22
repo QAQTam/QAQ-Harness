@@ -68,10 +68,11 @@ pub(crate) fn compute(
     // (git2::Repository::open is a cheap metadata op — no diff, no
     // pathspec bug since we only check HEAD tree existence).
     if let (Some(path), Some(d)) = (file_path, &mut delta)
-        && let Some(git) = git_file_meta(path) {
-            d.files_created = git.files_created;
-            d.files_deleted = git.files_deleted;
-        }
+        && let Some(git) = git_file_meta(path)
+    {
+        d.files_created = git.files_created;
+        d.files_deleted = git.files_deleted;
+    }
 
     delta
 }

@@ -57,10 +57,9 @@ pub(super) fn exec_write_file(args: &serde_json::Value) -> ToolResult {
     let append = args.opt_bool("append").unwrap_or(false);
     let dry_run = args.opt_bool("dry_run").unwrap_or(false);
     let expected_hash = args.s("expected_hash");
-    if !dry_run
-        && let Some(parent) = std::path::Path::new(&path).parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
+    if !dry_run && let Some(parent) = std::path::Path::new(&path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     let line_count = content.lines().count();
 
     // Read old content if file exists (for diff stats / dry-run preview)
@@ -77,10 +76,11 @@ pub(super) fn exec_write_file(args: &serde_json::Value) -> ToolResult {
     // 用最近一次 read/edit/write 记录的指纹校验。失配 = 文件在工具外被修改，
     // 覆盖会丢掉外部改动 → 拒绝并提示重新 read（read 后账本自动刷新）。
     if expected_hash.is_empty()
-        && let Some(known) = crate::file_state::last_hash(&path) {
-            let disk_lf_hash = crate::file_shared::content_hash(&normalized_old);
-            if known != disk_lf_hash {
-                return ToolResult::error(
+        && let Some(known) = crate::file_state::last_hash(&path)
+    {
+        let disk_lf_hash = crate::file_shared::content_hash(&normalized_old);
+        if known != disk_lf_hash {
+            return ToolResult::error(
                     serde_json::json!({
                         "timeis": crate::now_utc8(), "status": "error", "code": "STALE_FILE", "path": path,
                         "message": "File was modified outside the tool since the last read/edit",
@@ -89,8 +89,8 @@ pub(super) fn exec_write_file(args: &serde_json::Value) -> ToolResult {
                     })
                     .to_string(),
                 );
-            }
         }
+    }
 
     // 统一在 LF 视图计算 diff（dry_run 文本预览 + 展示平面共用，不重复计算）。
     let (old_norm, _) = normalize_newlines(old_content.as_deref().unwrap_or(""));

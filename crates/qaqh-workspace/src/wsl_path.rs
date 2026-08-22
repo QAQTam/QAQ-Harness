@@ -42,7 +42,8 @@ pub fn windows_to_mnt(path: &str) -> Option<String> {
     // 盘符前缀：单个字母 + `:`（`F:`），后跟分隔符或路径体。
     if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
         let drive = (bytes[0] as char).to_ascii_lowercase();
-        let rest = &p[2..];
+        // 前两字节已验明为 ASCII 盘符前缀，split_at 恒安全。
+        let rest = &p.split_at(2).1;
         let mut out = format!("/mnt/{drive}");
         for seg in rest.split(['\\', '/']) {
             if !seg.is_empty() {

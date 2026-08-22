@@ -6,7 +6,6 @@
 
 use std::path::{Path, PathBuf};
 
-
 /// Return the `.deepx/` directory for the current workspace.
 ///
 /// Priority:

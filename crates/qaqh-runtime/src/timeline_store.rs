@@ -146,11 +146,7 @@ impl TimelineStore {
     /// watermark 的条目（hub 已用 `replay_since(seed, watermark)` 过滤，此处再防御
     /// 一次，防止因调用方状态滞后把已落盘条目重复写入）。追加后更新该 seed 的
     /// watermark，使 `persist_timeline_sync` 与异步 checkpoint 线程不会重复写。
-    pub fn append_journal(
-        &mut self,
-        seed: &str,
-        entries: &[TimelineEntry],
-    ) -> std::io::Result<()> {
+    pub fn append_journal(&mut self, seed: &str, entries: &[TimelineEntry]) -> std::io::Result<()> {
         if entries.is_empty() {
             return Ok(());
         }
@@ -171,9 +167,12 @@ impl TimelineStore {
             .append(true)
             .open(&path)?;
         for entry in &new {
-            write_journal_line(&mut file, &TimelineJournalOp::Append {
-                entry: (*entry).clone(),
-            })?;
+            write_journal_line(
+                &mut file,
+                &TimelineJournalOp::Append {
+                    entry: (*entry).clone(),
+                },
+            )?;
         }
         file.flush()?;
         let max = new
@@ -376,9 +375,7 @@ mod tests {
 
     fn native_entries() -> (TimelineSnapshot, Vec<TimelineEntry>) {
         let mut appender = crate::TimelineAppender::new();
-        appender
-            .open_turn("s", "t", "question")
-            .unwrap();
+        appender.open_turn("s", "t", "question").unwrap();
         appender
             .open_block(
                 "s",
@@ -422,7 +419,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(appends, entries, "journal reload preserves order and no duplicates");
+        assert_eq!(
+            appends, entries,
+            "journal reload preserves order and no duplicates"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -430,11 +430,13 @@ mod tests {
     fn timeline_journal_backfill_is_idempotent() {
         let root = temp_root("backfill-idempotent");
         let (snapshot, entries) = native_entries();
-        let ops: Vec<TimelineJournalOp> = std::iter::once(TimelineJournalOp::Snapshot {
-            snapshot,
-        })
-        .chain(entries.into_iter().map(|entry| TimelineJournalOp::Append { entry }))
-        .collect();
+        let ops: Vec<TimelineJournalOp> = std::iter::once(TimelineJournalOp::Snapshot { snapshot })
+            .chain(
+                entries
+                    .into_iter()
+                    .map(|entry| TimelineJournalOp::Append { entry }),
+            )
+            .collect();
         {
             let mut store = TimelineStore::new(&root).unwrap();
             store.backfill_journal("s", &ops).unwrap();

@@ -78,12 +78,13 @@ pub fn peek_image(seed: &str, index: usize) -> Option<(String, String)> {
 pub fn consume_image(seed: &str, index: usize) {
     if let Ok(mut reg) = IMAGE_REGISTRY.lock()
         && let Some(entries) = reg.get_mut(seed)
-            && index < entries.len() {
-                entries.remove(index);
-                if entries.is_empty() {
-                    reg.remove(seed);
-                }
-            }
+        && index < entries.len()
+    {
+        entries.remove(index);
+        if entries.is_empty() {
+            reg.remove(seed);
+        }
+    }
 }
 
 // ── Backend selector ──────────────────────────────────────────────────
@@ -251,7 +252,11 @@ pub(super) fn handle_image_query(ctx: ToolCallCtx) -> ToolResult {
                     .and_then(|m| m.as_str())
                     .map(|s| s.to_string())
             })
-            .unwrap_or_else(|| body_str[..body_str.len().min(500)].to_string());
+            .unwrap_or_else(|| {
+                body_str
+                    .floor_char_boundary(body_str.len().min(500))
+                    .to_string()
+            });
         return ToolResult::error(format!(
             "image: API returned HTTP {}: {err_msg}",
             status.as_u16(),
@@ -265,7 +270,7 @@ pub(super) fn handle_image_query(ctx: ToolCallCtx) -> ToolResult {
             let body_str = String::from_utf8_lossy(&body_bytes);
             return ToolResult::error(format!(
                 "image: failed to parse JSON response: {e}. Body: {}",
-                &body_str[..body_str.len().min(500)]
+                body_str.floor_char_boundary(body_str.len().min(500))
             ));
         }
     };

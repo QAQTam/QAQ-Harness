@@ -86,7 +86,7 @@ impl MockServer {
                     }
                     request
                         .respond(Response::from_string(sse).with_header(
-                            "Content-Type: text/event-stream".parse::<Header>().unwrap(),
+                            "Content-Type: text/event-stream".parse::<Header>().expect("valid sse header"),
                         ))
                         .expect("respond");
                 }
@@ -153,8 +153,8 @@ fn send_cmd_with_id(
     command: RingingCommand,
 ) {
     let env = RingingWorkerCommandEnvelope::new(seed, command_id, command);
-    writeln!(w, "{}", serde_json::to_string(&env).unwrap()).unwrap();
-    w.flush().unwrap();
+    writeln!(w, "{}", serde_json::to_string(&env).expect("serialize envelope")).expect("write frame");
+    w.flush().expect("flush pipe");
 }
 
 fn cmd_session_create() -> RingingCommand {
@@ -230,7 +230,7 @@ fn spawn_event_reader(oread: os_pipe::PipeReader) -> std::sync::mpsc::Receiver<R
 #[test]
 fn create_session_emits_session_state() {
     let _test_lock = SESSION_TEST_LOCK.lock().unwrap();
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path().join("ws");
     std::fs::create_dir(&ws).unwrap();
     qaqh_workspace::set_workspace(&ws.to_string_lossy());
@@ -239,8 +239,8 @@ fn create_session_emits_session_state() {
     let mut agent = AgentState::init("test");
     agent.ephemeral = true;
 
-    let (ir, mut iw) = os_pipe::pipe().unwrap();
-    let (oread, owrite) = os_pipe::pipe().unwrap();
+    let (ir, mut iw) = os_pipe::pipe().expect("os pipe");
+    let (oread, owrite) = os_pipe::pipe().expect("os pipe");
     let mut lp = common::spawn_pipe_loop(agent, BufReader::new(ir), owrite);
     let rx = spawn_event_reader(oread);
 
@@ -270,7 +270,7 @@ fn send_message_triggers_turn_lifecycle() {
     let _test_lock = SESSION_TEST_LOCK.lock().unwrap();
     let mock = MockServer::single_response(text_round("Hello from QAQ-Harness"));
 
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path().join("ws");
     std::fs::create_dir(&ws).unwrap();
     qaqh_workspace::set_workspace(&ws.to_string_lossy());
@@ -286,8 +286,8 @@ fn send_message_triggers_turn_lifecycle() {
     agent.config.endpoint.clear();
     agent.config.compliance_enabled = false;
 
-    let (ir, mut iw) = os_pipe::pipe().unwrap();
-    let (oread, owrite) = os_pipe::pipe().unwrap();
+    let (ir, mut iw) = os_pipe::pipe().expect("os pipe");
+    let (oread, owrite) = os_pipe::pipe().expect("os pipe");
     let mut lp = common::spawn_pipe_loop(agent, BufReader::new(ir), owrite);
     let rx = spawn_event_reader(oread);
 
@@ -357,7 +357,7 @@ fn send_message_triggers_turn_lifecycle() {
 #[test]
 fn system_injection_lands_inside_running_turn() {
     let _test_lock = SESSION_TEST_LOCK.lock().unwrap();
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path().join("ws");
     std::fs::create_dir(&ws).unwrap();
     let probe_file = ws.join("probe.txt");
@@ -387,8 +387,8 @@ fn system_injection_lands_inside_running_turn() {
     agent.config.compliance_enabled = false;
     agent.config.permission_level = 4;
 
-    let (ir, mut iw) = os_pipe::pipe().unwrap();
-    let (oread, owrite) = os_pipe::pipe().unwrap();
+    let (ir, mut iw) = os_pipe::pipe().expect("os pipe");
+    let (oread, owrite) = os_pipe::pipe().expect("os pipe");
     let mut lp = common::spawn_pipe_loop(agent, BufReader::new(ir), owrite);
     let rx = spawn_event_reader(oread);
 
@@ -489,7 +489,7 @@ fn system_injection_lands_inside_running_turn() {
 fn ringing_send_is_not_dropped_during_a_session_switch() {
     let _test_lock = SESSION_TEST_LOCK.lock().unwrap();
     let mock = MockServer::single_response(text_round("queued send"));
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path().join("ws");
     std::fs::create_dir(&ws).unwrap();
     qaqh_workspace::set_workspace(&ws.to_string_lossy());
@@ -504,8 +504,8 @@ fn ringing_send_is_not_dropped_during_a_session_switch() {
     agent.config.endpoint.clear();
     agent.config.compliance_enabled = false;
 
-    let (ir, mut iw) = os_pipe::pipe().unwrap();
-    let (oread, owrite) = os_pipe::pipe().unwrap();
+    let (ir, mut iw) = os_pipe::pipe().expect("os pipe");
+    let (oread, owrite) = os_pipe::pipe().expect("os pipe");
     let mut lp = common::spawn_pipe_loop(agent, BufReader::new(ir), owrite);
     let rx = spawn_event_reader(oread);
 

@@ -55,7 +55,11 @@ impl SourceFile {
             };
             preferred_ending.get_or_insert(ending);
             lines.push(SourceLine {
-                text: contents[line_start..cursor].to_string(),
+                // ASCII 换行字节不可能出现在多字节序列内部 → cursor 必为边界。
+                text: contents
+                    .get(line_start..cursor)
+                    .expect("newline byte position is a char boundary")
+                    .to_string(),
                 ending: Some(ending),
             });
             cursor += ending_len;
@@ -64,7 +68,10 @@ impl SourceFile {
 
         if line_start < contents.len() {
             lines.push(SourceLine {
-                text: contents[line_start..].to_string(),
+                text: contents
+                    .get(line_start..)
+                    .expect("post-newline position is a char boundary")
+                    .to_string(),
                 ending: None,
             });
         }

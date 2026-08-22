@@ -15,6 +15,20 @@ pub enum ProcStatus {
     Killed,
 }
 
+/// 字节预算内取尾部，起点前移到 char boundary（子进程输出是任意 UTF-8，
+/// 直接按字节索引切片会在多字节字符中点 panic）。
+fn char_safe_tail(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut start = s.len() - max_bytes;
+    while !s.is_char_boundary(start) {
+        start += 1;
+    }
+    // 循环保证 start 落在边界上；get 仅为了通过 string_slice lint。
+    s.get(start..).unwrap_or(s)
+}
+
 /// One tracked process entry.
 pub struct ProcEntry {
     pub id: u32,
@@ -80,7 +94,7 @@ impl ProcessRegistry {
     pub fn attach_child(id: u32, child: std::process::Child) {
         Self::with(|r| {
             if let Some(entry) = r.entries.get(&id) {
-                *entry.child.lock().unwrap() = Some(child);
+                *entry.child.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
             }
         });
     }
@@ -97,18 +111,19 @@ impl ProcessRegistry {
         Self::with(|r| {
             let entry = r.entries.get(&id)?;
             // 终态缓存：child 句柄已释放，直接返回退出码（不再触碰句柄）
-            match *entry.status.lock().unwrap() {
+            match *entry.status.lock().unwrap_or_else(|e| e.into_inner()) {
                 ProcStatus::Exited(code) => return Some(code),
                 ProcStatus::Killed => return None,
                 ProcStatus::Running => {}
             }
-            let mut child_opt = entry.child.lock().unwrap();
+            let mut child_opt = entry.child.lock().unwrap_or_else(|e| e.into_inner());
             let child = child_opt.as_mut()?;
             match child.try_wait().ok()? {
                 Some(status) => {
                     let code = status.code().unwrap_or(-1);
                     *child_opt = None;
-                    *entry.status.lock().unwrap() = ProcStatus::Exited(code);
+                    *entry.status.lock().unwrap_or_else(|e| e.into_inner()) =
+                        ProcStatus::Exited(code);
                     Some(code)
                 }
                 None => None,
@@ -120,7 +135,10 @@ impl ProcessRegistry {
     pub fn write_to(id: u32, text: &str) -> Result<usize, String> {
         let writer_arc = Self::with(|r| {
             r.entries.get(&id).and_then(|e| {
-                if matches!(*e.status.lock().unwrap(), ProcStatus::Running) {
+                if matches!(
+                    *e.status.lock().unwrap_or_else(|e| e.into_inner()),
+                    ProcStatus::Running
+                ) {
                     Some(e.pty_writer.clone())
                 } else {
                     None
@@ -140,8 +158,8 @@ impl ProcessRegistry {
     pub fn mark_exited(id: u32, code: i32) {
         Self::with(|r| {
             if let Some(entry) = r.entries.get(&id) {
-                *entry.status.lock().unwrap() = ProcStatus::Exited(code);
-                *entry.child.lock().unwrap() = None;
+                *entry.status.lock().unwrap_or_else(|e| e.into_inner()) = ProcStatus::Exited(code);
+                *entry.child.lock().unwrap_or_else(|e| e.into_inner()) = None;
             }
         });
     }
@@ -150,7 +168,7 @@ impl ProcessRegistry {
     pub fn set_answer(id: u32, answer: String) {
         Self::with(|r| {
             if let Some(entry) = r.entries.get(&id) {
-                *entry.answer.lock().unwrap() = Some(answer);
+                *entry.answer.lock().unwrap_or_else(|e| e.into_inner()) = Some(answer);
             }
         });
     }
@@ -159,7 +177,7 @@ impl ProcessRegistry {
     pub fn append_output(id: u32, chunk: &str) {
         Self::with(|r| {
             if let Some(entry) = r.entries.get(&id) {
-                let mut out = entry.output.lock().unwrap();
+                let mut out = entry.output.lock().unwrap_or_else(|e| e.into_inner());
                 out.push_str(chunk);
                 if out.len() > 5000 {
                     let drain = out.len() - 4000;
@@ -173,7 +191,7 @@ impl ProcessRegistry {
     pub fn append_stderr(id: u32, chunk: &str) {
         Self::with(|r| {
             if let Some(entry) = r.entries.get(&id) {
-                let mut err = entry.stderr.lock().unwrap();
+                let mut err = entry.stderr.lock().unwrap_or_else(|e| e.into_inner());
                 err.push_str(chunk);
                 if err.len() > 3000 {
                     let drain = err.len() - 2000;
@@ -187,10 +205,26 @@ impl ProcessRegistry {
     pub fn get_info(id: u32) -> Option<serde_json::Value> {
         Self::with(|r| {
             let entry = r.entries.get(&id)?;
-            let status = entry.status.lock().unwrap().clone();
-            let output = entry.output.lock().unwrap().clone();
-            let stderr = entry.stderr.lock().unwrap().clone();
-            let answer = entry.answer.lock().unwrap().clone();
+            let status = entry
+                .status
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            let output = entry
+                .output
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            let stderr = entry
+                .stderr
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            let answer = entry
+                .answer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
             let elapsed = entry.started.elapsed().as_secs();
 
             let mut info = match status {
@@ -208,18 +242,19 @@ impl ProcessRegistry {
                     "id": id, "name": entry.name, "status": "running",
                     "elapsed_secs": elapsed,
                     "output_tail": if output.len() > 500 {
-                        format!("...({} total)\n{}", output.len(), &output[output.len().saturating_sub(500)..])
+                        format!("...({} total)\n{}", output.len(), char_safe_tail(&output, 500))
                     } else { output.clone() },
                     "stderr_tail": if stderr.len() > 300 {
-                        format!("...(stderr {} total)\n{}", stderr.len(), &stderr[stderr.len().saturating_sub(300)..])
+                        format!("...(stderr {} total)\n{}", stderr.len(), char_safe_tail(&stderr, 300))
                     } else { stderr.clone() },
                     "output_size": output.len(),
                 }),
             };
             if let Some(ans) = answer
-                && let serde_json::Value::Object(ref mut map) = info {
-                    map.insert("answer".to_string(), serde_json::json!(ans));
-                }
+                && let serde_json::Value::Object(ref mut map) = info
+            {
+                map.insert("answer".to_string(), serde_json::json!(ans));
+            }
             Some(info)
         })
     }
@@ -228,7 +263,7 @@ impl ProcessRegistry {
     pub fn kill(id: u32) -> bool {
         Self::with(|r| {
             if let Some(entry) = r.entries.get(&id) {
-                let mut child_opt = entry.child.lock().unwrap();
+                let mut child_opt = entry.child.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(mut c) = child_opt.take() {
                     #[cfg(windows)]
                     {
@@ -244,7 +279,7 @@ impl ProcessRegistry {
                         let _ = c.wait();
                     }
                 }
-                *entry.status.lock().unwrap() = ProcStatus::Killed;
+                *entry.status.lock().unwrap_or_else(|e| e.into_inner()) = ProcStatus::Killed;
                 true
             } else {
                 false
@@ -270,7 +305,7 @@ impl ProcessRegistry {
                     .get(&id)
                     .map(|e| {
                         matches!(
-                            *e.status.lock().unwrap(),
+                            *e.status.lock().unwrap_or_else(|e| e.into_inner()),
                             ProcStatus::Exited(_) | ProcStatus::Killed
                         )
                     })
@@ -282,5 +317,4 @@ impl ProcessRegistry {
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
     }
-
 }

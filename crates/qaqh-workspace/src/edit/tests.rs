@@ -1,5 +1,5 @@
-use serde_json::{json, Value};
 use super::*;
+use serde_json::{Value, json};
 
 fn rp(old: &str, new: &str) -> Hunk {
     Hunk::Replace {
@@ -1492,8 +1492,7 @@ fn hint_line_window_still_ambiguous_keeps_error() {
 fn hint_line_miss_keeps_original_error() {
     // hint 偏太远（窗口内无 x）→ 保留原 Ambiguous（不误改）。
     // x 位于 L2 与 L25；hint=13 的窗口 [3,23) 不含任何 x。
-    let content =
-        "a\nx\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\nt\nu\nv\nw\nx\ny\n";
+    let content = "a\nx\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\nt\nu\nv\nw\nx\ny\n";
     let out = edit(content, &[rp_hint("x", "X", 13)]);
     assert!(out.edited.is_none());
     assert_eq!(err_code(&out), "AMBIGUOUS_MATCH");

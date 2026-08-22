@@ -185,7 +185,10 @@ default_tools = ["file", "exec"]
     assert_eq!(saved.max_tokens, 123456);
     let reloaded = qaqh_config::Config::load().expect("reload ok");
     assert_eq!(reloaded.max_tokens, 123456);
-    assert_eq!(reloaded.base_url, CUSTOM_URL, "unrelated fields must survive update");
+    assert_eq!(
+        reloaded.base_url, CUSTOM_URL,
+        "unrelated fields must survive update"
+    );
     assert_eq!(reloaded.permission_level, 4);
 
     // 8) update 的 mutator 返回 Err 时不得写盘（事务语义）。

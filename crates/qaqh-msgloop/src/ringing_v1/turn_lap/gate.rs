@@ -158,8 +158,10 @@ pub(crate) fn debug_assert_gate_invariants(result: &GateRequestResult, round_num
         );
     }
     if let Some(arr) = result.tool_calls_raw.as_array() {
-        let parsed_ids: std::collections::HashSet<&str> =
-            arr.iter().filter_map(|v| v.get("id").and_then(|x| x.as_str())).collect();
+        let parsed_ids: std::collections::HashSet<&str> = arr
+            .iter()
+            .filter_map(|v| v.get("id").and_then(|x| x.as_str()))
+            .collect();
         for id in &result.timeline_tools_open {
             debug_assert!(
                 parsed_ids.contains(id.as_str()) || result.done_seen,
@@ -496,16 +498,8 @@ pub(crate) fn gate_request(
                 args_so_far,
             } => {
                 let block_id = format!("tool:{id}");
-                seal_active_stream_block(
-                    ctx,
-                    turn_id,
-                    round_num,
-                    &mut active_stream_block,
-                );
-                reset_stream_block_checkpoint(
-                    &mut stream_block_id,
-                    &mut stream_block_text,
-                );
+                seal_active_stream_block(ctx, turn_id, round_num, &mut active_stream_block);
+                reset_stream_block_checkpoint(&mut stream_block_id, &mut stream_block_text);
                 if timeline_tools_open.insert(id.clone()) {
                     ctx.emitter
                         .emit_timeline(qaqh_domain::TimelineIntent::BlockOpened {
@@ -561,11 +555,9 @@ pub(crate) fn gate_request(
             qaqh_gate::StreamEvent::UsageUpdate(u) => {
                 last_usage = Some(u.clone());
                 current_request_usage = Some(u.clone());
-                ctx.agent.session.tokens =
-                    ctx.agent.session.tokens.max(u.total_tokens as u64);
+                ctx.agent.session.tokens = ctx.agent.session.tokens.max(u.total_tokens as u64);
                 // A3：节流 ~1s（replaceable 覆盖显示）；终值由 Done 分支补发。
-                let due = last_usage_emit_at
-                    .map_or(true, |at| at.elapsed() >= USAGE_EMIT_INTERVAL);
+                let due = last_usage_emit_at.map_or(true, |at| at.elapsed() >= USAGE_EMIT_INTERVAL);
                 if due {
                     last_usage_emit_at = Some(Instant::now());
                     last_emitted_usage_total = u.total_tokens;
@@ -601,9 +593,7 @@ pub(crate) fn gate_request(
                     ));
             }
             qaqh_gate::StreamEvent::Error(msg) => {
-                log::error!(
-                    "[TURN] gate error turn_id={turn_id} round_num={round_num}: {msg}"
-                );
+                log::error!("[TURN] gate error turn_id={turn_id} round_num={round_num}: {msg}");
                 gate_error = Some(msg);
                 had_error = true;
             }

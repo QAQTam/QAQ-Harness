@@ -1,7 +1,7 @@
 //! hunk — split from file_edit_v2.rs
 
-use serde_json::Value;
 use crate::file_shared::normalize_newlines;
+use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Hunk {
@@ -209,4 +209,3 @@ pub(crate) fn parse_hint_line(v: &Value) -> Option<usize> {
         .and_then(|x| x.as_u64())
         .map(|x| x.max(1) as usize)
 }
-

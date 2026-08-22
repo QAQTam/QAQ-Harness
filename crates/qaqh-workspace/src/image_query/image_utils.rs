@@ -61,7 +61,8 @@ pub fn detect_mime_from_bytes(bytes: &[u8]) -> &'static str {
 pub fn detect_mime_from_data_uri(data: &str) -> Option<&str> {
     let rest = data.strip_prefix("data:")?;
     let mime_end = rest.find(';')?;
-    let mime = &rest[..mime_end];
+    // find 命中点必为 char boundary。
+    let mime = rest.get(..mime_end)?;
     if mime.starts_with("image/") {
         Some(mime)
     } else {
@@ -75,7 +76,13 @@ pub fn detect_mime(data: &str) -> String {
         return mime.to_string();
     }
     // Try decoding first ~16 bytes of base64 to check magic headers
-    let first_chunk = if data.len() > 16 { &data[..16] } else { data };
+    // base64 文本按理是 ASCII，但对外部输入做边界安全截断。
+    let first_chunk_len = if data.len() > 16 {
+        data.floor_char_boundary(16)
+    } else {
+        data.len()
+    };
+    let first_chunk = data.get(..first_chunk_len).unwrap_or(data);
     if let Ok(decoded) = simple_base64_decode(first_chunk) {
         return detect_mime_from_bytes(&decoded).to_string();
     }

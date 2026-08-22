@@ -292,10 +292,10 @@ fn parse_todo_id(value: Option<&Value>) -> Option<String> {
     match value? {
         Value::String(id) => {
             let id = id.trim();
-            if id.starts_with('T') && id[1..].parse::<u32>().is_ok() {
-                Some(id.to_string())
-            } else {
-                id.parse::<u32>().ok().map(|number| format!("T{number}"))
+            match id.strip_prefix('T') {
+                // "T<n>" 形式原样接受（'T' 为 ASCII，strip_prefix 等价 [1..]）。
+                Some(rest) if rest.parse::<u32>().is_ok() => Some(id.to_string()),
+                _ => id.parse::<u32>().ok().map(|number| format!("T{number}")),
             }
         }
         Value::Number(number) => number.as_u64().map(|number| format!("T{number}")),

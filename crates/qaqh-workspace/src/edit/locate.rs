@@ -1,13 +1,20 @@
 //! locate — split from file_edit_v2.rs
 
-use serde_json::Value;
 use crate::edit::HINT_WINDOW;
 use crate::edit::hunk::Hunk;
-use crate::edit::view::FileView;
-use crate::edit::matching::{Located, LocateError};
 use crate::edit::matching::*;
+use crate::edit::matching::{LocateError, Located};
+use crate::edit::view::FileView;
+use serde_json::Value;
 
-pub(crate) fn located(view: &FileView, s: usize, win: usize, tier: u8, score: f32, note: &str) -> Located {
+pub(crate) fn located(
+    view: &FileView,
+    s: usize,
+    win: usize,
+    tier: u8,
+    score: f32,
+    note: &str,
+) -> Located {
     let range = view.char_range(s, win);
     Located {
         start_char: range.start,
@@ -66,7 +73,11 @@ pub(crate) fn locate_anchor(view: &FileView, anchor: &str) -> Result<Located, Lo
 }
 
 /// 纯插入（old 为空）：context_before / context_after 各自定位，取交界处。
-pub(crate) fn locate_pure_insert(view: &FileView, before: &str, after: &str) -> Result<Located, LocateError> {
+pub(crate) fn locate_pure_insert(
+    view: &FileView,
+    before: &str,
+    after: &str,
+) -> Result<Located, LocateError> {
     let b = pattern_lines(before);
     let a = pattern_lines(after);
     if b.is_empty() && a.is_empty() {
@@ -335,7 +346,10 @@ pub(crate) fn tier1_in_window(view: &FileView, pat: &[&str], lo: usize, hi: usiz
 /// 语义：行号 = 提示/窗口（±10 行），内容 = 唯一通行证——窗口内 Tier1 精确
 /// 匹配，**唯一命中才应用**（0 个 → None，调用方保留原 Ambiguous；多个 →
 /// 新 Ambiguous 附窗口信息）。不触碰默认路径：hint_line 为 None 返回 None。
-pub(crate) fn locate_with_hint(view: &FileView, hunk: &Hunk) -> Option<Result<Located, LocateError>> {
+pub(crate) fn locate_with_hint(
+    view: &FileView,
+    hunk: &Hunk,
+) -> Option<Result<Located, LocateError>> {
     let hint = match hunk {
         Hunk::Replace {
             hint_line: Some(h),

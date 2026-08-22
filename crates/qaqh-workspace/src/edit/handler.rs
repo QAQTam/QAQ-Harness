@@ -1,12 +1,12 @@
 //! handler — split from file_edit_v2.rs
 
-use serde_json::{Value, json};
+use crate::edit::MAX_HUNKS;
+use crate::edit::hunk::Hunk;
+use crate::edit::read::*;
+use crate::edit::transaction::*;
 use crate::file_shared::{atomic_write, content_hash, normalize_newlines};
 use crate::{ToolCallCtx, ToolHandler, ToolManager, ToolPlacement, ToolResult, ToolRisk};
-use crate::edit::hunk::Hunk;
-use crate::edit::transaction::*;
-use crate::edit::read::*;
-use crate::edit::MAX_HUNKS;
+use serde_json::{Value, json};
 
 pub fn exec_edit(args: &serde_json::Value) -> ToolResult {
     let dry_run = args
@@ -275,7 +275,11 @@ pub fn exec_edit(args: &serde_json::Value) -> ToolResult {
                 "",
                 "edit",
                 raw_path,
-                if outcome.shifts.is_empty() { "overwrite" } else { "replace" },
+                if outcome.shifts.is_empty() {
+                    "overwrite"
+                } else {
+                    "replace"
+                },
                 if file_was_missing { None } else { Some(&raw) },
                 Some(&write_content),
                 "ok",

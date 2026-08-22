@@ -82,12 +82,10 @@ impl QaqhService {
         if let Some(hub) = self.hub.get() {
             let _ = hub.publish_with_causation(
                 seed,
-                qaqh_domain::DomainEvent::Control(
-                    qaqh_domain::ControlEvent::SessionStateChanged {
-                        seed: seed.to_string(),
-                        state: qaqh_domain::SessionState::Closed,
-                    },
-                ),
+                qaqh_domain::DomainEvent::Control(qaqh_domain::ControlEvent::SessionStateChanged {
+                    seed: seed.to_string(),
+                    state: qaqh_domain::SessionState::Closed,
+                }),
                 causation_id,
             );
         }
@@ -217,8 +215,7 @@ impl QaqhService {
             "workspace.move_session" => {
                 let seed = pstr(params, "seed")?;
                 let workspace_id = pstr(params, "workspace_id")?;
-                qaqh_session::WorkspaceStore::global()
-                    .move_session(&seed, &workspace_id)?;
+                qaqh_session::WorkspaceStore::global().move_session(&seed, &workspace_id)?;
                 Ok(Value::Null)
             }
             "workspace.detach" => {
@@ -493,9 +490,7 @@ impl QaqhService {
                     // 子 worker 启动时 `load_session_workspace` 读到，从而正确解析
                     // 相对路径并以主代理工作区为权限边界。
                     qaqh_session::SessionManager::global().set_cwd(&seed, workspace, false);
-                    log::info!(
-                        "[subagent] inherited workspace for seed={seed}: {workspace}"
-                    );
+                    log::info!("[subagent] inherited workspace for seed={seed}: {workspace}");
                 }
                 self.registry()?.spawn_subagent(
                     &seed,
@@ -672,11 +667,15 @@ impl QaqhService {
             }
             // ── UI 主题（空值/null = 跟随系统）──
             if let Some(value) = value2(params, "theme", "theme").and_then(Value::as_str) {
-                cfg.theme = if value.is_empty() { None } else { Some(value.to_string()) };
+                cfg.theme = if value.is_empty() {
+                    None
+                } else {
+                    Some(value.to_string())
+                };
             }
             // ── 桌面通知（缺省 = 开启）──
-            if let Some(enabled) =
-                value2(params, "notifications_enabled", "notificationsEnabled").and_then(Value::as_bool)
+            if let Some(enabled) = value2(params, "notifications_enabled", "notificationsEnabled")
+                .and_then(Value::as_bool)
             {
                 cfg.notifications_enabled = Some(enabled);
             }
@@ -884,8 +883,7 @@ fn read_remote_file(path: &str, max_bytes: u64) -> Result<Value, String> {
     if !file_path.is_absolute() {
         return Err("fs.read requires an absolute path".to_string());
     }
-    let meta =
-        std::fs::metadata(file_path).map_err(|e| format!("fs.read {path}: {e}"))?;
+    let meta = std::fs::metadata(file_path).map_err(|e| format!("fs.read {path}: {e}"))?;
     if !meta.is_file() {
         return Err(format!("fs.read {path}: not a file"));
     }
@@ -934,7 +932,8 @@ fn validate_tool_mode(tool_mode: &str) -> Result<(), String> {
             qaqh_types::KNOWN_MODES.join(" | ")
         ))
     }
-}fn err(error: impl std::fmt::Display) -> String {
+}
+fn err(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 fn parse_json_string(value: String) -> Result<Value, String> {
@@ -1183,7 +1182,9 @@ fn plan_action(seed: &str, item_id: &str, action: &str, comment: &str) -> Result
                     return None;
                 }
                 let end = line.find(']')?;
-                let base = format!("- [ ]{}", &line[end + 1..]);
+                // ']' 为单字节 ASCII，end+1 必为 char boundary。
+                let rest = line.split_at(end + 1).1;
+                let base = format!("- [ ]{rest}");
                 return Some(match action {
                     "approve" => base.replacen("- [ ]", "- [✓]", 1),
                     "reject" => {

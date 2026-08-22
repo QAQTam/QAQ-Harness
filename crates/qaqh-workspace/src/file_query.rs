@@ -173,12 +173,14 @@ fn read_one(args: &serde_json::Value) -> (ToolResult, serde_json::Value) {
             crate::file_state::correct_line(&path, s),
             crate::file_state::correct_line(&path, e),
         )
-            && (s2 != s || e2 != e) && ds == de {
-                corrected = Some((s, e));
-                offset = Some(ds);
-                start = Some(s2);
-                end = Some(e2);
-            }
+        && (s2 != s || e2 != e)
+        && ds == de
+    {
+        corrected = Some((s, e));
+        offset = Some(ds);
+        start = Some(s2);
+        end = Some(e2);
+    }
 
     let explicit = start.is_some() || end.is_some();
     let first = start.unwrap_or(1).saturating_sub(1);

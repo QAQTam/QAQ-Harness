@@ -234,9 +234,8 @@ impl AgentRegistry {
         if self.instances.contains_key(seed) {
             return Err(format!("agent already running for {seed}"));
         }
-        let persist = std::env::var("QAQH_SUBAGENT_PERSIST").is_ok_and(|value| {
-            matches!(value.as_str(), "1" | "true" | "on")
-        });
+        let persist = std::env::var("QAQH_SUBAGENT_PERSIST")
+            .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "on"));
         let ephemeral = !persist;
         self.spawn_subagent_inprocess(
             seed,
@@ -277,7 +276,9 @@ impl AgentRegistry {
         let activity = self.activity.clone();
         let hub = self.hub.clone();
         let reader = std::thread::spawn(move || {
-            crate::actor::run_inprocess_event_reader(event_rx, event_seed, generation, activity, hub);
+            crate::actor::run_inprocess_event_reader(
+                event_rx, event_seed, generation, activity, hub,
+            );
         });
 
         let actor_seed = seed.to_string();
@@ -361,7 +362,9 @@ impl AgentRegistry {
         let activity = self.activity.clone();
         let hub = self.hub.clone();
         let reader = std::thread::spawn(move || {
-            crate::actor::run_inprocess_event_reader(event_rx, event_seed, generation, activity, hub);
+            crate::actor::run_inprocess_event_reader(
+                event_rx, event_seed, generation, activity, hub,
+            );
         });
 
         // Resume worker: timeline is the authoritative turn ledger. The meta
@@ -476,10 +479,7 @@ impl AgentRegistry {
 
     /// 向所有活跃 worker（含子代理）广播同一条 Ringing 命令。
     /// 只发给已运行的实例，不触发 spawn。返回失败项列表（seed: error）。
-    pub fn broadcast_ringing(
-        &mut self,
-        command: &qaqh_ringing::RingingCommand,
-    ) -> Vec<String> {
+    pub fn broadcast_ringing(&mut self, command: &qaqh_ringing::RingingCommand) -> Vec<String> {
         let seeds: Vec<String> = self.instances.keys().cloned().collect();
         let mut failed = Vec::new();
         for seed in seeds {
@@ -741,8 +741,7 @@ mod tests {
         let out = externalize_large_content(&hub, "s1", tool_finished(big.clone()));
         match out {
             qaqh_domain::DomainEvent::Tool(qaqh_domain::ToolEvent::ToolFinished {
-                result,
-                ..
+                result, ..
             }) => {
                 assert!(result.model.text.len() <= CONTENT_TAIL_BYTES);
                 assert!(result.summary.chars().count() <= qaqh_types::TOOL_SUMMARY_MAX_CHARS);
@@ -766,8 +765,7 @@ mod tests {
         let out = externalize_large_content(&hub, "s1", tool_finished("small".into()));
         match out {
             qaqh_domain::DomainEvent::Tool(qaqh_domain::ToolEvent::ToolFinished {
-                result,
-                ..
+                result, ..
             }) => {
                 assert_eq!(result.summary, "small");
                 assert!(result.output_ref.is_none());

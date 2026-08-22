@@ -14,9 +14,9 @@ pub mod apply_patch_engine;
 pub mod authorization;
 pub mod backend;
 mod code_delta;
+pub mod edit;
 pub mod execution;
 pub mod file_cache;
-pub mod edit;
 pub mod file_edit_v2;
 pub mod file_glob;
 pub mod file_mutate;
@@ -334,11 +334,15 @@ pub fn display_path(abs_path: &str) -> String {
     let ws = ws.trim_end_matches(['/', '\\']);
 
     if !ws.is_empty() && ws != "." {
-        // Case-insensitive prefix match on Windows
-        let ws_lower = ws.to_lowercase();
-        let p_lower = norm_str.to_lowercase();
-        if p_lower.starts_with(&ws_lower) {
-            let rel = &norm_str[ws.len()..].trim_start_matches(['/', '\\']);
+        // Case-insensitive prefix match on Windows。注意不能用 to_lowercase
+        // 副本做 starts_with 再按原长切片：Unicode 小写映射可能改变字节长度，
+        // 非 ASCII 路径会 panic。NTFS 大小写折叠仅限 ASCII，逐字节等长比较
+        // 同时保证切点是 char boundary。
+        if norm_str.len() >= ws.len()
+            && norm_str.as_bytes()[..ws.len()].eq_ignore_ascii_case(ws.as_bytes())
+        {
+            let (_, tail) = norm_str.split_at(ws.len());
+            let rel = tail.trim_start_matches(['/', '\\']);
             return rel.replace('\\', "/");
         }
     }

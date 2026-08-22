@@ -25,7 +25,11 @@ impl<'a> FileView<'a> {
         let mut char_count = 0usize;
         for (i, ch) in content.char_indices() {
             if ch == '\n' {
-                lines.push(&content[byte_start..i]);
+                lines.push(
+                    content
+                        .get(byte_start..i)
+                        .expect("char_indices yields boundaries"),
+                );
                 byte_starts.push(byte_start);
                 char_starts.push(char_start);
                 byte_start = i + 1;
@@ -34,7 +38,7 @@ impl<'a> FileView<'a> {
             char_count += 1;
         }
         if byte_start <= content.len() {
-            lines.push(&content[byte_start..]);
+            lines.push(content.get(byte_start..).expect("byte_start is a boundary"));
             byte_starts.push(byte_start);
             char_starts.push(char_start);
         }

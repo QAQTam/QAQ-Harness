@@ -606,8 +606,11 @@ impl RingingHub {
                             let mut appender =
                                 self.timeline.lock().unwrap_or_else(|e| e.into_inner());
                             if !appender.contains(seed) {
-                                appender
-                                    .restore(seed.to_string(), snapshot.clone(), journal.clone());
+                                appender.restore(
+                                    seed.to_string(),
+                                    snapshot.clone(),
+                                    journal.clone(),
+                                );
                             }
                         }
                         // 缓存缺失或滞后于 journal → 收尾后补写缓存（保前端快照路径）。
@@ -676,8 +679,7 @@ impl RingingHub {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             if let Some(store) = store.as_mut() {
-                if let Err(error) =
-                    append_timeline_journal_tail_locked(store, &self.timeline, seed)
+                if let Err(error) = append_timeline_journal_tail_locked(store, &self.timeline, seed)
                 {
                     log::error!(
                         "[timeline] journal append failed for {seed}: {error}; skipping rebuild persist (fail-closed)"
@@ -2440,7 +2442,10 @@ mod tests {
         let hub = RingingHub::with_persistence("epoch-2", &root);
         let restored = hub.timeline_snapshot("s").unwrap();
         assert_eq!(restored, native, "journal rebuild == native snapshot");
-        assert!(cache.exists(), "cache must be rewritten after journal rebuild");
+        assert!(
+            cache.exists(),
+            "cache must be rewritten after journal rebuild"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

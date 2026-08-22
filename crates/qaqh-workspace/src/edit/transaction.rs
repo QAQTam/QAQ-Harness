@@ -1,14 +1,14 @@
 //! transaction — split from file_edit_v2.rs
 
-use crate::file_shared::{content_hash, unified_diff};
 use crate::edit::CONTENT_CAP;
 use crate::edit::hunk::Hunk;
-use crate::edit::view::FileView;
-use crate::edit::matching::{Candidate, Located};
-use crate::edit::matching::*;
-use crate::edit::resolve::{ResolvedOp};
-use crate::edit::resolve::*;
 use crate::edit::locate::*;
+use crate::edit::matching::*;
+use crate::edit::matching::{Candidate, Located};
+use crate::edit::resolve::ResolvedOp;
+use crate::edit::resolve::*;
+use crate::edit::view::FileView;
+use crate::file_shared::{content_hash, unified_diff};
 
 pub(crate) struct HunkReport {
     pub(crate) index: usize,
@@ -49,7 +49,12 @@ pub(crate) enum Mode {
 /// 核心纯逻辑：同一份未修改快照上定位全部 hunk → 重叠检测 → 倒序应用。
 /// strict：任一 hunk 失败 → 整体拒绝（edited = None）；
 /// partial：成功 hunk 应用（edited = Some + code = 首个失败码），报告含全部详情。
-pub(crate) fn run_edit(content: &str, hunks: &[Hunk], notes: Vec<String>, mode: Mode) -> FileOutcome {
+pub(crate) fn run_edit(
+    content: &str,
+    hunks: &[Hunk],
+    notes: Vec<String>,
+    mode: Mode,
+) -> FileOutcome {
     // overwrite 是整文件独占语义：单个调用里只能有它自己。
     let overwrite_count = hunks
         .iter()
@@ -275,7 +280,7 @@ pub(crate) fn render_text(path: &str, outcome: &FileOutcome) -> String {
             let hash8 = outcome
                 .new_hash
                 .as_deref()
-                .map(|h| &h[..h.len().min(8)])
+                .map(|h| h.get(..h.len().min(8)).unwrap_or(""))
                 .unwrap_or("");
             out.push_str(&format!(
                 "[OK] edit {path}\n  {n}/{n} hunks applied (new_hash {hash8})\n"
@@ -291,7 +296,7 @@ pub(crate) fn render_text(path: &str, outcome: &FileOutcome) -> String {
             let hash8 = outcome
                 .new_hash
                 .as_deref()
-                .map(|h| &h[..h.len().min(8)])
+                .map(|h| h.get(..h.len().min(8)).unwrap_or(""))
                 .unwrap_or("");
             out.push_str(&format!(
                 "[PARTIAL] edit {path}\n  applied {applied}/{total} hunks (new_hash {hash8})\n"
@@ -391,7 +396,7 @@ pub(crate) fn truncate_content(content: &str) -> String {
     let cut = content.floor_char_boundary(CONTENT_CAP);
     format!(
         "{}…[truncated: {} bytes total]",
-        &content[..cut],
+        content.get(..cut).unwrap_or(content),
         content.len()
     )
 }

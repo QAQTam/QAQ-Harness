@@ -202,9 +202,12 @@ fn restrict_permissions(path: &Path) {
 fn restrict_permissions(_path: &Path) {}
 
 // ── Minimal base64 (RFC 4648) — avoids pulling a new dependency ──
+// 生产用途仅限 Windows DPAPI blob 编解码；非 Windows 平台仅测试使用。
 
+#[cfg_attr(not(windows), allow(dead_code))]
 const B64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
+#[cfg_attr(not(windows), allow(dead_code))]
 fn base64_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
@@ -227,6 +230,7 @@ fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(s.len() * 3 / 4);
     let mut buf = 0u32;

@@ -874,7 +874,7 @@ fn parse_preview_request(preview: &str) -> Result<HttpRequest, String> {
     let header_end = preview
         .find("\r\n\r\n")
         .ok_or_else(|| "incomplete headers".to_string())?;
-    let header_text = &preview[..header_end];
+    let header_text = preview.get(..header_end).unwrap_or(preview);
     let mut lines = header_text.lines();
     let request_line = lines
         .next()
@@ -900,7 +900,9 @@ fn parse_preview_request(preview: &str) -> Result<HttpRequest, String> {
         .unwrap_or(0);
     // find 返回 \r 索引，+4 跳过 \r\n\r\n 到达 body 开头（与 read_request 一致）
     let body_start = header_end + 4;
-    let body: Vec<u8> = preview[body_start..]
+    let body: Vec<u8> = preview
+        .get(body_start..)
+        .unwrap_or_default()
         .as_bytes()
         .iter()
         .copied()
@@ -1317,7 +1319,7 @@ async fn handle_command(
                 command_id: env.command_id,
                 status: RingingCommandAckStatus::Rejected,
                 code: Some("dispatch_failed".into()),
-                message: Some(format!("{error}")),
+                message: Some(error.to_string()),
                 retry_after_ms: None,
             };
             return write_response(
@@ -1403,7 +1405,7 @@ async fn handle_command(
                             command_id: env.command_id,
                             status: RingingCommandAckStatus::Rejected,
                             code: Some("dispatch_failed".into()),
-                            message: Some(format!("{error}")),
+                            message: Some(error.to_string()),
                             retry_after_ms: None,
                         })
                         .map_err(stringify)?,
@@ -1430,7 +1432,7 @@ async fn handle_command(
                 command_id: env.command_id,
                 status: RingingCommandAckStatus::Rejected,
                 code: Some("dispatch_failed".into()),
-                message: Some(format!("{error}")),
+                message: Some(error.to_string()),
                 retry_after_ms: None,
             };
             return write_response(
@@ -1509,7 +1511,7 @@ async fn handle_command(
                         command_id: env.command_id,
                         status: RingingCommandAckStatus::Rejected,
                         code: Some("dispatch_failed".into()),
-                        message: Some(format!("{error}")),
+                        message: Some(error.to_string()),
                         retry_after_ms: None,
                     };
                     return write_response(
@@ -1563,7 +1565,7 @@ async fn handle_command(
                     command_id: env.command_id,
                     status: RingingCommandAckStatus::Rejected,
                     code: Some("dispatch_failed".into()),
-                    message: Some(format!("{error}")),
+                    message: Some(error.to_string()),
                     retry_after_ms: None,
                 };
                 return write_response(

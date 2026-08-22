@@ -867,8 +867,12 @@ fn apply_journal_entry(turns: &mut BTreeMap<String, TimelineTurn>, entry: &Timel
             turns.insert(entry.turn_id.clone(), turn);
         }
         TimelineEvent::BlockOpened { block } => {
-            let Some(round_num) = entry.round_num else { return };
-            let Some(turn) = turns.get_mut(&entry.turn_id) else { return };
+            let Some(round_num) = entry.round_num else {
+                return;
+            };
+            let Some(turn) = turns.get_mut(&entry.turn_id) else {
+                return;
+            };
             if turn.sealed {
                 return;
             }
@@ -889,7 +893,9 @@ fn apply_journal_entry(turns: &mut BTreeMap<String, TimelineTurn>, entry: &Timel
                 round.blocks.push(block.clone());
             }
         }
-        TimelineEvent::TextDelta { block_id, delta, .. } => {
+        TimelineEvent::TextDelta {
+            block_id, delta, ..
+        } => {
             if let Some(block) = block_mut_replay(turns, &entry.turn_id, entry.round_num, block_id)
             {
                 block.text.push_str(delta);
@@ -1394,7 +1400,14 @@ mod tests {
         // t1：完整完成的 turn（reasoning 流式 + checkpoint + tool + answer）。
         appender.open_turn("s", "t1", "q1").unwrap();
         appender
-            .open_block("s", "t1", 0, "reasoning", TimelineBlockKind::Reasoning, None)
+            .open_block(
+                "s",
+                "t1",
+                0,
+                "reasoning",
+                TimelineBlockKind::Reasoning,
+                None,
+            )
             .unwrap();
         appender
             .append_text("s", "t1", 0, "reasoning", 0, "think")
@@ -1447,9 +1460,7 @@ mod tests {
         appender
             .open_block("s", "t2", 0, "note", TimelineBlockKind::Text, None)
             .unwrap();
-        appender
-            .append_text("s", "t2", 0, "note", 0, "in")
-            .unwrap();
+        appender.append_text("s", "t2", 0, "note", 0, "in").unwrap();
 
         let native = appender.snapshot("s").unwrap();
         let entries = appender.replay_since("s", 0);
@@ -1489,16 +1500,12 @@ mod tests {
         let mut ops: Vec<TimelineJournalOp> = vec![TimelineJournalOp::Snapshot {
             snapshot: native.clone(),
         }];
-        ops.extend(
-            tail.iter()
-                .map(|entry| TimelineJournalOp::Append {
-                    entry: entry.clone(),
-                }),
-        );
+        ops.extend(tail.iter().map(|entry| TimelineJournalOp::Append {
+            entry: entry.clone(),
+        }));
         let (rebuilt, _) = materialize_timeline_from_journal(&ops).unwrap();
         assert_eq!(
-            rebuilt.turns[0].rounds[0].blocks[0].text,
-            "hello",
+            rebuilt.turns[0].rounds[0].blocks[0].text, "hello",
             "folded deltas must not double-append"
         );
         assert_eq!(rebuilt, native);
@@ -1541,17 +1548,17 @@ mod tests {
                 entry: entry.clone(),
             })
             .collect();
-        ops.extend(
-            entries
-                .iter()
-                .map(|entry| TimelineJournalOp::Append {
-                    entry: entry.clone(),
-                }),
-        );
+        ops.extend(entries.iter().map(|entry| TimelineJournalOp::Append {
+            entry: entry.clone(),
+        }));
         let (rebuilt, journal) = materialize_timeline_from_journal(&ops).unwrap();
         let text = &rebuilt.turns[0].rounds[0].blocks[0].text;
         assert_eq!(text, "hello", "duplicate deltas must not double-append");
-        assert_eq!(journal.len(), entries.len(), "duplicates dropped from replay tail");
+        assert_eq!(
+            journal.len(),
+            entries.len(),
+            "duplicates dropped from replay tail"
+        );
         assert_eq!(rebuilt.watermark, entries.last().unwrap().timeline_seq);
     }
 }

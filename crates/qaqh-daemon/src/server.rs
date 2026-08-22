@@ -100,6 +100,20 @@ pub async fn run() -> Result<(), String> {
     run_with(ServerNetworkConfig::default()).await
 }
 
+/// `run` 模式的端口解析：显式 `--port` > `QAQH_SERVER_PORT` 环境变量 > 随机。
+///
+/// 固定端口是 webUI 开发体验的前置：浏览器书签 / PWA / 反向代理都要求
+/// 可预测的地址；随机端口下每次重启 daemon 都要重读 daemon.json。
+fn resolve_run_port(configured: u16) -> u16 {
+    if configured != 0 {
+        return configured;
+    }
+    std::env::var("QAQH_SERVER_PORT")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0)
+}
+
 pub async fn run_with(config: ServerNetworkConfig) -> Result<(), String> {
     let data_root = qaqh_types::platform::ensure_data_root().map_err(stringify)?;
     let _lock = acquire_single_instance()?;
@@ -109,7 +123,7 @@ pub async fn run_with(config: ServerNetworkConfig) -> Result<(), String> {
         eprintln!("[qaqh-daemon] generated server token: {token}");
     }
     let epoch = random_hex();
-    let listener = TcpListener::bind((config.bind_ip, config.port))
+    let listener = TcpListener::bind((config.bind_ip, resolve_run_port(config.port)))
         .await
         .map_err(stringify)?;
     let address = listener.local_addr().map_err(stringify)?;

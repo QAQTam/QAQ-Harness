@@ -27,18 +27,36 @@ build-daemon:
 dev:
     cargo run -p qaqh-daemon -- run
 
-# ── 局域网 Web ───────────────────────────────────────
+# ── webUI（浏览器直连）─────────────────────────────
 
-# 一键启动局域网 Web 服务（Windows）：构建检查 + daemon server 模式 +
-# apps/web 产物托管，自动打印局域网访问地址与 token
-[windows]
-daemon-web port="64413":
-    pwsh -NoProfile -File scripts/daemon-web.ps1 -Port {{port}}
-
-# 一键启动局域网 Web 服务（Linux/macOS）
+# 打开 webUI：读 daemon.json 解析地址，浏览器打开 /debug/（token 由桥脚本
+# 自动注入，无需手填）。前置：daemon 已运行（just dev）且 renderer 产物
+# 可被定位（QAQH_DEBUG_RENDERER_DIR 或 out/renderer）。
 [unix]
-daemon-web port="64413":
-    bash scripts/daemon-web.sh {{port}}
+web:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    f="${QAQH_DATA_DIR:-$HOME/.config/qaqh}/daemon.json"
+    if [ ! -f "$f" ]; then echo "daemon.json 不存在：先启动 daemon（just dev）" >&2; exit 1; fi
+    url=$(python3 - "$f" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+ep = d["endpoint"].replace("ws://", "http://").split("/control/v1")[0]
+print(ep + "/debug/")
+PY
+)
+    echo "webUI: $url"
+    xdg-open "$url" >/dev/null 2>&1 || open "$url" >/dev/null 2>&1 || echo "（手动打开上方地址）"
+
+[windows]
+web:
+    #!/usr/bin/env pwsh
+    $file = if ($env:QAQH_DATA_DIR) { Join-Path $env:QAQH_DATA_DIR "daemon.json" } else { Join-Path $env:USERPROFILE ".deepx\daemon.json" }
+    if (-not (Test-Path $file)) { Write-Error "daemon.json 不存在：先启动 daemon（just dev）"; exit 1 }
+    $d = Get-Content $file -Raw | ConvertFrom-Json
+    $url = ($d.endpoint -replace '^ws://', 'http://') -replace '/control/v1$', ''
+    Write-Output "webUI: $url/debug/"
+    Start-Process "$url/debug/"
 
 # ── 检查 & 测试 ─────────────────────────────────────
 

@@ -39,12 +39,12 @@ web:
     f="${QAQH_DATA_DIR:-$HOME/.config/qaqh}/daemon.json"
     if [ ! -f "$f" ]; then echo "daemon.json 不存在：先启动 daemon（just dev）" >&2; exit 1; fi
     url=$(python3 - "$f" <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1]))
-ep = d["endpoint"].replace("ws://", "http://").split("/control/v1")[0]
-print(ep + "/debug/")
-PY
-)
+    import json, sys
+    d = json.load(open(sys.argv[1]))
+    ep = d["endpoint"].replace("ws://", "http://").split("/control/v1")[0]
+    print(ep + "/debug/")
+    PY
+    )
     echo "webUI: $url"
     xdg-open "$url" >/dev/null 2>&1 || open "$url" >/dev/null 2>&1 || echo "（手动打开上方地址）"
 

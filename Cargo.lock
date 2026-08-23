@@ -534,7 +534,7 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
 name = "dsh-minimal-mode"
-version = "0.0.0-alpha0"
+version = "0.0.0-alpha.0"
 dependencies = [
  "log",
  "portable-pty",
@@ -1765,7 +1765,7 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
 name = "qaqh-client"
-version = "0.0.0-alpha0"
+version = "0.0.0-alpha.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -1784,7 +1784,7 @@ dependencies = [
 
 [[package]]
 name = "qaqh-config"
-version = "0.0.0-alpha0"
+version = "0.0.0-alpha.0"
 dependencies = [
  "log",
  "qaqh-types",
@@ -1797,7 +1797,7 @@ dependencies = [
 
 [[package]]
 name = "qaqh-daemon"
-version = "0.0.0-alpha0"
+version = "0.0.0-alpha.0"
 dependencies = [
  "log",
  "qaqh-config",
@@ -1817,7 +1817,7 @@ dependencies = [
 
 [[package]]
 name = "qaqh-domain"
-version = "0.0.0-alpha0"
+version = "0.0.0-alpha.0"
 dependencies = [
  "qaqh-types",
  "serde",
@@ -1826,7 +1826,7 @@ dependencies = [
 
 [[package]]
 name = "qaqh-gate"
-version = "0.0.0-alpha0"
+version = "0.0.0-alpha.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -1842,7 +1842,7 @@ dependencies = [
 
 [[package]]
 name = "qaqh-message"
-version = "0.0.0-alpha0"
+version = "0.0.0-alpha.0"
 dependencies = [
  "log",
  "qaqh-session",
@@ -1853,7 +1853,7 @@ dependencies = [
 
 [[package]]
 name = "qaqh-msgloop"
-version = "0.0.0-alpha0"
+version = "0.0.0-alpha.0"
 dependencies = [
  "dsh-minimal-mode",
  "log",
@@ -1877,7 +1877,7 @@ dependencies = [
 
 [[package]]
 name = "qaqh-proto"
-version = "0.0.0-alpha0"
+version = "0.0.0-alpha.0"
 dependencies = [
  "qaqh-types",
  "serde",
@@ -1886,7 +1886,7 @@ dependencies = [
 
 [[package]]
 name = "qaqh-ringing"
-version = "0.0.0-alpha0"
+version = "0.0.0-alpha.0"
 dependencies = [
  "qaqh-domain",
  "serde",
@@ -1895,7 +1895,7 @@ dependencies = [
 
 [[package]]
 name = "qaqh-runtime"
-version = "0.0.0-alpha0"
+version = "0.0.0-alpha.0"
 dependencies = [
  "chrono",
  "log",
@@ -1917,7 +1917,7 @@ dependencies = [
 
 [[package]]
 name = "qaqh-session"
-version = "0.0.0-alpha0"
+version = "0.0.0-alpha.0"
 dependencies = [
  "hex",
  "log",
@@ -1930,7 +1930,7 @@ dependencies = [
 
 [[package]]
 name = "qaqh-skills"
-version = "0.0.0-alpha0"
+version = "0.0.0-alpha.0"
 dependencies = [
  "serde",
  "serde-saphyr",
@@ -1939,7 +1939,7 @@ dependencies = [
 
 [[package]]
 name = "qaqh-subagent"
-version = "0.0.0-alpha0"
+version = "0.0.0-alpha.0"
 dependencies = [
  "log",
  "qaqh-client",
@@ -1952,7 +1952,7 @@ dependencies = [
 
 [[package]]
 name = "qaqh-types"
-version = "0.0.0-alpha0"
+version = "0.0.0-alpha.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1962,7 +1962,7 @@ dependencies = [
 
 [[package]]
 name = "qaqh-workspace"
-version = "0.0.0-alpha0"
+version = "0.0.0-alpha.0"
 dependencies = [
  "chrono",
  "git2",

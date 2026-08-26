@@ -315,6 +315,21 @@ fn openrouter() -> ProviderSpec {
             supports_thinking: false,
             supports_reasoning_effort: true,
             effort_allowlist: Some(vec!["max".into(), "high".into(), "low".into()]),
+            // 路由器模型异构:端点级开图 + 模型级 allowlist(精确或 `*` 前缀)。
+            // 种子清单覆盖主流视觉族 + 当前目标模型;长尾由 /models 元数据的
+            // input_modalities 动态补充(后续工作)。
+            supports_image_tool: true,
+            image_models: Some(vec![
+                "stealth/ox-alpha".into(),
+                "google/gemini*".into(),
+                "openai/gpt-4o*".into(),
+                "openai/gpt-5*".into(),
+                "anthropic/claude-*".into(),
+                "x-ai/grok-*".into(),
+                "meta-llama/llama-4*".into(),
+                "qwen/qwen*vl*".into(),
+                "mistralai/pixtral*".into(),
+            ]),
             tool_call_content_null: true,
             supports_reasoning_content: false,
             require_provider_parameters: true,
@@ -468,6 +483,31 @@ pub fn image_tool_enabled(provider_id: &str, endpoint_id: &str) -> bool {
     find_endpoint(provider_id, endpoint_id).is_some_and(|e| e.supports_image_tool)
 }
 
+/// Whether a specific model accepts image input on this endpoint.
+///
+/// Layers [`image_tool_enabled`] with the optional per-model allowlist
+/// (`EndpointSpec::image_models`): routers serve heterogeneous models, so the
+/// endpoint flag alone would let `read_image` attach pixels to text-only
+/// models and fail upstream with an opaque 400.
+pub fn image_model_supported(provider_id: &str, endpoint_id: &str, model: &str) -> bool {
+    let Some(ep) = find_endpoint(provider_id, endpoint_id) else {
+        return false;
+    };
+    if !ep.supports_image_tool {
+        return false;
+    }
+    match &ep.image_models {
+        None => true,
+        Some(list) => {
+            let model = model.to_lowercase();
+            list.iter().any(|pattern| match pattern.strip_suffix('*') {
+                Some(prefix) => model.starts_with(&prefix.to_lowercase()),
+                None => model == pattern.to_lowercase(),
+            })
+        }
+    }
+}
+
 pub fn first_provider_endpoint() -> (String, String) {
     let providers = all_providers();
     let p = providers.first();
@@ -586,7 +626,7 @@ mod tests {
         assert!(endpoint.supports_reasoning_effort);
         assert_eq!(
             endpoint.effort_allowlist.as_deref(),
-            Some(["max", "high", "low"].as_slice())
+            Some(&["max".to_string(), "high".to_string(), "low".to_string()][..])
         );
         assert!(endpoint.tool_call_content_null);
         assert!(!endpoint.supports_reasoning_content);
@@ -618,6 +658,44 @@ mod tests {
     fn protocol_for_responses_endpoint() {
         let proto = protocol_for("openai", "responses");
         assert_eq!(proto, "responses");
+    }
+
+    #[test]
+    fn image_model_support_layers_endpoint_flag_and_allowlist() {
+        // 端点未开图 → 一律 false(即使模型在清单里)。
+        assert!(!image_model_supported(
+            "deepseek",
+            "openai",
+            "google/gemini-2.0"
+        ));
+        // opencode-go:端点开图且无 allowlist → 所有模型放行。
+        assert!(image_model_supported("opencode-go", "openai", "任意-模型"));
+        // openrouter:allowlist 生效 —— 大小写不敏感、精确与前缀通配。
+        assert!(image_model_supported(
+            "openrouter",
+            "openai",
+            "stealth/ox-alpha"
+        ));
+        assert!(image_model_supported(
+            "openrouter",
+            "openai",
+            "Stealth/OX-ALPHA"
+        ));
+        assert!(image_model_supported(
+            "openrouter",
+            "openai",
+            "google/gemini-3-pro"
+        ));
+        assert!(!image_model_supported(
+            "openrouter",
+            "openai",
+            "deepseek/deepseek-v4-pro"
+        ));
+        assert!(!image_model_supported(
+            "openrouter",
+            "openai",
+            "meta-llama/llama-3.3-70b"
+        ));
     }
 
     #[test]

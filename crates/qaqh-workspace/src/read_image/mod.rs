@@ -12,8 +12,10 @@
 //! - `path`: an image file inside the workspace (admission authorizes the
 //!   path resource before the handler runs).
 //!
-//! The tool is only exposed to endpoints that declare vision input support
-//! ([`image_tool_enabled`], currently opencode-go only).
+//! The tool is only usable on endpoints that declare vision input support
+//! ([`image_model_supported`]: registry flag + optional per-model allowlist).
+//! Rejections are actionable: the error tells the model to stop retrying,
+//! inform the user, and fall back to a text-only approach.
 
 pub mod image_utils;
 
@@ -77,7 +79,7 @@ pub fn peek_image(seed: &str, index: usize) -> Option<(String, String)> {
 /// ([`qaqh_config::registry::image_tool_enabled`], probed via
 /// [`crate::runtime::image_tool_enabled`]). Unknown/unloadable configs fail
 /// closed (tool hidden).
-use crate::runtime::image_tool_enabled;
+use crate::runtime::image_model_supported;
 
 // ── Main handler ──────────────────────────────────────────────────────
 
@@ -90,8 +92,15 @@ use crate::runtime::image_tool_enabled;
 /// Every payload passes through [`image_utils::normalize_image`]: oversized
 /// images are downscaled / re-compressed before entering the conversation.
 pub(super) fn handle_read_image(ctx: ToolCallCtx) -> ToolResult {
-    if !image_tool_enabled() {
-        return ToolResult::error("read_image: the active provider does not support image input");
+    if !image_model_supported() {
+        // 模型级拒绝（端点关闭或当前模型不在视觉 allowlist 内）。语义是
+        // 给模型的可执行指引而非纯报错：不要重试，改走文本路径并告知用户。
+        return ToolResult::error(
+            "read_image: the active model does not support image input. \
+             Do NOT retry read_image. Tell the user this model cannot see images, \
+             and continue with a text-only approach (e.g. ask the user to describe \
+             the image or paste relevant text).",
+        );
     }
 
     let index = ctx.get_u64("image_index");

@@ -117,6 +117,16 @@ pub struct EndpointSpec {
     /// Ask a router to select only upstreams that implement every request
     /// parameter. Used by OpenRouter tool calls to avoid lax fallback routing.
     pub require_provider_parameters: bool,
+    /// Per-model vision allowlist for routers whose endpoints serve
+    /// heterogeneous models (`supports_image_tool` alone is too coarse there).
+    ///
+    /// Semantics when `supports_image_tool` is true:
+    /// - `None`  → every model on this endpoint accepts images (uniform
+    ///   first-party endpoints like opencode-go);
+    /// - `Some`  → only listed models accept images. Entries match exactly,
+    ///   or by prefix when ending in `*` (e.g. `"google/gemini-*"`).
+    /// Matched case-insensitively against the active model id.
+    pub image_models: Option<Vec<String>>,
     /// When true, the gate sends only incremental messages instead of full conversation
     /// history. Used for stateful proxy endpoints (e.g. DeepSeek Web CDP proxy).
     pub stateful: bool,
@@ -187,6 +197,7 @@ impl Default for EndpointSpec {
             tool_call_content_null: false,
             supports_reasoning_content: true,
             require_provider_parameters: false,
+            image_models: None,
             stateful: false,
             beta: false,
             do_sample: None,

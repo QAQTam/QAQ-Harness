@@ -251,6 +251,17 @@ pub fn image_tool_enabled() -> bool {
         .is_ok_and(|cfg| qaqh_config::registry::image_tool_enabled(&cfg.provider_id, &cfg.endpoint))
 }
 
+/// 当前 (provider, endpoint, model) 组合是否接受图片输入。
+///
+/// 比端点级 [`image_tool_enabled`] 更精确：路由器端点（如 OpenRouter）的
+/// 模型异构，文本-only 模型需要在此处被拒绝，而不是让带图请求打到上游
+/// 换回一个不透明的 400。
+pub fn image_model_supported() -> bool {
+    qaqh_config::Config::load().is_ok_and(|cfg| {
+        qaqh_config::registry::image_model_supported(&cfg.provider_id, &cfg.endpoint, &cfg.model)
+    })
+}
+
 /// 查询 handler 声明的能力类别（权限决策单一事实源）。
 /// 未注册/未初始化返回 None——调用方回退保守默认（Write）。
 pub fn lookup_category(name: &str) -> Option<crate::permission::ToolCategory> {

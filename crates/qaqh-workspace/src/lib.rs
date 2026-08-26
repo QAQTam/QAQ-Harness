@@ -24,7 +24,7 @@ pub mod file_query;
 pub mod file_shared;
 pub mod file_state;
 pub mod git;
-pub mod image_query;
+pub mod read_image;
 pub mod runtime;
 mod safety;
 pub mod skill;
@@ -268,6 +268,16 @@ pub fn is_cancel() -> bool {
     } else {
         CANCEL.load(std::sync::atomic::Ordering::SeqCst)
     }
+}
+
+/// 清除两层取消标记（actor 本地 + 进程全局）。
+/// C2：全局 CANCEL 曾被 daemon 非 actor 线程（registry interrupt 预置、
+/// manager.cancel_tool(None)）置位，而清零点都在 actor 线程只写本地，
+/// 导致全局 flag 一旦置位永无人复位、所有工具秒拒 Cancelled。
+/// 所有清零路径必须走这里，保证两层同步归零。
+pub fn clear_cancel() {
+    ACTOR_CANCEL.with(|slot| slot.set(false));
+    CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// Unit tests mutate process-wide runtime state. Keep those mutations

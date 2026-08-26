@@ -35,7 +35,7 @@ pub enum ContentBlock {
         /// Canonical structured result. `status` is the only execution truth.
         result: ToolResult,
     },
-    /// An image for multimodal understanding (user messages only).
+    /// An image (upload or tool-produced attachment).
     /// `mime_type` is the MIME type (e.g. "image/png", "image/jpeg").
     /// `data` is the base64-encoded image data (without the `data:...;base64,` prefix).
     #[serde(rename = "image")]

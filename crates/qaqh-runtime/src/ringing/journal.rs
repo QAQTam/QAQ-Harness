@@ -91,6 +91,11 @@ impl ReliableJournal {
                 }) if t == turn_id && *r == round_num
             )
         });
+        // R5：同步剪掉已越出淘汰水位的 id——窗口内合法 id 全部
+        // > evicted_through，剪枝后 seen_event_ids 保持 ≤ 窗口容量，
+        // 流式 delta 场景不再长期滞留已折叠条目的 id。
+        self.seen_event_ids
+            .retain(|_, stream_seq| *stream_seq > self.evicted_through);
         before - self.entries.len()
     }
 

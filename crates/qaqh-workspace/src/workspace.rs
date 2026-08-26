@@ -1,23 +1,23 @@
 //! Workspace directory resolution.
 //!
-//! Resolves `.deepx/` — the project-local hidden directory for PLAN.md,
+//! Resolves `.qaqh/` — the project-local hidden directory for PLAN.md,
 //! trash, tasks, and project-scoped memory. Falls back to a subdirectory
 //! of `data_dir()` when no workspace is active.
 
 use std::path::{Path, PathBuf};
 
-/// Return the `.deepx/` directory for the current workspace.
+/// Return the `.qaqh/` directory for the current workspace.
 ///
 /// Priority:
-/// 1. `{workspace}/.deepx/` if workspace is set and not "."
+/// 1. `{workspace}/.qaqh/` if workspace is set and not "."
 /// 2. `{data_dir}/workspace/` as fallback (headless / no workspace mode)
 ///
-/// The fallback is intentionally NOT `home_dir()/.deepx/` to avoid
+/// The fallback is intentionally NOT `home_dir()/.qaqh/` to avoid
 /// conflating workspace artifacts with global config/sessions data.
 pub fn qaqh_dir() -> PathBuf {
     let ws = crate::current_workspace();
     if !ws.is_empty() && ws != "." {
-        Path::new(&ws).join(".deepx")
+        Path::new(&ws).join(".qaqh")
     } else {
         qaqh_types::platform::data_dir().join("workspace")
     }
@@ -62,7 +62,7 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         crate::set_workspace("/home/user/project");
         let dir = qaqh_dir();
-        assert_eq!(dir, Path::new("/home/user/project/.deepx"));
+        assert_eq!(dir, Path::new("/home/user/project/.qaqh"));
     }
 
     #[test]

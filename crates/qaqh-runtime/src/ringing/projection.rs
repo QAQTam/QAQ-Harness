@@ -97,6 +97,12 @@ impl SnapshotProjector {
                         state["meta_changed"] = serde_json::json!(title);
                         true
                     }
+                    CE::ConfigChanged { rev } => {
+                        // 配置变更通知：快照只记"已变更+rev"，值由消费者
+                        // config.load 重拉（P2-D2）。
+                        state["config_rev"] = serde_json::json!(rev);
+                        true
+                    }
                     CE::AgentLifecycleChanged { state: s } => {
                         state["agent_lifecycle"] = serde_json::json!(s);
                         true
@@ -123,7 +129,12 @@ impl SnapshotProjector {
                         state["last_failure"] = serde_json::json!({ "occurred": true });
                         true
                     }
-                    CE::OperationCompleted { .. } => false,
+                    CE::OperationCompleted { .. } => {
+                        // R6：成功完成即清 last_failure，避免陈旧失败横幅
+                        // 在后续所有 bootstrap 快照中阴魂不散。
+                        state["last_failure"] = serde_json::Value::Null;
+                        true
+                    }
                     CE::SystemNotice { notice_id, .. } => {
                         state["last_notice"] = serde_json::json!(notice_id);
                         true
@@ -143,11 +154,15 @@ impl SnapshotProjector {
                 match ce {
                     CE::TurnStarted { turn_id, .. } => {
                         state["active_turn"] = serde_json::json!(turn_id);
+                        // R6：新回合开始即清除历史取消标记，否则快照在
+                        // 会话余生持续误报 cancelled。
+                        state["cancelled"] = serde_json::Value::Null;
                         true
                     }
                     CE::TurnCompleted { turn_id, .. } => {
                         state["last_completed_turn"] = serde_json::json!(turn_id);
                         state["active_turn"] = serde_json::Value::Null;
+                        state["cancelled"] = serde_json::Value::Null;
                         true
                     }
                     CE::TurnFailed { turn_id, .. } => {

@@ -45,7 +45,7 @@ impl DaemonDiscovery {
 
 /// Platform data directory. `QAQH_DATA_DIR` overrides when set (used by test
 /// harnesses and multi-instance shells); otherwise Windows:
-/// `%USERPROFILE%\.deepx`; Unix: `$XDG_CONFIG_HOME/qaqh` or `~/.config/qaqh`.
+/// `%USERPROFILE%\.qaqh`; Unix: `$XDG_CONFIG_HOME/qaqh` or `~/.config/qaqh`.
 pub fn data_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("QAQH_DATA_DIR") {
         if !dir.is_empty() {
@@ -54,14 +54,14 @@ pub fn data_dir() -> PathBuf {
     }
     if cfg!(windows) {
         if let Some(profile) = std::env::var_os("USERPROFILE") {
-            return PathBuf::from(profile).join(".deepx");
+            return PathBuf::from(profile).join(".qaqh");
         }
     } else if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
         return PathBuf::from(xdg).join("qaqh");
     } else if let Some(home) = std::env::var_os("HOME") {
         return PathBuf::from(home).join(".config").join("qaqh");
     }
-    PathBuf::from(".deepx")
+    PathBuf::from(".qaqh")
 }
 
 /// Path to the discovery file.

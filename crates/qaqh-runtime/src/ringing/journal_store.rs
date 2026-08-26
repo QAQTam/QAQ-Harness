@@ -193,6 +193,9 @@ impl JournalStore {
         }
         let tmp = path.with_extension("jsonl.tmp");
         std::fs::write(&tmp, body)?;
+        // L-runtime：Unix 上 rename 本可原子覆盖已存在目标，先 remove 会
+        // 制造 crash 窗口丢整本 seed 历史；仅 Windows 需要先删。
+        #[cfg(windows)]
         if path.exists() {
             std::fs::remove_file(&path)?;
         }

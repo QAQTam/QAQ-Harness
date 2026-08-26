@@ -5,7 +5,55 @@ mod server;
 
 use std::io::{Read, Write};
 
+/// 诊断日志 sink：daemon 此前无任何 logger 初始化，msgloop 的
+/// [COMPACT]/[TURN] 等 log::error/warn 全部丢弃，压缩失败等原因无从追查。
+/// 追加写入 `<数据目录>/qaqh-daemon.log`（Windows: `%USERPROFILE%\.qaqh`）。
+fn init_file_logging() {
+    struct FileLogger(std::sync::Mutex<std::fs::File>);
+    impl log::Log for FileLogger {
+        fn enabled(&self, metadata: &log::Metadata) -> bool {
+            metadata.level() <= log::Level::Info
+        }
+        fn log(&self, record: &log::Record) {
+            if !self.enabled(record.metadata()) {
+                return;
+            }
+            let Ok(mut file) = self.0.lock() else {
+                return;
+            };
+            let secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let _ = writeln!(
+                file,
+                "[{secs}] {:<5} {}: {}",
+                record.level(),
+                record.target(),
+                record.args()
+            );
+        }
+        fn flush(&self) {}
+    }
+    let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) else {
+        return;
+    };
+    let path = std::path::Path::new(&home)
+        .join(".qaqh")
+        .join("qaqh-daemon.log");
+    let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    else {
+        return;
+    };
+    let _ = log::set_boxed_logger(Box::new(FileLogger(std::sync::Mutex::new(file))));
+    log::set_max_level(log::LevelFilter::Info);
+}
+
 fn main() {
+    init_file_logging();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("status") => status(),

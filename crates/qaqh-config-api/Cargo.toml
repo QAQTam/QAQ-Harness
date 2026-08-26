@@ -1,0 +1,16 @@
+[package]
+name = "qaqh-config-api"
+version.workspace = true
+edition.workspace = true
+description = "配置契约层（wire DTO）：ConfigDto 读模型 / ConfigPatch 写模型——winui/ratatui/web 三端共享的唯一真相"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+# ts-rs（web 端 TS 类型生成）按 PLAN §2/K1 预留 feature-gate；web 开工时再引入，
+# 避免当前引入新的构建依赖。
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

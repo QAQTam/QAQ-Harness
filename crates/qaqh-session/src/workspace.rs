@@ -163,7 +163,10 @@ impl WorkspaceStore {
         // 顶部/左侧两入口重复点导致多条同路径工作区，左侧筛选失焦）。
         {
             let items = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(existing) = items.iter().find(|w| normalize_path(&w.path) == normalize_path(&canonical_str)) {
+            if let Some(existing) = items
+                .iter()
+                .find(|w| normalize_path(&w.path) == normalize_path(&canonical_str))
+            {
                 return Ok(existing.clone());
             }
         }

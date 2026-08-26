@@ -101,7 +101,14 @@ mod tests {
         let mut d = SseDecoder::new();
         d.push(b"id: epoch-1:conversation:7\nevent: turn_started\ndata: {\"x\":1}\n\n");
         let frame = d.next_frame().expect("frame").expect("utf-8");
-        assert_eq!(fields(frame), ("epoch-1:conversation:7".into(), "turn_started".into(), "{\"x\":1}".into()));
+        assert_eq!(
+            fields(frame),
+            (
+                "epoch-1:conversation:7".into(),
+                "turn_started".into(),
+                "{\"x\":1}".into()
+            )
+        );
         assert!(d.next_frame().is_none());
     }
 
@@ -112,7 +119,10 @@ mod tests {
         assert!(d.next_frame().is_none());
         d.push(b"ted\ndata: {}\n\n");
         let frame = d.next_frame().expect("frame").expect("utf-8");
-        assert_eq!(fields(frame), ("e:tool:1".into(), "tool_started".into(), "{}".into()));
+        assert_eq!(
+            fields(frame),
+            ("e:tool:1".into(), "tool_started".into(), "{}".into())
+        );
         assert!(d.next_frame().is_none());
     }
 
@@ -157,8 +167,14 @@ mod tests {
         let mut d = SseDecoder::new();
         d.push(b"data: {\"a\":1}\n\n");
         d.push(b"data: {\"b\":2}\n\n");
-        assert_eq!(d.next_frame().expect("frame").expect("utf-8").data, "{\"a\":1}");
-        assert_eq!(d.next_frame().expect("frame").expect("utf-8").data, "{\"b\":2}");
+        assert_eq!(
+            d.next_frame().expect("frame").expect("utf-8").data,
+            "{\"a\":1}"
+        );
+        assert_eq!(
+            d.next_frame().expect("frame").expect("utf-8").data,
+            "{\"b\":2}"
+        );
         assert!(d.next_frame().is_none());
     }
 

@@ -24,8 +24,8 @@
 //! initialization (the subagent worker itself does this via
 //! `AgentState::init_subagent`) to register the `spawn_subagent` tool.
 
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use qaqh_client::{
@@ -38,7 +38,7 @@ use qaqh_client::{
 use qaqh_workspace::{ToolCallCtx, ToolHandler, ToolManager, ToolResult, ToolRisk};
 
 mod host;
-pub use host::{host, install_host, ContentRef, EventBatch, SubagentHost};
+pub use host::{ContentRef, EventBatch, SubagentHost, host, install_host};
 
 /// Run a future on the shared qaqh-client tokio runtime. Safe from any
 /// non-tokio thread (tool handlers and collector threads are std threads).
@@ -835,12 +835,15 @@ fn collect_subagent_result(
     // 主代理 idle 时这条消息触发新回合（模型自动看到子代理结果并继续）；
     // 主代理仍在运行中则进入回合 lap 边界的见缝插针通道。注入被 daemon 拒绝
     // （lease/compact 等）时重试一次并告警，避免静默丢失。
-    let header = if did_cancel {
-        format!("[SUBAGENT '{name}' CANCELLED]")
+    let (state_tag, header) = if did_cancel {
+        ("cancelled", format!("subagent '{name}' cancelled"))
     } else if exit_code != 0 {
-        format!("[SUBAGENT '{name}' ERROR exit={exit_code}]")
+        (
+            "error",
+            format!("subagent '{name}' failed (exit={exit_code})"),
+        )
     } else {
-        format!("[SUBAGENT '{name}' COMPLETED]")
+        ("completed", format!("subagent '{name}' completed"))
     };
     if !parent_seed.is_empty() {
         // 注入到主代理会话。主代理 idle 时该消息触发新回合；运行中则进入
@@ -854,7 +857,9 @@ fn collect_subagent_result(
         // （SessionResume 幂等），覆盖 lease 过期后的恢复。
         let inject = RingingCommand::Conversation(
             qaqh_client::ConversationCommand::ConversationSendMessage {
-                text: format!("{header}\n\n{final_answer}"),
+                text: format!(
+                    "<qaqh_subagent_result name=\"{name}\" state=\"{state_tag}\" exit=\"{exit_code}\">\n{header}\n{final_answer}\n</qaqh_subagent_result>"
+                ),
                 images: vec![],
                 attachments: None,
                 // 以 system 角色注入（而非 user）：模型可见但不等同于用户输入，

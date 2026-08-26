@@ -24,6 +24,7 @@ pub(crate) const USAGE_EMIT_INTERVAL: Duration = Duration::from_secs(1);
 /// `content`/`reasoning`/`tool_calls_raw`/`response_output_items` 供 parse 消费；
 /// `active_stream_block`/`timeline_tools_open` 供后续 seal 消费；
 /// `had_error`/`done_seen`/`gate_error`/`request_error` 供错误归一；
+/// `stop_reason` 为 None 表示流未以 finish_reason 终止（掐流/不完整回合）；
 /// `current_request_usage` 供 token calibration；`last_usage` 回传给调用方。
 pub(crate) struct GateRequestResult {
     pub(crate) content: String,
@@ -37,6 +38,7 @@ pub(crate) struct GateRequestResult {
     pub(crate) gate_error: Option<String>,
     pub(crate) current_request_usage: Option<UsageInfo>,
     pub(crate) request_error: Option<String>,
+    pub(crate) stop_reason: Option<String>,
     pub(crate) last_usage: Option<UsageInfo>,
 }
 
@@ -323,6 +325,7 @@ pub(crate) fn gate_request(
     // 已收到 Done（内容完整流式输出）标记：gate 尾部错误不再否定完成。
     let mut done_seen = false;
     let mut gate_error = None;
+    let mut stop_reason: Option<String> = None;
     let mut current_request_usage: Option<UsageInfo> = None;
 
     *ctx.phase = LoopPhase::GateRunning;
@@ -432,9 +435,12 @@ pub(crate) fn gate_request(
                 );
             }
             qaqh_gate::StreamEvent::Done {
-                raw_message, usage, ..
+                raw_message,
+                usage,
+                stop_reason: reason,
             } => {
                 done_seen = true;
+                stop_reason = reason;
                 if let Some(ref u) = usage {
                     ctx.agent.session.record_usage(u);
                     if !ctx.agent.ephemeral {
@@ -611,6 +617,7 @@ pub(crate) fn gate_request(
         gate_error,
         current_request_usage,
         request_error: result.err().map(|e| e.to_string()),
+        stop_reason,
         last_usage,
     };
     debug_assert_gate_invariants(&out, round_num);
@@ -623,7 +630,9 @@ pub(crate) fn gate_request(
 ///
 /// 从 `run_lap` 原样抽出的 provider 构建逻辑；`ep`/`is_responses` 仅在
 /// 此处使用，迁移后 `run_lap` 不再持有它们。
-pub(crate) fn provider_for(ctx: &RingContext) -> qaqh_gate::ProviderConfig {
+/// `request_tag` feeds the OpenCode gateway management headers (`msg_…`
+/// request id): pass the turn id for normal rounds.
+pub(crate) fn provider_for(ctx: &RingContext, request_tag: &str) -> qaqh_gate::ProviderConfig {
     let ep = qaqh_config::registry::find_endpoint(
         &ctx.agent.config.provider_id,
         &ctx.agent.config.endpoint,
@@ -655,7 +664,7 @@ pub(crate) fn provider_for(ctx: &RingContext) -> qaqh_gate::ProviderConfig {
             p.responses_compat.web_search = false;
             p.responses_compat.echo_web_search_call = false;
         }
-        p
+        p.with_opencode_headers(&ctx.agent.session.seed, request_tag)
     } else {
         let mut p = qaqh_gate::ProviderConfig::openai(
             &ctx.agent.config.base_url,
@@ -676,10 +685,11 @@ pub(crate) fn provider_for(ctx: &RingContext) -> qaqh_gate::ProviderConfig {
         .with_stream_usage(ep.as_ref().map(|e| e.include_stream_usage).unwrap_or(false));
         if let Some(endpoint) = ep.as_ref() {
             p.supports_reasoning_effort = endpoint.supports_reasoning_effort;
+            p.effort_allowlist = endpoint.effort_allowlist.clone();
             p.tool_call_content_null = endpoint.tool_call_content_null;
             p.supports_reasoning_content = endpoint.supports_reasoning_content;
             p.require_provider_parameters = endpoint.require_provider_parameters;
         }
-        p
+        p.with_opencode_headers(&ctx.agent.session.seed, request_tag)
     }
 }

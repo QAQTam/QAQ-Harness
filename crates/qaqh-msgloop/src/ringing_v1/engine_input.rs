@@ -80,7 +80,7 @@ impl InputEngine {
         // and injected into the FIRST user message. They must NOT be reset
         // here — a per-turn rebuild would move the [Environment] block to the
         // newest user message and break the prefix cache at turn-1's message.
-        qaqh_workspace::set_cancel(false);
+        qaqh_workspace::clear_cancel();
 
         qaqh_workspace::runtime::set_context(
             &ctx.agent.session.seed,
@@ -179,13 +179,13 @@ impl InputEngine {
             );
         }
 
-        // Add image blocks to the user message and register them globally
-        // so image can look them up by index.
+        // Add image blocks to the user message and register them in the
+        // read_image registry so the model can look them up by index.
         for img in &images {
             ctx.agent
                 .msg
                 .push_image_to_last_user(&img.mime_type, &img.data);
-            qaqh_workspace::image_query::store_image(
+            qaqh_workspace::read_image::store_image(
                 &ctx.agent.session.seed,
                 &img.mime_type,
                 &img.data,
@@ -247,7 +247,7 @@ impl InputEngine {
         }
 
         ctx.cancel.clear();
-        qaqh_workspace::set_cancel(false);
+        qaqh_workspace::clear_cancel();
         qaqh_workspace::runtime::set_context(
             &ctx.agent.session.seed,
             ctx.agent.config.permission_level,

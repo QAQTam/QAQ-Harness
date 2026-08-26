@@ -4,7 +4,7 @@
 //! Receives: RingContext + ToolEngine (for tool execution).
 //! Returns: Outcome (ContinueTurn, YieldToUser, TurnComplete, Error).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use qaqh_domain::AskAnswer;
 use qaqh_message::Effect;
@@ -83,17 +83,45 @@ fn dump_request_log(
     let _ = writeln!(f, "{rec}");
 }
 
+/// How to resume a turn whose stream was cut mid-response by the upstream
+/// (busy-shedding endpoints close the HTTP stream instead of returning an
+/// error code). Mirrors opencode's "restart with words" behaviour: the
+/// partially-streamed assistant content stays in the store, and the next
+/// request re-sends it as history with a nudge to continue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StreamContinuation {
+    /// Assistant text finished but the stream died inside (or before closing)
+    /// a reasoning chain — drop the trailing reasoning from the request view
+    /// and ask the model to continue.
+    StripTrailingReasoning,
+    /// The assistant text itself was cut off — keep everything and ask the
+    /// model to complete what it was saying.
+    ContinuePartialText,
+}
+
+/// Upper bound on consecutive mid-stream resumes within one turn. Each resume
+/// is a fresh billable request; past this the partial output is accepted as-is.
+const MAX_STREAM_CONTINUATIONS: u32 = 3;
+
 /// TurnEngine manages a single LLM turn lifecycle.
 pub struct TurnEngine {
     /// If Some, a turn is suspended waiting for permission or ask_user.
     pub(crate) suspended: Option<TurnState>,
+    /// Pending mid-stream resume for the next gate round.
+    pub(crate) continuation: Option<StreamContinuation>,
+    /// Consecutive resumes consumed for the current turn.
+    pub(crate) continuation_count: u32,
 }
 
 impl TurnEngine {
     // ── gate stream helpers moved to turn_lap::gate (A2 step3) ──
 
     pub fn new() -> Self {
-        Self { suspended: None }
+        Self {
+            suspended: None,
+            continuation: None,
+            continuation_count: 0,
+        }
     }
 
     pub fn is_suspended(&self) -> bool {
@@ -154,6 +182,67 @@ impl TurnEngine {
         }
     }
 
+    /// H1/H2：悬空 turn 属于已替换的会话时，收敛 timeline 并丢弃。
+    /// 返回 true 表示检测到陈旧悬空且已处理（调用方应立即返回 Handled）。
+    fn drop_stale_suspension(&mut self, ctx: &mut RingContext) -> bool {
+        let stale = self
+            .suspended
+            .as_ref()
+            .is_some_and(|s| s.session_id != ctx.agent.session.seed);
+        if !stale {
+            return false;
+        }
+        log::warn!("[TURN] dropping suspension belonging to a replaced session");
+        if let Some(saved) = self.suspended.take() {
+            let tool_ids: HashSet<String> = saved.tool_call_order.iter().cloned().collect();
+            seal_timeline_terminal_round(
+                ctx,
+                &saved.turn_id,
+                saved.round_num,
+                None,
+                &tool_ids,
+                qaqh_domain::TimelineTurnState::Cancelled,
+                Some(qaqh_domain::TimelineFailure {
+                    code: "session_replaced".into(),
+                    message: "The active session was replaced while this turn was suspended."
+                        .into(),
+                }),
+            );
+        }
+        true
+    }
+
+    /// H1：显式中止并分离当前悬空的 turn（被新用户输入取代）。
+    /// 返回被中止的 turn_id；timeline 与领域事件双发 Cancelled 终态，
+    /// 悬空 tool_use 由调用方用 remove_last_step_if_incomplete 清理。
+    pub fn abort_suspended(&mut self, ctx: &mut RingContext) -> Option<String> {
+        let saved = self.suspended.take()?;
+        log::warn!(
+            "[TURN] aborting suspended turn {} (superseded by newer input)",
+            saved.turn_id
+        );
+        let tool_ids: HashSet<String> = saved.tool_call_order.iter().cloned().collect();
+        seal_timeline_terminal_round(
+            ctx,
+            &saved.turn_id,
+            saved.round_num,
+            None,
+            &tool_ids,
+            qaqh_domain::TimelineTurnState::Cancelled,
+            Some(qaqh_domain::TimelineFailure {
+                code: "superseded_by_new_input".into(),
+                message: "A newer user message replaced this suspended turn.".into(),
+            }),
+        );
+        ctx.emitter
+            .emit_domain(qaqh_domain::DomainEvent::Conversation(
+                qaqh_domain::ConversationEvent::ConversationCancelled {
+                    turn_id: Some(saved.turn_id.clone()),
+                },
+            ));
+        Some(saved.turn_id)
+    }
+
     /// Resolve one LLM permission by call ID. The turn only advances after
     /// every permission from the assistant round has been accounted for.
     pub fn handle_permission_resolved(
@@ -163,6 +252,10 @@ impl TurnEngine {
         call_id: &str,
         admitted: Option<AdmittedTool>,
     ) -> Outcome {
+        // H1/H2：悬空状态属于其它会话时直接丢弃。
+        if self.drop_stale_suspension(ctx) {
+            return Outcome::Handled;
+        }
         let Some(saved) = self.suspended.as_mut() else {
             log::warn!("[TURN] permission resolved without a suspended turn: {call_id}");
             return Outcome::Handled;
@@ -255,6 +348,10 @@ impl TurnEngine {
         ask_id: &str,
         answers: &[AskAnswer],
     ) -> Outcome {
+        // H1/H2：悬空状态属于其它会话时直接丢弃。
+        if self.drop_stale_suspension(ctx) {
+            return Outcome::Handled;
+        }
         let active = match self.suspended.as_ref() {
             Some(state) if state.reason == YieldReason::AskUser => {
                 match state.pending_asks.front() {
@@ -330,6 +427,10 @@ impl TurnEngine {
         message: &str,
         autonomous: bool,
     ) -> Outcome {
+        // H1/H2：悬空状态属于其它会话时直接丢弃。
+        if self.drop_stale_suspension(ctx) {
+            return Outcome::Handled;
+        }
         let active_id = self
             .suspended
             .as_ref()
@@ -446,6 +547,10 @@ impl TurnEngine {
         tool: &mut ToolEngine,
         ask_id: &str,
     ) -> Outcome {
+        // H1/H2：悬空状态属于其它会话时直接丢弃。
+        if self.drop_stale_suspension(ctx) {
+            return Outcome::Handled;
+        }
         let active_id = self
             .suspended
             .as_ref()
@@ -696,6 +801,7 @@ impl TurnEngine {
                     let (c, t, tc, tr, ts, sp, _, _) = ctx.agent.msg.compute_context_stats(None);
                     c + t + tc + tr + ts + sp
                 };
+                let turns_before_apply = ctx.agent.msg.turn_count();
                 ctx.agent.msg.apply_compact(&summary, kept);
                 ctx.agent
                     .msg
@@ -704,6 +810,25 @@ impl TurnEngine {
                     let (c, t, tc, tr, ts, sp, _, _) = ctx.agent.msg.compute_context_stats(None);
                     c + t + tc + tr + ts + sp
                 };
+                // G2：零压缩（skip==0 早退）如实上报 Cancelled，并经
+                // record_auto_compact_result(false) 阻断本 revision 的自动
+                // 重试——否则每个 lap 都重跑一次摘要 LLM（livelock）。
+                if ctx.agent.msg.turn_count() == turns_before_apply {
+                    log::warn!(
+                        "[TURN] auto-compact produced no change; suppressing retry until context changes"
+                    );
+                    ctx.emitter
+                        .emit_domain(qaqh_domain::DomainEvent::Conversation(
+                            qaqh_domain::ConversationEvent::CompactFinished {
+                                compact_id,
+                                status: qaqh_domain::CompactStatus::Cancelled,
+                                summary_chars: Some(0),
+                                turns_compacted: Some(0),
+                                turns_removed: Some(0),
+                            },
+                        ));
+                    return false;
+                }
                 // Ringing 双发：CompactFinished（成功终态）
                 ctx.emitter
                     .emit_domain(qaqh_domain::DomainEvent::Conversation(
@@ -846,6 +971,36 @@ impl TurnEngine {
         (messages, request_estimate, request_fingerprint, request_key)
     }
 
+    /// Mid-stream resume view transform: shape the next request so the model
+    /// continues where the cut-off left off. Store/timeline are untouched —
+    /// this is a request-time projection only.
+    ///
+    /// - `StripTrailingReasoning`: the text had finished and the stream died
+    ///   in a trailing reasoning chain; reasoning is dropped from the view
+    ///   (reasoning must not be re-sent as user content) and a bare
+    ///   `continue` nudges the model onward.
+    /// - `ContinuePartialText`: the text itself was cut; everything stays and
+    ///   an explicit completion prompt is appended.
+    fn apply_continuation_view(messages: &mut Vec<qaqh_types::Message>, kind: StreamContinuation) {
+        if matches!(kind, StreamContinuation::StripTrailingReasoning) {
+            if let Some(last) = messages.last_mut() {
+                if last.role == "assistant" {
+                    while matches!(
+                        last.content.last(),
+                        Some(qaqh_types::ContentBlock::Reasoning { .. })
+                    ) {
+                        last.content.pop();
+                    }
+                }
+            }
+        }
+        let prompt = match kind {
+            StreamContinuation::StripTrailingReasoning => "continue",
+            StreamContinuation::ContinuePartialText => "(继续补全)",
+        };
+        messages.push(qaqh_types::Message::user(prompt));
+    }
+
     fn run_lap(
         &mut self,
         ctx: &mut RingContext,
@@ -856,7 +1011,7 @@ impl TurnEngine {
     ) -> Outcome {
         log::info!("[TURN] run_lap turn_id={} round_num={}", turn_id, round_num);
         // Rebuild provider from current config（gate_lap 准备逻辑，见 turn_lap::gate）
-        let provider = provider_for(ctx);
+        let provider = provider_for(ctx, &turn_id);
 
         // 单回合执行块：所有路径均 return（clippy::never_loop），无需循环。
         {
@@ -879,8 +1034,13 @@ impl TurnEngine {
             }
 
             // ── 传输快照 + 估计 + auto-compact 预检（已抽至 prepare_gate_snapshot） ──
-            let (messages, request_estimate, request_fingerprint, request_key) =
+            let (mut messages, request_estimate, request_fingerprint, request_key) =
                 Self::prepare_gate_snapshot(ctx);
+            if let Some(kind) = self.continuation {
+                Self::apply_continuation_view(&mut messages, kind);
+                // 续写轮的 token 估计基于变换前快照；user 提示词仅 ~1 token，
+                // 剥离思考链只会减少上下文——偏差方向安全，无需重估。
+            }
 
             let GateRequestResult {
                 content,
@@ -894,6 +1054,7 @@ impl TurnEngine {
                 gate_error,
                 current_request_usage,
                 request_error,
+                stop_reason,
                 last_usage,
             } = gate_request(
                 ctx,
@@ -984,6 +1145,50 @@ impl TurnEngine {
                 round_num
             );
 
+            // ── 上游掐流检测（对齐 opencode 的"带词重启"）──
+            // 繁忙端点可能不发错误码而是直接终止 HTTP 流：此时 Done 仍会
+            // 发出，但 stop_reason 缺失。半截内容已照常落盘（增量早已流出
+            // 给前端），下一轮请求将其作为历史回传并注入续写提示。
+            let incomplete_stream = !had_error && request_error.is_none() && stop_reason.is_none();
+            if incomplete_stream {
+                if self.continuation_count >= MAX_STREAM_CONTINUATIONS {
+                    log::warn!(
+                        "[TURN] run_lap turn_id={} round_num={} stream incomplete {}x — giving up, accepting partial output",
+                        turn_id,
+                        round_num,
+                        self.continuation_count
+                    );
+                    self.continuation = None;
+                } else {
+                    let has_text = !content.trim().is_empty();
+                    let has_reasoning = !reasoning.trim().is_empty();
+                    // 正文完成停在思考链 / 只有思考链 → 剥链 + continue；
+                    // 正文本身被掐 → 保留原文 + 补全提示。
+                    self.continuation = Some(if has_text && !has_reasoning {
+                        StreamContinuation::ContinuePartialText
+                    } else {
+                        StreamContinuation::StripTrailingReasoning
+                    });
+                    self.continuation_count += 1;
+                    log::warn!(
+                        "[TURN] run_lap turn_id={} round_num={} stream cut without finish_reason — resuming ({}/{})",
+                        turn_id,
+                        round_num,
+                        self.continuation_count,
+                        MAX_STREAM_CONTINUATIONS
+                    );
+                    return Outcome::ContinueTurn {
+                        turn_id,
+                        round_num,
+                        usage: last_usage,
+                    };
+                }
+            } else if self.continuation.is_some() {
+                // 续写轮正常终止：恢复常规路径。
+                self.continuation = None;
+                self.continuation_count = 0;
+            }
+
             // ── Parse + push assistant message (turn_lap::parse) ──
             let crate::ringing_v1::turn_lap::parse::ParseOutput {
                 parsed,
@@ -1052,6 +1257,8 @@ impl TurnEngine {
     /// Reset all turn state (called on Cancel / new session).
     pub fn reset(&mut self) {
         self.suspended = None;
+        self.continuation = None;
+        self.continuation_count = 0;
     }
 
     pub fn take_suspended_for_abort(&mut self) -> Option<(String, Option<UsageInfo>)> {

@@ -1787,12 +1787,22 @@ name = "qaqh-config"
 version = "0.0.0-alpha.0"
 dependencies = [
  "log",
+ "qaqh-config-api",
  "qaqh-types",
  "serde",
  "serde_json",
+ "tokio",
  "toml",
  "ureq",
  "windows",
+]
+
+[[package]]
+name = "qaqh-config-api"
+version = "0.0.0-alpha.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1900,6 +1910,7 @@ dependencies = [
  "chrono",
  "log",
  "qaqh-config",
+ "qaqh-config-api",
  "qaqh-domain",
  "qaqh-msgloop",
  "qaqh-proto",
@@ -1973,6 +1984,7 @@ dependencies = [
  "html2text",
  "ignore",
  "image",
+ "libc",
  "log",
  "qaqh-config",
  "qaqh-proto",

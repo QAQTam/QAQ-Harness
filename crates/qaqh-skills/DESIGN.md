@@ -1,4 +1,4 @@
-# DeepX Skill Runtime V2
+# QAQ-Harness Skill Runtime V2
 
 This document is authoritative for skill discovery, context assembly, runtime state, IPC, and persistence.
 
@@ -19,7 +19,7 @@ Catalog and envelope messages are never written to history. Removing all skills 
 
 ## Discovery and tools
 
-Discovery precedence is `.deepx/skills`, `.agents/skills`, and `skills` under the workspace, followed by the equivalent user roots. Scanning and file sizes are bounded. Invalid entries do not stop discovery and appear as Unavailable diagnostics.
+Discovery precedence is `.qaqh/skills`, `.agents/skills`, and `skills` under the workspace, followed by the equivalent user roots. Scanning and file sizes are bounded. Invalid entries do not stop discovery and appear as Unavailable diagnostics.
 
 The fixed `skills` schema supports `activate`, `retain`, `release`, `resource`, `list`, and `validate`; it is not expanded per discovered skill. Successful lifecycle actions return ordered typed `SkillEffect` values. Parallel results are committed in original tool-call order. Generic `read` rejects or excludes discovered `SKILL.md` files and managed resources with `USE_SKILLS_TOOL`.
 

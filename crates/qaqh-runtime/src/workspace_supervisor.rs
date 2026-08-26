@@ -696,7 +696,7 @@ pub fn diagnose_wsl() -> Result<serde_json::Value, String> {
 /// 流程（为什么拷贝而不是 /mnt 直连构建）：
 ///   1. WSL 的 /mnt 是 9p 文件系统，git2 vendored 有数千小文件，直连编译
 ///      极慢；拷贝到 WSL 原生路径（ext4）构建速度正常。
-///   2. tar 排除 target/.git/node_modules 等大目录；`~/.deepx-workspace-src/`
+///   2. tar 排除 target/.git/node_modules 等大目录；`~/.qaqh-workspace-src/`
 ///      内的旧 target 保留 → 二次安装增量编译（秒级）。
 ///   3. 产物 install 到 `~/.local/bin/qaqh-workspace`；若 PATH 未含
 ///      `~/.local/bin` 则幂等追加到 `~/.bashrc`（否则 supervisor 的
@@ -757,16 +757,16 @@ pub fn install_wsl(repo_root: Option<&str>) -> Result<serde_json::Value, String>
     }
 
     // 1. 拷贝源码到 WSL 原生路径（排除大目录；保留旧 target 供增量）。
-    //    find 清空旧源码（target 除外），tar 管道 /mnt → ~/.deepx-workspace-src。
+    //    find 清空旧源码（target 除外），tar 管道 /mnt → ~/.qaqh-workspace-src。
     let copy_script = format!(
         "set -e; \
-         mkdir -p ~/.deepx-workspace-src; \
-         find ~/.deepx-workspace-src -mindepth 1 -maxdepth 1 ! -name target -exec rm -rf {{}} + 2>/dev/null || true; \
+         mkdir -p ~/.qaqh-workspace-src; \
+         find ~/.qaqh-workspace-src -mindepth 1 -maxdepth 1 ! -name target -exec rm -rf {{}} + 2>/dev/null || true; \
          cd {wsl_repo} && \
-         tar --exclude=target --exclude=.git --exclude=.deepx --exclude=node_modules \
+         tar --exclude=target --exclude=.git --exclude=.qaqh --exclude=node_modules \
              --exclude=out --exclude=release --exclude=packages --exclude=staging \
              --exclude=payload --exclude=.cache -cf - . | \
-         tar -xf - -C ~/.deepx-workspace-src && \
+         tar -xf - -C ~/.qaqh-workspace-src && \
          echo COPY_OK"
     );
     let (copy_ok, copy_out) = run_wsl(&["-e", "bash", "-lc", &copy_script], 300)?;
@@ -778,7 +778,7 @@ pub fn install_wsl(repo_root: Option<&str>) -> Result<serde_json::Value, String>
     //    截断保存尾部（成功/失败都返回摘要）。
     let build_cmd = format!(
         "set -e; \
-         cd ~/.deepx-workspace-src && \
+         cd ~/.qaqh-workspace-src && \
          cargo build --release -p qaqh-workspace 2>&1 | tail -40; \
          test -x target/release/qaqh-workspace && \
          mkdir -p ~/.local/bin && \

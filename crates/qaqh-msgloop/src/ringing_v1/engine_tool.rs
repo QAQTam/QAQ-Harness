@@ -404,6 +404,12 @@ impl ToolEngine {
         let mut authorized = Vec::new();
         let mut pending_permission_ids = Vec::new();
         let mut pending_asks = VecDeque::new();
+        // L-msgloop②：pending_plans / pending_todo_activation 恒为空——
+        // plan 评审与 todo 激活当前由 UI ToolInvoke / todo 工具自身闭环，
+        // 不再走 lap 内挂起路径。若未来恢复挂起式评审，务必同步处理
+        // handle_plan_response 中 co-pending asks 的排空陷阱：plan resolve
+        // 后若 suspended.pending_asks 非空，必须重新 YieldToUser 而非直接
+        // run_lap，否则 ask 的悬空 tool_use 会随下一轮被折叠。
         let pending_plans = VecDeque::new();
         let pending_todo_activation = None;
 
@@ -820,7 +826,6 @@ impl ToolEngine {
         round_num: u32,
     ) {
         // A2：渲染尾部协议——尾部状态按 (tool_call_id, stream) 维护，跨事件累积。
-        let mut tails: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         loop {
             match rx.recv_timeout(std::time::Duration::from_millis(50)) {
                 Ok(first) => {
@@ -829,7 +834,7 @@ impl ToolEngine {
                         events.push(event);
                     }
                     for event in events {
-                        Self::emit_progress_tail(ctx, turn_id, round_num, &event, &mut tails);
+                        Self::emit_progress_tail(ctx, turn_id, round_num, &event);
                     }
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
@@ -846,7 +851,6 @@ impl ToolEngine {
         round_num: u32,
     ) {
         // A2：渲染尾部协议（与 drain_progress_external 共用发射 helper）。
-        let mut tails: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         loop {
             match rx.recv_timeout(std::time::Duration::from_millis(50)) {
                 Ok(first) => {
@@ -855,7 +859,7 @@ impl ToolEngine {
                         events.push(event);
                     }
                     for event in events {
-                        Self::emit_progress_tail(ctx, turn_id, round_num, &event, &mut tails);
+                        Self::emit_progress_tail(ctx, turn_id, round_num, &event);
                     }
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
@@ -872,33 +876,7 @@ impl ToolEngine {
         turn_id: &str,
         round_num: u32,
         event: &qaqh_workspace::ExecProgressEvent,
-        tails: &mut std::collections::HashMap<String, String>,
     ) {
-        const TAIL_MAX: usize = 4096;
-        let key = format!("{}:{}", event.tool_call_id, event.stream.as_str());
-        let buf = tails.entry(key).or_default();
-        buf.push_str(&event.chunk);
-        if buf.len() > TAIL_MAX {
-            // 字节偏移可能落在多字节 UTF-8 字符中间，必须先用 floor_char_boundary
-            // 对齐到字符边界，否则 String::drain 会 panic（is_char_boundary(end)）。
-            let cut = buf.floor_char_boundary(buf.len() - TAIL_MAX);
-            buf.drain(..cut);
-        }
-        let seq_end = event.seq + event.chunk.len() as u64;
-        let tail_len = buf.len() as u64;
-        ctx.emitter.emit_domain(qaqh_domain::DomainEvent::Tool(
-            qaqh_domain::ToolEvent::ToolProgress {
-                tool_call_id: event.tool_call_id.clone(),
-                turn_id: turn_id.to_string(),
-                round_num,
-                stream: event.stream.as_str().to_string(),
-                seq_start: seq_end.saturating_sub(tail_len),
-                seq_end,
-                chunk: buf.clone(),
-                dropped_bytes: 0,
-                truncated: seq_end > tail_len,
-            },
-        ));
         emit_timeline_tool_progress(
             ctx,
             turn_id,

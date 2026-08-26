@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-pub const DATA_ROOT_MARKER: &str = ".deepx-data-root.json";
+pub const DATA_ROOT_MARKER: &str = ".qaqh-data-root.json";
 
 /// 对外产品版本号（User-Agent 使用）：不带 rc/预发布后缀，正式发布时手工 bump。
 /// 与 cargo 包版本（`CARGO_PKG_VERSION`，如 `1.0.0-rc.6`）解耦——UA 里暴露的是
@@ -25,7 +25,7 @@ pub const QAQH_UA_VERSION: &str = qaqh_ua_version!();
 /// 网页抓取（`qaqh-workspace::web`）是独立的浏览器伪装 UA，不使用本常量。
 pub const QAQH_USER_AGENT: &str = concat!("qaqharness/", qaqh_ua_version!(), "/");
 
-/// data-root marker（`<data>/.deepx-data-root.json`）— 权威契约来自后端 `qaqh_types::platform`。
+/// data-root marker（`<data>/.qaqh-data-root.json`）— 权威契约来自后端 `qaqh_types::platform`。
 /// 前端禁止自建 FNV 公式；统一通过 `normalized_path_text` / `data_root_id` / `DataRootMarker` 复用。
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,10 +51,10 @@ pub fn home_dir() -> PathBuf {
 }
 
 /// qaqh data directory (config, sessions, plans).
-/// - Windows: `%USERPROFILE%\.deepx`
+/// - Windows: `%USERPROFILE%\.qaqh`
 /// - Unix: `$XDG_CONFIG_HOME/qaqh` or `$HOME/.config/qaqh`
 pub fn data_dir() -> PathBuf {
-    // `QAQH_DATA_DIR` (full data root, e.g. `F:\QAQ-Harness\.deepx-test-home\.deepx`)
+    // `QAQH_DATA_DIR` (full data root, e.g. `F:\QAQ-Harness\.qaqh-test-home\.qaqh`)
     // overrides when set — used by test harnesses and multi-instance shells.
     // The daemon resolves paths through this same function, so shell and
     // daemon stay on the same data root.
@@ -64,7 +64,7 @@ pub fn data_dir() -> PathBuf {
         }
     }
     if cfg!(windows) {
-        home_dir().join(".deepx")
+        home_dir().join(".qaqh")
     } else {
         std::env::var("XDG_CONFIG_HOME")
             .map(PathBuf::from)
@@ -183,7 +183,7 @@ fn write_data_root_marker(canonical_root: &Path, owner_home: &Path) -> io::Resul
 
 fn write_data_root_marker_at(canonical_root: &Path, marker: &DataRootMarker) -> io::Result<()> {
     let marker_path = canonical_root.join(DATA_ROOT_MARKER);
-    let temporary = canonical_root.join(".deepx-data-root.json.qaqh-new");
+    let temporary = canonical_root.join(".qaqh-data-root.json.qaqh-new");
     fs::write(
         &temporary,
         serde_json::to_vec_pretty(marker).map_err(invalid_data)?,
@@ -211,7 +211,7 @@ pub fn verify_data_root(root: &Path) -> io::Result<PathBuf> {
 fn validate_data_root_location(root: &Path, owner_home: &Path) -> io::Result<()> {
     #[cfg(windows)]
     {
-        let expected = owner_home.join(".deepx");
+        let expected = owner_home.join(".qaqh");
         let parent = root.parent().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -222,12 +222,12 @@ fn validate_data_root_location(root: &Path, owner_home: &Path) -> io::Result<()>
         if normalized_path_text(&canonical_parent) != normalized_path_text(owner_home)
             || root
                 .file_name()
-                .is_none_or(|name| !name.eq_ignore_ascii_case(".deepx"))
+                .is_none_or(|name| !name.eq_ignore_ascii_case(".qaqh"))
         {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 format!(
-                    "QAQ-Harness data root must be the current user's direct .deepx directory: {}",
+                    "QAQ-Harness data root must be the current user's direct .qaqh directory: {}",
                     expected.display()
                 ),
             ));
@@ -359,8 +359,8 @@ mod data_root_tests {
     fn copied_data_marker_cannot_authorize_another_directory() {
         let root = test_root();
         let home = root.join("home");
-        let first = home.join(".deepx-a");
-        let second = home.join(".deepx-b");
+        let first = home.join(".qaqh-a");
+        let second = home.join(".qaqh-b");
         fs::create_dir_all(&first).expect("create first data root");
         fs::create_dir_all(&second).expect("create second data root");
         let home = fs::canonicalize(&home).expect("canonical home");
@@ -380,7 +380,7 @@ mod data_root_tests {
         let root = test_root();
         let first_home = root.join("first-home");
         let second_home = root.join("second-home");
-        let data = first_home.join(".deepx");
+        let data = first_home.join(".qaqh");
         fs::create_dir_all(&data).expect("create data root");
         fs::create_dir_all(&second_home).expect("create second home");
         let first_home = fs::canonicalize(&first_home).expect("canonical first home");
@@ -393,10 +393,10 @@ mod data_root_tests {
     }
 
     #[test]
-    fn legacy_deepx_marker_is_migrated_when_safe() {
+    fn legacy_qaqh_marker_is_migrated_when_safe() {
         let root = test_root();
         let home = root.join("home");
-        let data = home.join(".deepx");
+        let data = home.join(".qaqh");
         fs::create_dir_all(&data).expect("create data root");
         let home = fs::canonicalize(&home).expect("canonical home");
         let data = fs::canonicalize(&data).expect("canonical data");
@@ -428,10 +428,10 @@ mod data_root_tests {
     }
 
     #[test]
-    fn legacy_deepx_marker_is_rejected_on_identity_mismatch() {
+    fn legacy_qaqh_marker_is_rejected_on_identity_mismatch() {
         let root = test_root();
         let home = root.join("home");
-        let data = home.join(".deepx");
+        let data = home.join(".qaqh");
         let other_home = root.join("other-home");
         fs::create_dir_all(&data).expect("create data root");
         fs::create_dir_all(&other_home).expect("create other home");
@@ -467,7 +467,7 @@ mod data_root_tests {
     fn current_qaqh_marker_is_idempotent() {
         let root = test_root();
         let home = root.join("home");
-        let data = home.join(".deepx");
+        let data = home.join(".qaqh");
         fs::create_dir_all(&data).expect("create data root");
         let home = fs::canonicalize(&home).expect("canonical home");
         let data = fs::canonicalize(&data).expect("canonical data");
@@ -485,7 +485,7 @@ mod data_root_tests {
     fn unknown_product_marker_is_rejected_without_write() {
         let root = test_root();
         let home = root.join("home");
-        let data = home.join(".deepx");
+        let data = home.join(".qaqh");
         fs::create_dir_all(&data).expect("create data root");
         let home = fs::canonicalize(&home).expect("canonical home");
         let data = fs::canonicalize(&data).expect("canonical data");

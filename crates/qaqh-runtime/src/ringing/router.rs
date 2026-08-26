@@ -15,7 +15,7 @@ use qaqh_ringing::{RingingEvent, RingingEventEnvelope};
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ReplaceableKey {
     /// 按工具进度合并（tool_call_id）。
-    ToolProgress(String),
+    ToolPrepared(String),
     /// 按回合/轮次/块种类合并（turn_id, round_num, kind 语义由调用方编码进 key）。
     RoundDelta(String),
     /// 按回合/轮次/块种类合并的完整值 checkpoint（与 RoundDelta 同 identity
@@ -34,8 +34,8 @@ pub enum ReplaceableKey {
 }
 
 impl ReplaceableKey {
-    pub fn tool_progress(tool_call_id: &str) -> Self {
-        ReplaceableKey::ToolProgress(tool_call_id.to_string())
+    pub fn tool_prepared(tool_call_id: &str) -> Self {
+        ReplaceableKey::ToolPrepared(tool_call_id.to_string())
     }
 
     pub fn round_delta(turn_id: &str, round_num: u32, kind: &str) -> Self {
@@ -67,11 +67,8 @@ impl ReplaceableKey {
 pub fn replaceable_key_for(event: &RingingEvent) -> Option<ReplaceableKey> {
     use qaqh_domain::{ConversationEvent as CE, ToolEvent as TE};
     match event {
-        RingingEvent::Tool(TE::ToolProgress { tool_call_id, .. }) => {
-            Some(ReplaceableKey::tool_progress(tool_call_id))
-        }
         RingingEvent::Tool(TE::ToolCallPrepared { tool_call_id, .. }) => {
-            Some(ReplaceableKey::tool_progress(tool_call_id))
+            Some(ReplaceableKey::tool_prepared(tool_call_id))
         }
         RingingEvent::Conversation(CE::RoundDelta {
             turn_id,
@@ -124,7 +121,7 @@ pub fn terminal_replaceable_keys(event: &RingingEvent) -> Vec<ReplaceableKey> {
     use qaqh_domain::{ConversationEvent as CE, ToolEvent as TE};
     match event {
         RingingEvent::Tool(TE::ToolFinished { tool_call_id, .. }) => {
-            vec![ReplaceableKey::tool_progress(tool_call_id)]
+            vec![ReplaceableKey::tool_prepared(tool_call_id)]
         }
         RingingEvent::Conversation(CE::RoundCompleted {
             turn_id, round_num, ..
@@ -300,20 +297,16 @@ mod tests {
     #[test]
     fn replaceable_progress_is_covered_by_identity() {
         let mut router = ChannelRouter::new(RingingChannel::Tool);
-        let ev = |seq: u64, chunk: &str| {
+        let ev = |seq: u64, tag: &str| {
             env_for(
                 "s",
                 seq,
-                DomainEvent::Tool(ToolEvent::ToolProgress {
+                DomainEvent::Tool(ToolEvent::ToolCallPrepared {
                     tool_call_id: "c1".into(),
-                    turn_id: "t1".into(),
+                    turn_id: "t".into(),
                     round_num: 0,
-                    stream: "stdout".into(),
-                    seq_start: 0,
-                    seq_end: seq,
-                    chunk: chunk.into(),
-                    dropped_bytes: 0,
-                    truncated: false,
+                    name: "exec".into(),
+                    args_so_far: tag.into(),
                 }),
             )
         };
@@ -325,8 +318,8 @@ mod tests {
         assert_eq!(tail.len(), 1);
         let RingingEventEnvelope { event, .. } = &tail[0];
         match event {
-            RingingEvent::Tool(ToolEvent::ToolProgress { chunk, .. }) => {
-                assert_eq!(chunk, "abc")
+            RingingEvent::Tool(ToolEvent::ToolCallPrepared { args_so_far, .. }) => {
+                assert_eq!(args_so_far, "abc")
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -384,25 +377,21 @@ mod tests {
     #[test]
     fn flush_replaceable_removes_slot() {
         let mut router = ChannelRouter::new(RingingChannel::Tool);
-        let ev = |seq: u64, chunk: &str| {
+        let ev = |seq: u64, tag: &str| {
             env_for(
                 "s",
                 seq,
-                DomainEvent::Tool(ToolEvent::ToolProgress {
+                DomainEvent::Tool(ToolEvent::ToolCallPrepared {
                     tool_call_id: "c1".into(),
                     turn_id: "t".into(),
                     round_num: 0,
-                    stream: "stdout".into(),
-                    seq_start: 0,
-                    seq_end: seq,
-                    chunk: chunk.into(),
-                    dropped_bytes: 0,
-                    truncated: false,
+                    name: "exec".into(),
+                    args_so_far: tag.into(),
                 }),
             )
         };
         router.push_replaceable(ev(1, "tail"));
-        let flushed = router.flush_replaceable(&ReplaceableKey::tool_progress("c1"));
+        let flushed = router.flush_replaceable(&ReplaceableKey::tool_prepared("c1"));
         assert!(flushed.is_some());
         assert_eq!(router.replaceable_len(), 0);
         // terminal 前 flush 后回放不再包含旧 progress
@@ -416,16 +405,12 @@ mod tests {
             env_for(
                 "s",
                 seq,
-                DomainEvent::Tool(ToolEvent::ToolProgress {
+                DomainEvent::Tool(ToolEvent::ToolCallPrepared {
                     tool_call_id: format!("c{seq}"),
                     turn_id: "t".into(),
                     round_num: 0,
-                    stream: "stdout".into(),
-                    seq_start: 0,
-                    seq_end: seq,
-                    chunk: "x".into(),
-                    dropped_bytes: 0,
-                    truncated: false,
+                    name: "exec".into(),
+                    args_so_far: "x".into(),
                 }),
             )
         };
@@ -436,7 +421,7 @@ mod tests {
         // 最早 identity c1 被逐出
         assert!(
             router
-                .flush_replaceable(&ReplaceableKey::tool_progress("c1"))
+                .flush_replaceable(&ReplaceableKey::tool_prepared("c1"))
                 .is_none()
         );
     }

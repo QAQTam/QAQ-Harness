@@ -24,8 +24,8 @@ use qaqh_client::{Channel, ChannelStatus, Client, ClientHandlers, ClientOptions}
 
 // ── isolated test home ───────────────────────────────────────────────────
 
-/// Create a private `home\.deepx` data root (Windows-validated layout:
-/// parent == home, dir name == ".deepx") for this test's daemon + client.
+/// Create a private `home\.qaqh` data root (Windows-validated layout:
+/// parent == home, dir name == ".qaqh") for this test's daemon + client.
 fn make_isolated_home() -> PathBuf {
     let base = std::env::temp_dir().join(format!(
         "qaqh-lease-test-{}-{}",
@@ -35,7 +35,7 @@ fn make_isolated_home() -> PathBuf {
             .map(|d| d.subsec_nanos())
             .unwrap_or(0)
     ));
-    let data = base.join(".deepx");
+    let data = base.join(".qaqh");
     std::fs::create_dir_all(&data).expect("create isolated data root");
     base
 }
@@ -78,7 +78,7 @@ fn find_daemon_binary() -> PathBuf {
 /// user's own daemon (separate discovery/lock/data dir).
 fn spawn_isolated_daemon(home: &PathBuf) -> Child {
     let daemon = find_daemon_binary();
-    let data = home.join(".deepx");
+    let data = home.join(".qaqh");
 
     let child = Command::new(&daemon)
         .arg("run")
@@ -132,7 +132,7 @@ impl Drop for TestDaemon {
 #[ignore = "requires compiled daemon binary; run with -- --ignored"]
 async fn lease_expiry_triggers_renegotiation_and_streams_recover() {
     let home = make_isolated_home();
-    let data = home.join(".deepx");
+    let data = home.join(".qaqh");
 
     // Point this process's client at the same isolated data root (must be set
     // before any discovery read; the daemon child gets it via env too).

@@ -149,8 +149,11 @@ fn serve_scenario(req: tiny_http::Request, scenario: &[SseChunk]) {
         let resp = Response::from_string(body).with_status_code(status_code);
         let _ = req.respond(resp);
     } else if !sse.is_empty() {
-        let resp = Response::from_string(sse)
-            .with_header("Content-Type: text/event-stream".parse::<Header>().expect("valid header"));
+        let resp = Response::from_string(sse).with_header(
+            "Content-Type: text/event-stream"
+                .parse::<Header>()
+                .expect("valid header"),
+        );
         let _ = req.respond(resp);
     }
 }

@@ -13,12 +13,14 @@ use qaqh_types::{ContentBlock, Message, ToolDef};
 
 use super::sse::SseDecoder;
 use super::types::{
-    EFFORT_LADDER, ProviderConfig, ResponsesCompat, StreamEvent, normalize_reasoning_effort,
-    safe_provider_error_body,
+    EFFORT_LADDER, EmptyStreamEof, ProviderConfig, ResponsesCompat, StreamEvent,
+    normalize_reasoning_effort, safe_provider_error_body,
 };
 
 const SSE_POLL_INTERVAL: Duration = Duration::from_millis(50);
-const MAX_RETRIES: u32 = 3;
+// Aligned with the official client's session retry policy (5 retries); the
+// doubling delay below already yields 2/4/8/16/32 s like opencode.
+const MAX_RETRIES: u32 = 5;
 
 static FALLBACK_RT: std::sync::LazyLock<tokio::runtime::Runtime> = std::sync::LazyLock::new(|| {
     tokio::runtime::Builder::new_current_thread()
@@ -86,6 +88,8 @@ fn convert_messages_to_input(
 ) -> (Vec<serde_json::Value>, Option<String>) {
     let mut items: Vec<serde_json::Value> = Vec::new();
     let mut instructions: Option<String> = None;
+    // 图片编号跨消息累加：与 read_image registry 的会话级顺序索引一致。
+    let mut img_idx: usize = 0;
 
     for msg in messages {
         match msg.role.as_str() {
@@ -115,7 +119,7 @@ fn convert_messages_to_input(
                 }));
             }
             "user" => {
-                let parts = convert_user_content(&msg.content);
+                let parts = convert_user_content(&msg.content, &mut img_idx);
                 items.push(serde_json::json!({
                     "type": "message",
                     "role": "user",
@@ -241,16 +245,30 @@ fn convert_messages_to_input(
             "tool" => {
                 // ToolResult blocks → function_call_output
                 for block in &msg.content {
-                    if let ContentBlock::ToolResult {
-                        tool_use_id,
-                        result,
-                    } = block
-                    {
-                        items.push(serde_json::json!({
-                            "type": "function_call_output",
-                            "call_id": tool_use_id,
-                            "output": result.project_for_model().to_string(),
-                        }));
+                    match block {
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            result,
+                        } => {
+                            items.push(serde_json::json!({
+                                "type": "function_call_output",
+                                "call_id": tool_use_id,
+                                "output": result.render_xml_envelope(),
+                            }));
+                        }
+                        // 工具产出的图片（read_image）：降级为紧随的合成
+                        // user message item（input_image + data URL）。
+                        ContentBlock::Image { mime_type, data } => {
+                            items.push(serde_json::json!({
+                                "type": "message",
+                                "role": "user",
+                                "content": [
+                                    {"type": "input_text", "text": "Attached media from tool result:"},
+                                    {"type": "input_image", "image_url": format!("data:{mime_type};base64,{data}")},
+                                ],
+                            }));
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -270,9 +288,8 @@ fn extract_text(blocks: &[ContentBlock]) -> String {
     String::new()
 }
 
-fn convert_user_content(blocks: &[ContentBlock]) -> Vec<serde_json::Value> {
+fn convert_user_content(blocks: &[ContentBlock], img_idx: &mut usize) -> Vec<serde_json::Value> {
     let mut parts: Vec<serde_json::Value> = Vec::new();
-    let mut img_idx: usize = 0;
     for b in blocks {
         match b {
             ContentBlock::Text { text } => {
@@ -282,11 +299,11 @@ fn convert_user_content(blocks: &[ContentBlock]) -> Vec<serde_json::Value> {
                 parts.push(serde_json::json!({
                     "type": "input_text",
                     "text": format!(
-                        "[Image #{img_idx}: {mime_type}, ~{} bytes — call image_query(image_index={img_idx}, prompt=\"...\") to analyze]",
+                        "[Image #{img_idx}: {mime_type}, ~{} bytes — call read_image(image_index={img_idx}) to view it yourself]",
                         data.len()
                     )
                 }));
-                img_idx += 1;
+                *img_idx += 1;
             }
             _ => {}
         }
@@ -299,7 +316,9 @@ fn convert_user_content(blocks: &[ContentBlock]) -> Vec<serde_json::Value> {
 
 fn sanitize_openai_schema(value: &serde_json::Value) -> serde_json::Value {
     use serde_json::Value;
-    const TYPES: &[&str] = &["string", "number", "boolean", "integer", "object", "array", "null"];
+    const TYPES: &[&str] = &[
+        "string", "number", "boolean", "integer", "object", "array", "null",
+    ];
     const COMPOSITION_KEYS: &[&str] = &["anyOf", "oneOf", "allOf"];
     match value {
         Value::Bool(_) => return serde_json::json!({"type": "string"}),
@@ -337,7 +356,11 @@ fn sanitize_openai_schema(value: &serde_json::Value) -> serde_json::Value {
             }
             if map.contains_key("additionalProperties") {
                 if let Some(v) = map.get("additionalProperties") {
-                    let sanitized = if v.is_boolean() { v.clone() } else { sanitize_openai_schema(v) };
+                    let sanitized = if v.is_boolean() {
+                        v.clone()
+                    } else {
+                        sanitize_openai_schema(v)
+                    };
                     result.insert("additionalProperties".into(), sanitized);
                 }
             }
@@ -389,13 +412,22 @@ fn sanitize_openai_schema(value: &serde_json::Value) -> serde_json::Value {
                 .any(|k| map.contains_key(*k))
             {
                 vec!["object".into()]
-            } else if ["items", "prefixItems"].iter().any(|k| map.contains_key(*k)) {
+            } else if ["items", "prefixItems"]
+                .iter()
+                .any(|k| map.contains_key(*k))
+            {
                 vec!["array".into()]
             } else if result.contains_key("enum") || map.contains_key("format") {
                 vec!["string".into()]
-            } else if ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"]
-                .iter()
-                .any(|k| map.contains_key(*k))
+            } else if [
+                "minimum",
+                "maximum",
+                "exclusiveMinimum",
+                "exclusiveMaximum",
+                "multipleOf",
+            ]
+            .iter()
+            .any(|k| map.contains_key(*k))
             {
                 vec!["number".into()]
             } else {
@@ -533,7 +565,11 @@ pub fn chat_stream_responses(
     }
 
     let is_muse = is_muse_model(model);
-    let max_effort = if is_muse { "xhigh" } else { compat.effort_max.as_str() };
+    let max_effort = if is_muse {
+        "xhigh"
+    } else {
+        compat.effort_max.as_str()
+    };
     let mut eff = clamp_effort(effort.clone(), max_effort);
     if is_muse && effort.is_none() && eff == "medium" {
         eff = "low".into();
@@ -574,8 +610,8 @@ pub fn chat_stream_responses(
         }
 
         match block_on(async {
-            GLOBAL_CLIENT
-                .post(&url)
+            provider
+                .apply_opencode_headers(GLOBAL_CLIENT.post(&url))
                 .header("Authorization", format!("Bearer {}", provider.api_key))
                 .header("Content-Type", "application/json")
                 .body(serde_json::to_string(&body).unwrap_or_default())
@@ -610,7 +646,30 @@ pub fn chat_stream_responses(
                     let msg = safe_provider_error_body(&err_body, &provider.api_key);
                     return Err(anyhow::anyhow!("HTTP {}: {}", status, msg));
                 }
-                return parse_responses_sse(resp, compat, cancel, on_event);
+                match parse_responses_sse(resp, compat, cancel, on_event) {
+                    Ok(()) => return Ok(()),
+                    // Upstream closed the stream before any content — retry
+                    // the whole request (mirrors opencode's stream retry).
+                    Err(e) if e.downcast_ref::<EmptyStreamEof>().is_some() => {
+                        if attempt >= MAX_RETRIES {
+                            let msg = "upstream closed stream before any content".to_string();
+                            on_event(StreamEvent::Error(msg.clone()));
+                            return Err(anyhow::anyhow!("{}", msg));
+                        }
+                        let delay = Duration::from_secs(2u64.pow(attempt));
+                        on_event(StreamEvent::Retrying {
+                            attempt,
+                            max_retries: MAX_RETRIES,
+                            delay_secs: delay.as_secs(),
+                            error: "stream closed early (no content)".into(),
+                        });
+                        if sleep_with_cancel(delay, cancel) {
+                            return Err(anyhow::anyhow!("cancelled by user"));
+                        }
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                }
             }
             Err(e) => {
                 if attempt < MAX_RETRIES {
@@ -664,7 +723,11 @@ pub fn chat_sync_responses(
         );
     }
     let is_muse = is_muse_model(model);
-    let max_effort = if is_muse { "xhigh" } else { compat.effort_max.as_str() };
+    let max_effort = if is_muse {
+        "xhigh"
+    } else {
+        compat.effort_max.as_str()
+    };
     let mut eff = clamp_effort(None, max_effort);
     if is_muse && eff == "medium" {
         eff = "low".into();
@@ -684,8 +747,8 @@ pub fn chat_sync_responses(
     let url = build_responses_url(&provider.base_url, provider.responses_path.as_deref());
 
     let resp = block_on(async {
-        GLOBAL_CLIENT
-            .post(&url)
+        provider
+            .apply_opencode_headers(GLOBAL_CLIENT.post(&url))
             .header("Authorization", format!("Bearer {}", provider.api_key))
             .header("Content-Type", "application/json")
             .body(serde_json::to_string(&body).unwrap_or_default())
@@ -1076,6 +1139,17 @@ fn parse_responses_sse(
         }
     }
 
+    // 上游繁忙时可能不发错误码而是直接终止 HTTP 流（无 response.completed/
+    // incomplete/failed 终止事件）。零产出 → 哨兵错误并入重试；有部分产出
+    // → 保持显式错误（增量已流出，交由上层按 stop_reason 缺失续写）。
+    let produced_something = !state.accumulated_text.is_empty()
+        || !state.reasoning_text.is_empty()
+        || !state.tool_uses.is_empty()
+        || !state.web_search_calls.is_empty();
+    if !produced_something {
+        return Err(anyhow::Error::new(EmptyStreamEof));
+    }
+
     Err(anyhow::anyhow!(
         "Responses stream closed before response.completed, response.incomplete, or response.failed"
     ))
@@ -1149,13 +1223,15 @@ mod tests {
         let chunk2 = b"\xad\"}\n\n";
 
         decoder.push(chunk1);
-        let progress = feed_responses_sse(&mut decoder, &mut state, &mut |e| events.push(e)).unwrap();
+        let progress =
+            feed_responses_sse(&mut decoder, &mut state, &mut |e| events.push(e)).unwrap();
         assert_eq!(progress, SseProgress::Continue);
         assert!(events.is_empty(), "半行不得提前派发");
         assert_eq!(state.accumulated_text, "");
 
         decoder.push(chunk2);
-        let progress = feed_responses_sse(&mut decoder, &mut state, &mut |e| events.push(e)).unwrap();
+        let progress =
+            feed_responses_sse(&mut decoder, &mut state, &mut |e| events.push(e)).unwrap();
         assert_eq!(progress, SseProgress::Continue);
         assert_eq!(state.accumulated_text, "中");
         assert!(matches!(
@@ -1175,7 +1251,8 @@ mod tests {
         let chunk2 = b"\x91\x8d\"}\n\n";
         decoder.push(chunk1);
         decoder.push(chunk2);
-        let progress = feed_responses_sse(&mut decoder, &mut state, &mut |e| events.push(e)).unwrap();
+        let progress =
+            feed_responses_sse(&mut decoder, &mut state, &mut |e| events.push(e)).unwrap();
         assert_eq!(progress, SseProgress::Continue);
         assert_eq!(state.accumulated_text, "👍");
         assert!(matches!(
@@ -1195,7 +1272,8 @@ mod tests {
         let chunk2 = b"\xe9\xa2\x98\\\"}\"}\n\n";
         decoder.push(chunk1);
         decoder.push(chunk2);
-        let progress = feed_responses_sse(&mut decoder, &mut state, &mut |e| events.push(e)).unwrap();
+        let progress =
+            feed_responses_sse(&mut decoder, &mut state, &mut |e| events.push(e)).unwrap();
         assert_eq!(progress, SseProgress::Continue);
         assert_eq!(state.tool_calls.len(), 1);
         assert_eq!(
@@ -1210,7 +1288,8 @@ mod tests {
               data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\
               \"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"\xe8\xaf\xbe\xe9\xa2\x98\\\"}\",\"call_id\":\"call_1\"}}\n\n",
         );
-        let progress = feed_responses_sse(&mut decoder, &mut state, &mut |e| events.push(e)).unwrap();
+        let progress =
+            feed_responses_sse(&mut decoder, &mut state, &mut |e| events.push(e)).unwrap();
         assert_eq!(progress, SseProgress::Continue);
         assert!(matches!(
             events.as_slice(),
@@ -1230,7 +1309,8 @@ mod tests {
               data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"\"}\n\n\
               data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"i1\",\"delta\":\"\"}\n\n",
         );
-        let progress = feed_responses_sse(&mut decoder, &mut state, &mut |e| events.push(e)).unwrap();
+        let progress =
+            feed_responses_sse(&mut decoder, &mut state, &mut |e| events.push(e)).unwrap();
         assert_eq!(progress, SseProgress::Continue);
         assert_eq!(state.accumulated_text, "");
         assert_eq!(state.reasoning_text, "");
@@ -1249,13 +1329,18 @@ mod tests {
             b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n\
               data: {\"type\":\"response.output_text.delta\",\"delta\":\"tail\"}",
         );
-        let progress = feed_responses_sse(&mut decoder, &mut state, &mut |e| events.push(e)).unwrap();
+        let progress =
+            feed_responses_sse(&mut decoder, &mut state, &mut |e| events.push(e)).unwrap();
         assert_eq!(progress, SseProgress::Continue);
         assert_eq!(state.accumulated_text, "ok");
-        assert!(decoder.has_pending(), "无换行尾巴应保留在缓冲里由 EOF 路径消费");
+        assert!(
+            decoder.has_pending(),
+            "无换行尾巴应保留在缓冲里由 EOF 路径消费"
+        );
 
         decoder.push(b"\n\n");
-        let progress = feed_responses_sse(&mut decoder, &mut state, &mut |e| events.push(e)).unwrap();
+        let progress =
+            feed_responses_sse(&mut decoder, &mut state, &mut |e| events.push(e)).unwrap();
         assert_eq!(progress, SseProgress::Continue);
         assert_eq!(state.accumulated_text, "oktail");
 
@@ -1407,14 +1492,14 @@ mod tests {
         let (input, _instructions) = convert_messages_to_input(&msgs, &test_compat());
         assert_eq!(input[0]["type"], "function_call_output");
         assert_eq!(input[0]["call_id"], "tc_1");
-        let output: serde_json::Value = serde_json::from_str(
-            input[0]["output"]
-                .as_str()
-                .expect("canonical tool result output"),
-        )
-        .expect("canonical tool result JSON");
-        assert_eq!(output["status"], "ok");
-        assert_eq!(output["text"], "file contents");
+        // XML 信封形态：属性承载信令，正文原样零转义。
+        let output = input[0]["output"].as_str().expect("tool result output");
+        assert!(
+            output.starts_with("<qaqh_tool_result status=\"ok\">"),
+            "{output}"
+        );
+        assert!(output.contains("file contents"));
+        assert!(output.ends_with("</qaqh_tool_result>"));
     }
 
     #[test]

@@ -40,6 +40,11 @@ pub struct ProcEntry {
     /// Final answer collected from subagent stdout.
     pub answer: Arc<Mutex<Option<String>>>,
     child: Arc<Mutex<Option<std::process::Child>>>,
+    /// W4：OS pid 快照——child 句柄被 try_wait 回收后仍可按 pid 清理
+    /// 进程树（Windows taskkill /T、Unix killpg），不再依赖句柄存活。
+    os_pid: Arc<Mutex<Option<u32>>>,
+    /// W4：Exited 被后续清理 kill 覆盖为 Killed 时保留原 exit code。
+    last_exit_code: Arc<Mutex<Option<i32>>>,
     /// PTY stdin writer for interactive processes.
     pty_writer: Arc<Mutex<Option<Box<dyn std::io::Write + Send>>>>,
 }
@@ -70,8 +75,31 @@ impl ProcessRegistry {
     /// Register a new process. Returns the assigned id.
     pub fn register(name: &str) -> u32 {
         Self::with(|r| {
+            // W6：注册表只进不出会随长会话单调涨；注册前惰性驱逐
+            // 终态超过 10 分钟的条目（输出快照随之释放）。
+            let now = std::time::Instant::now();
+            let stale: Vec<u32> = r
+                .entries
+                .iter()
+                .filter(|(_, e)| {
+                    let terminal = !matches!(
+                        *e.status.lock().unwrap_or_else(|er| er.into_inner()),
+                        ProcStatus::Running
+                    );
+                    terminal && now.duration_since(e.started).as_secs() > 600
+                })
+                .map(|(id, _)| *id)
+                .collect();
+            for id in stale {
+                if let Some(mut e) = r.entries.remove(&id) {
+                    *e.child.lock().unwrap_or_else(|er| er.into_inner()) = None;
+                }
+            }
             let id = r.next_id;
-            r.next_id += 1;
+            r.next_id = r.next_id.checked_add(1).unwrap_or(u32::MAX);
+            if r.next_id == u32::MAX {
+                log::error!("[registry] process id space exhausted");
+            }
             r.entries.insert(
                 id,
                 ProcEntry {
@@ -83,6 +111,8 @@ impl ProcessRegistry {
                     stderr: Arc::new(Mutex::new(String::new())),
                     answer: Arc::new(Mutex::new(None)),
                     child: Arc::new(Mutex::new(None)),
+                    os_pid: Arc::new(Mutex::new(None)),
+                    last_exit_code: Arc::new(Mutex::new(None)),
                     pty_writer: Arc::new(Mutex::new(None)),
                 },
             );
@@ -94,7 +124,9 @@ impl ProcessRegistry {
     pub fn attach_child(id: u32, child: std::process::Child) {
         Self::with(|r| {
             if let Some(entry) = r.entries.get(&id) {
+                let os_pid = Some(child.id());
                 *entry.child.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
+                *entry.os_pid.lock().unwrap_or_else(|e| e.into_inner()) = os_pid;
             }
         });
     }
@@ -122,6 +154,10 @@ impl ProcessRegistry {
                 Some(status) => {
                     let code = status.code().unwrap_or(-1);
                     *child_opt = None;
+                    *entry
+                        .last_exit_code
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = Some(code);
                     *entry.status.lock().unwrap_or_else(|e| e.into_inner()) =
                         ProcStatus::Exited(code);
                     Some(code)
@@ -149,9 +185,41 @@ impl ProcessRegistry {
 
         let mut guard = writer_arc.lock().map_err(|e| format!("lock: {e}"))?;
         match guard.as_mut() {
-            Some(w) => w.write(text.as_bytes()).map_err(|e| format!("write: {e}")),
+            Some(w) => {
+                // W5：write_all 保证部分写不谎报全成；WouldBlock 短暂轮询
+                // 直至写完或调用方超时放弃。
+                let bytes = text.as_bytes();
+                let mut written = 0usize;
+                loop {
+                    match w.write(&bytes[written..]) {
+                        Ok(0) => return Err("write: zero-length write".to_string()),
+                        Ok(n) => {
+                            written += n;
+                            if written == bytes.len() {
+                                return Ok(bytes.len());
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(20));
+                        }
+                        Err(e) => return Err(format!("write: {e}")),
+                    }
+                }
+            }
             None => Err(format!("process {id} has no PTY stdin (not interactive)")),
         }
+    }
+
+    /// W-low①：读取已捕获 stdout/stderr 快照（取消收集超时兜底用）。
+    pub fn captured(id: u32) -> Option<(String, String)> {
+        Self::with(|r| {
+            r.entries.get(&id).map(|e| {
+                (
+                    e.output.lock().unwrap_or_else(|er| er.into_inner()).clone(),
+                    e.stderr.lock().unwrap_or_else(|er| er.into_inner()).clone(),
+                )
+            })
+        })
     }
 
     /// Mark a process as exited.
@@ -179,9 +247,10 @@ impl ProcessRegistry {
             if let Some(entry) = r.entries.get(&id) {
                 let mut out = entry.output.lock().unwrap_or_else(|e| e.into_inner());
                 out.push_str(chunk);
-                if out.len() > 5000 {
-                    let drain = out.len() - 4000;
-                    *out = out.chars().skip(drain).collect();
+                if out.chars().count() > 5000 {
+                    // W-low②：按字符数裁剪（原实现字节计长+字符跳过，
+                    // CJK 输出保留量最多缩水到 1/3 甚至清空）。
+                    *out = crate::process_registry::char_safe_tail(out.as_str(), 4000).to_string();
                 }
             }
         });
@@ -193,9 +262,9 @@ impl ProcessRegistry {
             if let Some(entry) = r.entries.get(&id) {
                 let mut err = entry.stderr.lock().unwrap_or_else(|e| e.into_inner());
                 err.push_str(chunk);
-                if err.len() > 3000 {
-                    let drain = err.len() - 2000;
-                    *err = err.chars().skip(drain).collect();
+                if err.chars().count() > 3000 {
+                    // W-low②：同上，字符口径。
+                    *err = crate::process_registry::char_safe_tail(err.as_str(), 2000).to_string();
                 }
             }
         });
@@ -236,6 +305,7 @@ impl ProcessRegistry {
                 ProcStatus::Killed => serde_json::json!({
                     "id": id, "name": entry.name, "status": "killed",
                     "elapsed_secs": elapsed,
+                    "exit_code": *entry.last_exit_code.lock().unwrap_or_else(|e| e.into_inner()),
                     "output": output, "stderr": stderr,
                 }),
                 ProcStatus::Running => serde_json::json!({
@@ -260,11 +330,19 @@ impl ProcessRegistry {
     }
 
     /// Kill a process by id（Windows：杀整棵进程树，防止后代进程泄漏管道）。
+    /// W4 语义：对仍运行的进程执行整树终止并置 Killed；对已退出
+    /// （Exited）的条目，仍按 os_pid 尽力清理残留后代（backgrounded
+    /// 移交场景），状态同样收敛为 Killed，但原 exit code 保存在
+    /// `last_exit_code` 并经 get_info 暴露——信息不再丢失。
+    /// 条目不存在返回 false。
     pub fn kill(id: u32) -> bool {
         Self::with(|r| {
-            if let Some(entry) = r.entries.get(&id) {
-                let mut child_opt = entry.child.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(mut c) = child_opt.take() {
+            let Some(entry) = r.entries.get(&id) else {
+                return false;
+            };
+            let mut child_opt = entry.child.lock().unwrap_or_else(|e| e.into_inner());
+            match child_opt.take() {
+                Some(mut c) => {
                     #[cfg(windows)]
                     {
                         use std::process::Command;
@@ -275,15 +353,43 @@ impl ProcessRegistry {
                     }
                     #[cfg(not(windows))]
                     {
-                        let _ = c.kill();
+                        // H6：整组 SIGKILL（spawn 侧 process_group(0)），
+                        // 孙进程释放管道写端，reader 可 EOF。
+                        unsafe {
+                            libc::killpg(c.id() as i32, libc::SIGKILL);
+                        }
                         let _ = c.wait();
                     }
                 }
-                *entry.status.lock().unwrap_or_else(|e| e.into_inner()) = ProcStatus::Killed;
-                true
-            } else {
-                false
+                None => {
+                    // 句柄已被 try_wait 回收：按 os_pid 快照尽力清树。
+                    if let Some(pid) = *entry.os_pid.lock().unwrap_or_else(|e| e.into_inner()) {
+                        #[cfg(windows)]
+                        {
+                            use std::process::Command;
+                            let _ = Command::new("taskkill")
+                                .args(["/pid", &pid.to_string(), "/T", "/F"])
+                                .status();
+                        }
+                        #[cfg(not(windows))]
+                        {
+                            unsafe {
+                                libc::killpg(pid as i32, libc::SIGKILL);
+                            }
+                        }
+                    }
+                }
             }
+            if let ProcStatus::Exited(code) =
+                *entry.status.lock().unwrap_or_else(|e| e.into_inner())
+            {
+                *entry
+                    .last_exit_code
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(code);
+            }
+            *entry.status.lock().unwrap_or_else(|e| e.into_inner()) = ProcStatus::Killed;
+            true
         })
     }
 

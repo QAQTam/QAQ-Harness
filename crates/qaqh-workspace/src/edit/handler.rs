@@ -186,7 +186,7 @@ pub fn exec_edit(args: &serde_json::Value) -> ToolResult {
     }
 
     // ── 核心执行 ──
-    let outcome = run_edit(&content, &parsed, notes, mode);
+    let outcome = run_edit(&content, raw_path, &parsed, notes, mode);
 
     match outcome.edited {
         None => {

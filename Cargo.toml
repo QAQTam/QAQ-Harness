@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/qaqh-gate",
+    "crates/qaqh-config-api",
     "crates/qaqh-config",
     "crates/qaqh-domain",
     "crates/qaqh-skills",

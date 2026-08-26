@@ -128,23 +128,19 @@ mod tests {
     use super::*;
     use qaqh_domain::{DomainEvent, ToolEvent};
 
-    fn progress(seq: u64, chunk: &str) -> RingingEventEnvelope {
+    fn prepared(seq: u64, tag: &str) -> RingingEventEnvelope {
         RingingEventEnvelope::new(
             "s",
             seq,
             seq,
             seq,
             format!("e{seq}"),
-            DomainEvent::Tool(ToolEvent::ToolProgress {
+            DomainEvent::Tool(ToolEvent::ToolCallPrepared {
                 tool_call_id: "c1".into(),
                 turn_id: "t".into(),
                 round_num: 0,
-                stream: "stdout".into(),
-                seq_start: 0,
-                seq_end: seq,
-                chunk: chunk.into(),
-                dropped_bytes: 0,
-                truncated: false,
+                name: "exec".into(),
+                args_so_far: tag.into(),
             })
             .into(),
         )
@@ -171,9 +167,9 @@ mod tests {
     fn reliable_fifo_then_replaceable_latest() {
         let mut outbox = ChannelOutbox::new(RingingChannel::Tool);
         outbox.enqueue(started(1)).expect("ok");
-        outbox.enqueue(progress(2, "a")).expect("ok");
-        outbox.enqueue(progress(3, "ab")).expect("ok");
-        outbox.enqueue(progress(4, "abc")).expect("ok");
+        outbox.enqueue(prepared(2, "a")).expect("ok");
+        outbox.enqueue(prepared(3, "ab")).expect("ok");
+        outbox.enqueue(prepared(4, "abc")).expect("ok");
 
         // 第一个是 reliable ToolStarted
         let first = outbox.next().expect("first");
@@ -192,15 +188,15 @@ mod tests {
         // 无 replaceable 可腾退 → 背压
         assert_eq!(outbox.enqueue(started(3)), Err(OutboxFull));
         // 有 replaceable 时腾退后成功
-        outbox.enqueue(progress(4, "x")).expect("ok");
+        outbox.enqueue(prepared(4, "x")).expect("ok");
         assert!(outbox.enqueue(started(5)).is_ok());
     }
 
     #[test]
     fn drop_stale_replaceable_after_terminal_revision() {
         let mut outbox = ChannelOutbox::new(RingingChannel::Tool);
-        outbox.enqueue(progress(2, "old")).expect("ok");
-        outbox.enqueue(progress(3, "new")).expect("ok");
+        outbox.enqueue(prepared(2, "old")).expect("ok");
+        outbox.enqueue(prepared(3, "new")).expect("ok");
         let dropped = outbox.drop_stale_replaceable(3);
         assert_eq!(dropped, 1);
         assert_eq!(outbox.pending_replaceable(), 0);
@@ -209,8 +205,8 @@ mod tests {
     #[test]
     fn flush_replaceable_returns_final_tail() {
         let mut outbox = ChannelOutbox::new(RingingChannel::Tool);
-        outbox.enqueue(progress(5, "final")).expect("ok");
-        let flushed = outbox.flush_replaceable(&ReplaceableKey::tool_progress("c1"));
+        outbox.enqueue(prepared(5, "final")).expect("ok");
+        let flushed = outbox.flush_replaceable(&ReplaceableKey::tool_prepared("c1"));
         assert!(flushed.is_some());
         assert_eq!(outbox.pending_replaceable(), 0);
     }

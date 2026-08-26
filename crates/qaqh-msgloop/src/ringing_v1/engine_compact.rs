@@ -155,7 +155,9 @@ impl CompactEngine {
             log::debug!("[COMPACT] skipped: no new turns are eligible");
             return None;
         }
-        let kept_user_count = msgs[kept_idx..].iter().filter(|m| m.role == "user").count();
+        // G2：keep 必须是"真实 turn 数"而非扁平 user 消息数——注入密集时
+        // 扁平计数 ≥ turns.len()，apply_compact 早退（skip==0）却谎报成功。
+        let kept_user_count = ctx.agent.msg.count_live_turns_from(msgs[kept_idx].msg_id);
 
         let compact_id = format!(
             "compact-{}",
@@ -242,7 +244,7 @@ impl CompactEngine {
                     echo_reasoning_content: endpoint.responses_echo_reasoning_content,
                 };
             }
-            p
+            p.with_opencode_headers(&ctx.agent.session.seed, "compact")
         } else {
             let mut p = qaqh_gate::ProviderConfig::openai(
                 &ctx.agent.config.base_url,
@@ -265,7 +267,7 @@ impl CompactEngine {
                 p.supports_reasoning_content = endpoint.supports_reasoning_content;
                 p.require_provider_parameters = endpoint.require_provider_parameters;
             }
-            p
+            p.with_opencode_headers(&ctx.agent.session.seed, "compact")
         };
         Some((
             prompt,
@@ -341,6 +343,7 @@ impl CompactEngine {
         let chars = meta.summary.chars().count();
 
         // Turns to remove from frontend state (= total_turns - kept).
+        let turns_before_apply = ctx.agent.msg.turn_count();
         let turns_removed = ctx
             .agent
             .msg
@@ -350,6 +353,8 @@ impl CompactEngine {
         ctx.agent
             .msg
             .apply_compact(&meta.summary, meta.kept_user_count);
+        // G2：零压缩（skip==0 早退）如实上报 Cancelled，不再谎报 Completed。
+        let compact_noop = ctx.agent.msg.turn_count() == turns_before_apply;
         ctx.agent
             .msg
             .snapshot_full(&ctx.agent.config.model, &ctx.agent.config.reasoning_effort);
@@ -377,14 +382,22 @@ impl CompactEngine {
         // 统一数据源：上下文统计并入 meta.json（原 context_stats.json 退役）。
         qaqh_session::SessionManager::global().set_context_stats(&ctx.agent.session.seed, &stats);
 
-        // Ringing 双发：CompactFinished（成功终态）
+        // Ringing 双发：CompactFinished（成功/零压缩如实区分终态）
         ctx.emitter
             .emit_domain(qaqh_domain::DomainEvent::Conversation(
                 qaqh_domain::ConversationEvent::CompactFinished {
                     compact_id: meta.compact_id.clone(),
-                    status: qaqh_domain::CompactStatus::Completed,
-                    summary_chars: Some(chars),
-                    turns_compacted: Some(meta.head_user_count as u32),
+                    status: if compact_noop {
+                        qaqh_domain::CompactStatus::Cancelled
+                    } else {
+                        qaqh_domain::CompactStatus::Completed
+                    },
+                    summary_chars: Some(if compact_noop { 0 } else { chars }),
+                    turns_compacted: Some(if compact_noop {
+                        0
+                    } else {
+                        meta.head_user_count as u32
+                    }),
                     turns_removed: Some(turns_removed as u32),
                 },
             ));

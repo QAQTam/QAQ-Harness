@@ -174,6 +174,13 @@ impl AgentRegistry {
         if self.instances.contains_key(seed) {
             return Ok(());
         }
+        // B9/R2：收尾必须在 spawn 之前——新 worker 线程一启动就可能发布
+        // 新 ask/TurnOpened，force 收尾若晚于 spawn 会误杀活交互。
+        if let Some(hub) = self.hub.as_ref() {
+            hub.seal_orphan_running_turns(seed);
+            hub.seal_orphan_channel_state(seed, true);
+            hub.mark_worker_live(seed);
+        }
         self.spawn(seed, None)?;
         // Diagnostic: the timeline snapshot is a best-effort async checkpoint
         // and a daemon restart can drop its tail. When it lags the message
@@ -196,14 +203,6 @@ impl AgentRegistry {
         // timeline 中该 seed 任何未 seal 的 running turn 都是孤儿（如工具
         // 调用未返回 result 时进程被杀），立即收尾为 Cancelled，否则前端
         // 会永远把它投影为 running 并禁止发送新消息。
-        if let Some(hub) = self.hub.as_ref() {
-            hub.seal_orphan_running_turns(seed);
-            // Ringing 三频道投影的等价收尾：重放的无终态 TurnStarted/
-            // ToolStarted/InteractionRequested 同样会污染 bootstrap 快照，
-            // 使前端显示陈旧 running turn 与无法批准的幽灵交互面板。
-            // force=true：旧 worker 已死，所有挂起状态都是孤儿，无视活交互守卫。
-            hub.seal_orphan_channel_state(seed, true);
-        }
         Ok(())
     }
 
@@ -503,6 +502,7 @@ impl AgentRegistry {
 
     pub fn shutdown_all(&mut self) {
         self.shutting_down = true;
+        let seeds: Vec<String> = self.instances.keys().cloned().collect();
         let mut instances: Vec<AgentInstance> = self
             .instances
             .drain()
@@ -551,18 +551,20 @@ impl AgentRegistry {
                 instance.shutdown();
             }
             log::warn!("[AGENT:{seed}] in-process worker died; respawning");
+            // B9/R2：先 seal 后 spawn——新 worker 线程一启动就可能发布
+            // 新 ask/TurnOpened，晚于 spawn 的 force 收尾会误杀活交互。
+            if let Some(hub) = self.hub.as_ref() {
+                hub.seal_orphan_running_turns(&seed);
+                // force=true：旧 worker 已死亡，挂起交互必为孤儿。
+                hub.seal_orphan_channel_state(&seed, true);
+                hub.mark_worker_live(&seed);
+            }
             let spawned = match kind {
                 AgentKind::Session => self.spawn(&seed, None),
                 AgentKind::Subagent(spec) => self.spawn_subagent_inprocess(&seed, spec),
             };
             if let Err(error) = spawned {
                 log::error!("[AGENT:{seed}] respawn failed: {error}");
-            } else if let Some(hub) = self.hub.as_ref() {
-                // 与 get_or_spawn 一致：新 worker 接管前，把 timeline 中任何
-                // 未 seal 的 running turn 收尾为 Cancelled。
-                hub.seal_orphan_running_turns(&seed);
-                // force=true：worker 已死亡，挂起交互必为孤儿，强制收尾。
-                hub.seal_orphan_channel_state(&seed, true);
             }
         }
     }
@@ -695,7 +697,7 @@ pub(crate) fn externalize_large_content(
     })
 }
 
-/// 事件内可渲染 tail 上限（与 ToolProgress tail 对齐）。
+/// 事件内可渲染 tail 上限。
 const CONTENT_TAIL_BYTES: usize = 256 * 1024;
 
 /// 按 char 边界截取文本末尾最多 max_bytes（UTF-8 保守按 4 字节/字符）。

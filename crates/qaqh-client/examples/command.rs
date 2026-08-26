@@ -3,10 +3,10 @@
 //! the batch event stream end to end.
 //!
 //! Usage (against the parallel dev daemon):
-//!   $env:QAQH_DATA_DIR = "F:\QAQ-Harness\.deepx-test-home\.deepx"
+//!   $env:QAQH_DATA_DIR = "F:\QAQ-Harness\.qaqh-test-home\.qaqh"
 //!   cargo run -p qaqh-client --example command
 //!
-//! V4 链路验证：默认连真实数据目录（%USERPROFILE%\.deepx），向当前会话
+//! V4 链路验证：默认连真实数据目录（%USERPROFILE%\.qaqh），向当前会话
 //! 发一条「执行 edit 工具」指令，主应用应显示工具胶囊/总结行/抽屉。
 
 use std::sync::Arc;

@@ -184,14 +184,48 @@ pub fn extract_target_paths(tool_name: &str, args: &serde_json::Value) -> Vec<Pa
             paths.push(PathBuf::from(o));
         }
     }
-    // exec: extract cwd
-    if tool_name == "exec"
+    // exec/bash/pwsh 同 schema，都取 cwd（W3：原先只匹配 exec）。
+    if matches!(tool_name, "exec" | "bash" | "pwsh")
         && let Some(cwd) = args.get("cwd").and_then(|v| v.as_str())
     {
         paths.push(PathBuf::from(cwd));
     }
+    // W3：apply_patch 目标在 patch 文本里，解析 Codex 格式头。
+    if tool_name == "apply_patch"
+        && let Some(patch) = args.get("patch").and_then(|v| v.as_str())
+    {
+        for target in patch_target_paths(patch) {
+            paths.push(PathBuf::from(target));
+        }
+    }
 
     paths.into_iter().map(resolve_target_path).collect()
+}
+
+/// 解析 Codex 格式 patch 文本的目标路径（M1/W3 共享助手）。
+/// 支持 `*** Update File:` / `*** Add File:` / `*** Delete File:` /
+/// `*** Move to:` 四种头；解析结果仅用于冲突分组与授权资源绑定。
+pub fn patch_target_paths(patch: &str) -> Vec<String> {
+    const TAGS: [&str; 4] = [
+        "*** Update File: ",
+        "*** Add File: ",
+        "*** Delete File: ",
+        "*** Move to: ",
+    ];
+    let mut paths = Vec::new();
+    for line in patch.lines() {
+        let line = line.trim_start();
+        for tag in TAGS {
+            if let Some(rest) = line.strip_prefix(tag) {
+                let p = rest.trim();
+                if !p.is_empty() {
+                    paths.push(p.to_string());
+                }
+                break;
+            }
+        }
+    }
+    paths
 }
 
 /// Resolve symlinks/junctions in the nearest existing ancestor, then append
@@ -205,9 +239,16 @@ pub(crate) fn resolve_target_path(path: PathBuf) -> PathBuf {
     let absolute = if path.is_absolute() {
         path
     } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(&path))
-            .unwrap_or(path)
+        // W7：与执行侧对齐——相对路径以工作区根为基准，而非进程 cwd；
+        // 否则授权/审计绑定的资源与实际写入路径错位。
+        let ws = crate::current_workspace();
+        if ws.is_empty() || ws == "." {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(&path))
+                .unwrap_or(path)
+        } else {
+            std::path::Path::new(&ws).join(&path)
+        }
     };
     let normalized = normalize_lexically(&absolute);
     let mut ancestor = normalized.as_path();
@@ -233,7 +274,7 @@ pub(crate) fn resolve_target_path(path: PathBuf) -> PathBuf {
     resolved
 }
 
-fn normalize_lexically(path: &Path) -> PathBuf {
+pub(crate) fn normalize_lexically(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
@@ -707,5 +748,53 @@ mod tests {
                 "Level 3 must ask before {tool}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod w3_w7_tests {
+    use super::*;
+
+    #[test]
+    fn shell_cwd_and_patch_targets_enter_authorization_resources() {
+        let _serial = crate::TEST_RUNTIME_SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        std::fs::create_dir_all(ws.join("src")).unwrap();
+        let old = crate::current_workspace();
+        crate::set_workspace(ws.to_str().unwrap());
+        let ws_canon = std::fs::canonicalize(&ws).unwrap_or_else(|_| ws.clone());
+        let inside_ws = |p: &std::path::Path| p.starts_with(&ws_canon) || p.starts_with(&ws);
+
+        // W3：bash/pwsh 与 exec 同 schema，cwd 必须进授权资源。
+        let res = extract_target_paths(
+            "bash",
+            &serde_json::json!({ "command": "ls", "cwd": "./src" }),
+        );
+        assert_eq!(res.len(), 1, "bash cwd missing from resources: {res:?}");
+        assert!(inside_ws(&res[0]), "bash cwd not under ws: {:?}", res[0]);
+
+        // W3：apply_patch 目标从 patch 文本解析进授权资源（两条目标）。
+        let res2 = extract_target_paths(
+            "apply_patch",
+            &serde_json::json!({"patch": "*** Begin Patch\n*** Update File: src/a.rs\n@@\n-old\n+new\n*** Add File: src/new.rs\n+seed\n*** End Patch"}),
+        );
+        assert_eq!(res2.len(), 2, "patch targets missing: {res2:?}");
+
+        // W7：相对路径以工作区根为基准（与执行侧一致），不再绑进程 cwd。
+        for p in res2.iter().chain(res.iter()) {
+            assert!(inside_ws(p), "resource not under ws: {:?}", p);
+        }
+
+        crate::set_workspace(&old);
+    }
+
+    #[test]
+    fn patch_target_paths_parses_codex_headers() {
+        let patch = "*** Begin Patch\n*** Update File: a.rs\n*** Delete File: b.rs\n*** Move to: c.rs\nnot-a-header: d.rs\n*** End Patch";
+        assert_eq!(patch_target_paths(patch), vec!["a.rs", "b.rs", "c.rs"]);
+        assert!(patch_target_paths("no headers here").is_empty());
     }
 }

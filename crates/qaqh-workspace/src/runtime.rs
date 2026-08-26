@@ -233,7 +233,22 @@ pub(crate) fn register_test_handler_with_placement(
 }
 
 pub fn all_tools() -> Vec<ToolDef> {
-    with_manager(|manager| manager.filtered_defs()).unwrap_or_default()
+    let defs = with_manager(|manager| manager.filtered_defs()).unwrap_or_default();
+    if image_tool_enabled() {
+        defs
+    } else {
+        // 端点不支持视觉输入（未声明 supports_image_tool）时，
+        // read_image 不进入模型工具清单。
+        defs.into_iter()
+            .filter(|def| def.function.name != "read_image")
+            .collect()
+    }
+}
+
+/// 当前配置的 provider endpoint 是否接受图片输入（read_image 工具开关）。
+pub fn image_tool_enabled() -> bool {
+    qaqh_config::Config::load()
+        .is_ok_and(|cfg| qaqh_config::registry::image_tool_enabled(&cfg.provider_id, &cfg.endpoint))
 }
 
 /// 查询 handler 声明的能力类别（权限决策单一事实源）。

@@ -32,15 +32,38 @@ pub struct CompactContext {
 fn read_messages_without_deduplication(path: &std::path::Path) -> Result<Vec<Message>, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|error| format!("read {}: {error}", path.display()))?;
+    let total = content.lines().count();
     content
         .lines()
         .enumerate()
         .filter(|(_, line)| !line.trim().is_empty())
         .map(|(index, line)| {
             serde_json::from_str(line)
-                .map_err(|error| format!("parse {} line {}: {error}", path.display(), index + 1))
+                .map_err(|error| {
+                    // L-session：仅最后一行 torn tail（崩溃时写一半）容错截断；
+                    // 中间行损坏仍拒绝——那意味着文件系统性损坏。
+                    let is_last_line = index + 1 == total;
+                    if is_last_line {
+                        log::warn!(
+                            "[session] tolerating torn tail at {} line {}",
+                            path.display(),
+                            index + 1
+                        );
+                        return format!("__torn_tail__{}", error);
+                    }
+                    format!("parse {} line {}: {error}", path.display(), index + 1)
+                })
+                .or_else(|error| {
+                    if error.starts_with("__torn_tail__") {
+                        Ok(None)
+                    } else {
+                        Err(error)
+                    }
+                })
         })
-        .collect()
+        // 过滤被容忍的 torn tail 行。
+        .collect::<Result<Vec<Option<Message>>, String>>()
+        .map(|messages| messages.into_iter().flatten().collect())
 }
 
 #[derive(Debug)]
@@ -326,6 +349,11 @@ impl SessionManager {
     /// 仅改 meta.json（atomic replace-write）；`index` 控制是否同步会话索引
     /// （子代理 ephemeral，不进列表）。
     pub fn set_cwd(&self, seed: &str, cwd: &str, index: bool) {
+        // 空 cwd 双保险：canonical_cwd("") = "" 会清掉已有工作区（前端重启后
+        // 回空 cwd 的 bug 通道）；空串直接忽略，永不破坏现有归属。
+        if cwd.trim().is_empty() {
+            return;
+        }
         let lock = self.session_lock(seed);
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = self.session_path_dir(seed);

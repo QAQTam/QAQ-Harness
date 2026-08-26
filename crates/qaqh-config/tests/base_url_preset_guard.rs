@@ -59,13 +59,6 @@ max_tokens = 128000
 timeout_secs = 120
 default_tools = ["file", "exec"]
 
-[multimodal]
-enabled = false
-provider_type = "mimo"
-provider_id = "mimo"
-model = "mimo-v2.5"
-max_tokens = 4096
-
 [workspace]
 mode = "local"
 "#;

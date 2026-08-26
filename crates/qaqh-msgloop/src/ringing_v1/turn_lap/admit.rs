@@ -141,10 +141,14 @@ pub(crate) fn execute_admitted_batch(
                 continue;
             }
             match handle.join() {
-                Ok((_id, content, success, _canonical_result, code_delta, skill_effects)) => {
-                    ctx.agent
-                        .msg
-                        .push_tool_result_direct(&call_id, &content, success);
+                Ok((_id, content, success, canonical_result, code_delta, skill_effects)) => {
+                    ctx.agent.msg.push_tool_result_direct_with_attachments(
+                        &call_id,
+                        &content,
+                        success,
+                        None,
+                        &canonical_result.images,
+                    );
                     ordered_skill_effects.push((call_id.clone(), skill_effects));
                     if let Some(ref delta) = code_delta {
                         ctx.stats.push_delta(delta.clone());
@@ -224,10 +228,14 @@ pub(crate) fn execute_admitted_batch(
             .expect("tool thread spawn");
         tool.drain_progress_external(ctx, progress_rx, turn_id, round_num);
         match handle.join() {
-            Ok((content, success, _canonical_result, code_delta, skill_effects)) => {
-                ctx.agent
-                    .msg
-                    .push_tool_result_direct(&call_id, &content, success);
+            Ok((content, success, canonical_result, code_delta, skill_effects)) => {
+                ctx.agent.msg.push_tool_result_direct_with_attachments(
+                    &call_id,
+                    &content,
+                    success,
+                    None,
+                    &canonical_result.images,
+                );
                 ordered_skill_effects.push((call_id.clone(), skill_effects));
                 if let Some(ref delta) = code_delta {
                     ctx.stats.push_delta(delta.clone());
@@ -324,7 +332,10 @@ pub(crate) fn admit_and_dispatch(
         return None;
     }
 
-    // Duplicate tool-call ID check
+    // Duplicate tool-call ID check → terminal outcome (M4)：
+    // 裸 Handled 会把 phase 永久卡在 ToolsRunning 且 timeline 不 seal；
+    // 这里先发 OperationFailed，再 seal 本轮为 Cancelled 并返回
+    // TurnAborted，保证 turn 必有终态事件、phase 回到 Idle。
     {
         let mut seen = HashSet::new();
         if pending.iter().any(|t| !seen.insert(t.id.clone())) {
@@ -342,7 +353,23 @@ pub(crate) fn admit_and_dispatch(
                     operation_id: None,
                 },
             ));
-            return Some(Outcome::Handled);
+            let tool_ids: HashSet<String> = pending.iter().map(|t| t.id.clone()).collect();
+            super::gate::seal_timeline_terminal_round(
+                ctx,
+                turn_id,
+                round_num,
+                None,
+                &tool_ids,
+                qaqh_domain::TimelineTurnState::Cancelled,
+                Some(qaqh_domain::TimelineFailure {
+                    code: "duplicate_tool_call".into(),
+                    message: "Model emitted duplicate tool-call IDs; the round was aborted".into(),
+                }),
+            );
+            return Some(Outcome::TurnAborted {
+                turn_id: turn_id.to_string(),
+                usage: last_usage.clone(),
+            });
         }
     }
 
@@ -462,6 +489,11 @@ pub(crate) fn admit_and_dispatch(
 
     // Execute independent tools in bounded parallel batches.
     while !parallel_authorized.is_empty() {
+        // C1：批间取消检查（对齐串行路径）——取消后不再 spawn 新工具线程、
+        // 不再发 Running 事件；已入队批次由下方收割逻辑观察 cancelled。
+        if ctx.cancel.is_set() {
+            break;
+        }
         let batch_len = parallel_authorized.len().min(MAX_PARALLEL_TOOL_WORKERS);
         let batch: Vec<_> = parallel_authorized.drain(..batch_len).collect();
         let (progress_tx, progress_rx) = qaqh_workspace::bounded_exec_progress_channel();
@@ -509,12 +541,13 @@ pub(crate) fn admit_and_dispatch(
                 let _ = h.join(); // reap
             } else {
                 match h.join() {
-                    Ok((_cid, content, success, _canonical_result, code_delta, skill_effects)) => {
-                        ctx.agent.msg.push_tool_result_direct_with_diff(
+                    Ok((_cid, content, success, canonical_result, code_delta, skill_effects)) => {
+                        ctx.agent.msg.push_tool_result_direct_with_attachments(
                             &call_id,
                             &content,
                             success,
-                            _canonical_result.diff.clone(),
+                            canonical_result.diff.clone(),
+                            &canonical_result.images,
                         );
                         ordered_skill_effects.push((call_id.clone(), skill_effects));
                         if let Some(ref delta) = code_delta {
@@ -580,12 +613,13 @@ pub(crate) fn admit_and_dispatch(
             .expect("tool thread spawn");
         tool.drain_progress_external(ctx, progress_rx, turn_id, round_num);
         match handle.join() {
-            Ok((content, success, _canonical_result, code_delta, skill_effects)) => {
-                ctx.agent.msg.push_tool_result_direct_with_diff(
+            Ok((content, success, canonical_result, code_delta, skill_effects)) => {
+                ctx.agent.msg.push_tool_result_direct_with_attachments(
                     &call_id,
                     &content,
                     success,
-                    _canonical_result.diff.clone(),
+                    canonical_result.diff.clone(),
+                    &canonical_result.images,
                 );
                 ordered_skill_effects.push((call_id.clone(), skill_effects));
                 if let Some(ref delta) = code_delta {

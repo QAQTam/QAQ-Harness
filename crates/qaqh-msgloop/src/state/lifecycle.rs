@@ -107,6 +107,25 @@ pub fn init_session(agent: &mut AgentState, restore_seed: Option<&str>) -> bool 
                     repairs.len()
                 );
                 agent.msg = msg;
+                // 重建 read_image 图片注册表：registry 是内存态，daemon 重启
+                // 后会丢失；但上传图片本就以 ContentBlock::Image 持久化在
+                // user 消息里。按活跃视图的时序重放注册，使 [Image #N] 占位
+                // 引用（gate 投影按同一视图顺序编号）在重启后依然成立。
+                qaqh_workspace::read_image::reset_images(&agent.session.seed);
+                for message in active_messages {
+                    if message.role != "user" {
+                        continue;
+                    }
+                    for block in &message.content {
+                        if let qaqh_types::ContentBlock::Image { mime_type, data } = block {
+                            qaqh_workspace::read_image::store_image(
+                                &agent.session.seed,
+                                mime_type,
+                                data,
+                            );
+                        }
+                    }
+                }
                 // V2 state is restored only from typed session metadata. Old
                 // protected skill/catalog system messages must not reactivate
                 // instructions by surviving in message history.

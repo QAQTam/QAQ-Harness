@@ -4,8 +4,8 @@
 
 use super::ToolManager;
 use super::exec;
-use super::image_query;
 use super::journal;
+use super::read_image;
 use super::web;
 
 use super::apply_patch;
@@ -53,8 +53,8 @@ pub fn build_tool_manager(extra_registrars: &[ToolRegistrar]) -> ToolManager {
     // ── 交互 ──
     ask_user::register(&mut mgr);
 
-    // ── 多模态图像理解 ──
-    image_query::register(&mut mgr);
+    // ── 图像读取（主模型视觉输入）──
+    read_image::register(&mut mgr);
 
     journal::register(&mut mgr);
 
@@ -96,11 +96,11 @@ mod tests {
                 "exec",
                 "glob",
                 "grep",
-                "image",
                 "journal",
                 "process",
                 "pwsh",
                 "read",
+                "read_image",
                 "skills",
                 "todo",
                 "web_fetch",

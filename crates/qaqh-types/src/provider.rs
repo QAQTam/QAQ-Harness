@@ -99,6 +99,13 @@ pub struct EndpointSpec {
     /// Kept separately because an endpoint may support neither vendor-specific
     /// thinking toggles nor OpenAI reasoning effort.
     pub supports_reasoning_effort: bool,
+    /// Sparse allowlist of accepted `reasoning_effort` values (router models
+    /// often expose a non-contiguous set, e.g. OpenRouter ox-alpha only takes
+    /// max/high/low). When set, the gate clamps the requested effort to the
+    /// nearest allowed value on the global effort ladder instead of passing it
+    /// through verbatim — off-domain values are otherwise silently ignored or
+    /// rejected by routers. `None` = no clamping.
+    pub effort_allowlist: Option<Vec<String>>,
     /// Whether assistant history entries that contain tool calls must include
     /// an explicit `content: null`. Some OpenAI-compatible upstreams reject a
     /// missing content member even though the OpenAI schema permits null.
@@ -150,6 +157,10 @@ pub struct EndpointSpec {
     /// without them (HTTP 400), Kimi K3 & k2.7-code require them for preserved
     /// thinking, and GLM / Qwen / MiniMax / OpenAI accept them silently.
     pub responses_echo_reasoning_content: bool,
+    /// Whether this endpoint accepts image parts in the conversation
+    /// (vision input). Gates the `read_image` client tool: endpoints without
+    /// it never see the tool in their tool list. Default: false.
+    pub supports_image_tool: bool,
 }
 
 impl Default for EndpointSpec {
@@ -172,6 +183,7 @@ impl Default for EndpointSpec {
             has_balance: true,
             supports_thinking: true,
             supports_reasoning_effort: true,
+            effort_allowlist: None,
             tool_call_content_null: false,
             supports_reasoning_content: true,
             require_provider_parameters: false,
@@ -185,6 +197,7 @@ impl Default for EndpointSpec {
             responses_supports_user: true,
             responses_search_function_alias: None,
             responses_echo_reasoning_content: true,
+            supports_image_tool: false,
         }
     }
 }

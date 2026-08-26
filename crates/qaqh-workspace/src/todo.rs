@@ -96,11 +96,15 @@ fn todo_path() -> Option<std::path::PathBuf> {
 
 /// Public API: load the TodoStore from disk (used by GoalEngine).
 pub fn load_todo() -> Result<TodoStore, String> {
+    // W2：公共入口串行化，GoalEngine 与工具路径互斥。
+    let _guard = TODO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     read_store()
 }
 
 /// Public API: save the TodoStore to disk atomically (used by GoalEngine).
 pub fn save_todo(store: &TodoStore) -> Result<(), String> {
+    // W2：公共入口串行化（write_store 自身不加锁，见其注释）。
+    let _guard = TODO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     write_store(store)
 }
 
@@ -265,11 +269,14 @@ fn todo_item_json(item: &TodoItem) -> serde_json::Value {
 
 /// Atomic write: temporary file → rename.
 fn write_store(store: &TodoStore) -> Result<(), String> {
+    // 注意：本函数不加 TODO_LOCK——工具路径在持锁状态下调用它；
+    // 锁由公共入口 load_todo/save_todo 负责（W2），内部调用方须已持锁。
     let path = todo_path().ok_or("no active session")?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create todo directory: {e}"))?;
     }
-    let tmp = path.with_extension("json.tmp");
+    // 唯一 tmp 名：并发写者不再互踩同一 json.tmp（W2）。
+    let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
     let data = serde_json::to_vec_pretty(store).map_err(|e| format!("serialize todo: {e}"))?;
     std::fs::write(&tmp, data).map_err(|e| format!("write todo.tmp: {e}"))?;
     std::fs::rename(&tmp, &path).map_err(|e| format!("rename todo: {e}"))
@@ -342,6 +349,16 @@ fn expand_todo_ids(expr: &str) -> Result<Vec<String>, String> {
                     "INVALID_INPUT",
                     format!("id range '{segment}' has start > end"),
                     "Use ascending ranges like T1-T3.",
+                ));
+            }
+            // W1：展开封顶——创建侧有 MAX_CREATE_ITEMS=20，展开侧原本无界，
+            // T1-T4000000000 会 OOM/卡死 agent loop。
+            const MAX_RANGE_EXPAND: u32 = 1000;
+            if end_n - start_n >= MAX_RANGE_EXPAND {
+                return Err(json_err(
+                    "INVALID_INPUT",
+                    format!("id range '{segment}' expands to more than {MAX_RANGE_EXPAND} ids"),
+                    "Narrow the range, e.g. T1-T20.",
                 ));
             }
             for n in start_n..=end_n {
@@ -1020,8 +1037,19 @@ mod tests {
     use super::*;
     use std::ffi::OsString;
 
+    #[test]
+    fn todo_range_capped() {
+        // 巨大范围必须报错而非物化（防 OOM/卡死 agent loop）。
+        assert!(expand_todo_ids("T1-T4000000000").is_err());
+        // 恰好等于上限的可接受（含端点 1000 个）。
+        assert_eq!(expand_todo_ids("T1-T1000").unwrap().len(), 1000);
+        // 超上限一个即拒绝。
+        assert!(expand_todo_ids("T1-T1001").is_err());
+        // 普通小范围不受影响（含端点）。
+        assert_eq!(expand_todo_ids("T2-T4").unwrap(), vec!["T2", "T3", "T4"]);
+    }
     /// 隔离数据目录（USERPROFILE/HOME → 临时目录）并设置会话上下文；
-    /// 结束恢复环境，避免污染真实 ~/.deepx/sessions。
+    /// 结束恢复环境，避免污染真实 ~/.qaqh/sessions。
     fn with_isolated_todo<F: FnOnce(&str)>(f: F) {
         let _guard = crate::TEST_RUNTIME_SERIAL
             .lock()

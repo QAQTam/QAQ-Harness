@@ -15,9 +15,9 @@ mod schema_spot_check {
             "process.action missing per-action description"
         );
 
-        // image: anyOf 互斥
-        let img = &by_name("image").function.parameters;
-        assert!(img["anyOf"].is_array(), "image missing anyOf");
+        // read_image: anyOf 互斥（image_index / path）
+        let img = &by_name("read_image").function.parameters;
+        assert!(img["anyOf"].is_array(), "read_image missing anyOf");
         assert!(
             img["anyOf"][0]["required"]
                 .as_array()

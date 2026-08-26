@@ -58,39 +58,42 @@ impl MockServer {
         let bodies = Arc::new(Mutex::new(Vec::<String>::new()));
         let bodies_store = bodies.clone();
         let scenarios = Arc::new(Mutex::new(VecDeque::from(scenarios)));
-        let handle =
-            thread::spawn(move || {
-                loop {
-                    if stop_flag.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    let mut request = match server.recv_timeout(Duration::from_millis(50)) {
-                        Ok(Some(r)) => r,
-                        Ok(None) => continue,
-                        Err(_) => break,
-                    };
-                    let mut body = String::new();
-                    let _ = request.as_reader().read_to_string(&mut body);
-                    req_count.fetch_add(1, Ordering::SeqCst);
-                    bodies_store.lock().expect("lock").push(body);
-                    let scenario = scenarios
-                        .lock()
-                        .expect("lock")
-                        .pop_front()
-                        .expect("unexpected gate request");
-                    let mut sse = String::new();
-                    for data in scenario {
-                        sse.push_str("data: ");
-                        sse.push_str(&data);
-                        sse.push_str("\n\n");
-                    }
-                    request
-                        .respond(Response::from_string(sse).with_header(
-                            "Content-Type: text/event-stream".parse::<Header>().expect("valid sse header"),
-                        ))
-                        .expect("respond");
+        let handle = thread::spawn(move || {
+            loop {
+                if stop_flag.load(Ordering::SeqCst) {
+                    break;
                 }
-            });
+                let mut request = match server.recv_timeout(Duration::from_millis(50)) {
+                    Ok(Some(r)) => r,
+                    Ok(None) => continue,
+                    Err(_) => break,
+                };
+                let mut body = String::new();
+                let _ = request.as_reader().read_to_string(&mut body);
+                req_count.fetch_add(1, Ordering::SeqCst);
+                bodies_store.lock().expect("lock").push(body);
+                let scenario = scenarios
+                    .lock()
+                    .expect("lock")
+                    .pop_front()
+                    .expect("unexpected gate request");
+                let mut sse = String::new();
+                for data in scenario {
+                    sse.push_str("data: ");
+                    sse.push_str(&data);
+                    sse.push_str("\n\n");
+                }
+                request
+                    .respond(
+                        Response::from_string(sse).with_header(
+                            "Content-Type: text/event-stream"
+                                .parse::<Header>()
+                                .expect("valid sse header"),
+                        ),
+                    )
+                    .expect("respond");
+            }
+        });
         Self {
             base_url: format!("http://127.0.0.1:{port}"),
             requests,
@@ -153,7 +156,12 @@ fn send_cmd_with_id(
     command: RingingCommand,
 ) {
     let env = RingingWorkerCommandEnvelope::new(seed, command_id, command);
-    writeln!(w, "{}", serde_json::to_string(&env).expect("serialize envelope")).expect("write frame");
+    writeln!(
+        w,
+        "{}",
+        serde_json::to_string(&env).expect("serialize envelope")
+    )
+    .expect("write frame");
     w.flush().expect("flush pipe");
 }
 

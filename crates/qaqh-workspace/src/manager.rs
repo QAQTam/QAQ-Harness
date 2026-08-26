@@ -373,14 +373,16 @@ fn is_path_in_workspace(ctx: &crate::ToolCallCtx) -> bool {
             return true;
         }
         let abs_path = if std::path::Path::new(path).is_absolute() {
-            path.to_string()
+            std::path::PathBuf::from(path)
         } else {
-            std::path::Path::new(&ws)
-                .join(path)
-                .to_string_lossy()
-                .to_string()
+            std::path::Path::new(&ws).join(path)
         };
-        abs_path.starts_with(&ws)
+        // M13：组件级比较 + `..` 词法归一化。原先对字符串做 starts_with，
+        // sibling 目录（`proj` vs `proj-backup`）与未解析的 `..` 逃逸都会
+        // 被误判为在工内，导致 Destructive 出工区阻断被绕过。
+        let ws_norm = crate::permission::normalize_lexically(std::path::Path::new(&ws));
+        let path_norm = crate::permission::normalize_lexically(&abs_path);
+        path_norm.starts_with(&ws_norm)
     } else {
         // No path arg — assume workspace operation (e.g. task, skills, ask)
         true
@@ -550,5 +552,61 @@ mod tests {
             None,
         );
         assert!(ok.is_ok());
+    }
+}
+
+#[cfg(test)]
+mod m13_tests {
+    use super::*;
+
+    fn ctx_with_path(path: &str) -> crate::ToolCallCtx {
+        crate::ToolCallCtx {
+            id: "t".to_string(),
+            name: "write_file".to_string(),
+            action: String::new(),
+            args: serde_json::json!({ "path": path }),
+            tx_progress: None,
+            timeout_secs: None,
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            skill_effects: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+
+    #[test]
+    fn sibling_prefix_and_dotdot_cannot_pose_as_workspace() {
+        let _serial = crate::TEST_RUNTIME_SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws-proj");
+        std::fs::create_dir_all(&ws).unwrap();
+        let old_ws = crate::current_workspace();
+        crate::set_workspace(ws.to_str().unwrap());
+
+        // 工作区内：相对与绝对路径均通过。
+        assert!(is_path_in_workspace(&ctx_with_path("src/main.rs")));
+        assert!(is_path_in_workspace(&ctx_with_path(
+            ws.join("src/main.rs").to_str().unwrap()
+        )));
+        // sibling 前缀（ws-proj-backup）不再被字符串前缀误判。
+        assert!(!is_path_in_workspace(&ctx_with_path(
+            tmp.path().join("ws-proj-backup/x").to_str().unwrap()
+        )));
+        // `..` 逃逸被词法归一化捕获。
+        assert!(!is_path_in_workspace(&ctx_with_path("../outside.txt")));
+        assert!(!is_path_in_workspace(&ctx_with_path("a/../../outside.txt")));
+        // 无 path 参数默认放行。
+        assert!(is_path_in_workspace(&crate::ToolCallCtx {
+            id: "t".to_string(),
+            name: "ask".to_string(),
+            action: String::new(),
+            args: serde_json::json!({}),
+            tx_progress: None,
+            timeout_secs: None,
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            skill_effects: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        }));
+
+        crate::set_workspace(&old_ws);
     }
 }

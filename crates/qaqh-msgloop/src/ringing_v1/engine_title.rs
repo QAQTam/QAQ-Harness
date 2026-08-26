@@ -203,7 +203,7 @@ fn build_provider(ctx: &RingContext) -> qaqh_gate::ProviderConfig {
                 echo_reasoning_content: endpoint.responses_echo_reasoning_content,
             };
         }
-        p
+        p.with_opencode_headers(&ctx.agent.session.seed, "title")
     } else {
         let mut p = qaqh_gate::ProviderConfig::openai(
             &ctx.agent.config.base_url,
@@ -224,8 +224,9 @@ fn build_provider(ctx: &RingContext) -> qaqh_gate::ProviderConfig {
         .with_stream_usage(ep.as_ref().map(|e| e.include_stream_usage).unwrap_or(false));
         if let Some(endpoint) = ep.as_ref() {
             p.supports_reasoning_effort = endpoint.supports_reasoning_effort;
+            p.effort_allowlist = endpoint.effort_allowlist.clone();
         }
-        p
+        p.with_opencode_headers(&ctx.agent.session.seed, "title")
     }
 }
 

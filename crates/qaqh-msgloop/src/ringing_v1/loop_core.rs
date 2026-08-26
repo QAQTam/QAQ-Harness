@@ -322,7 +322,7 @@ impl Loop {
             self.reset_all_engines();
             self.phase = LoopPhase::Idle;
             self.cancel.clear();
-            qaqh_workspace::set_cancel(false);
+            qaqh_workspace::clear_cancel();
 
             // panic 恢复：Ringing 侧以 OperationFailed 暴露（legacy Error/Done 已拆除）。
             self.paced_emitter
@@ -386,7 +386,7 @@ impl Loop {
         self.session.flush();
         self.reset_all_engines();
         self.cancel.clear();
-        qaqh_workspace::set_cancel(false);
+        qaqh_workspace::clear_cancel();
     }
 
     /// 将会话 seed 同步到 PacedEmitter（Ringing 事件信封路由键）。
@@ -923,6 +923,11 @@ impl Loop {
     /// Check if a background compact has completed and apply the result.
     fn check_pending_compact(&mut self) {
         if let Some(ref rx) = self.pending_compact_rx {
+            // G4：挂起/运行中不消费压缩结果——应用会折叠悬空 tool_use。
+            // 结果留在 channel 里，安全点（Idle 且无 suspension）再取。
+            if self.session.turn.is_suspended() || self.phase != LoopPhase::Idle {
+                return;
+            }
             match rx.try_recv() {
                 Ok(meta) => {
                     self.session.agent.finish_manual_compact();
@@ -1073,6 +1078,13 @@ impl Loop {
     // ═══════════════════════════════════════════════════
 
     fn start_compact(&mut self, causation: Option<String>) -> Outcome {
+        // G4：挂起（权限/ask/plan 未决）或工具运行中禁止启动压缩——
+        // 压缩会折叠悬空 tool_use，迟到 grant 将执行出孤儿结果。
+        if self.session.turn.is_suspended() || self.phase != LoopPhase::Idle {
+            return Outcome::Error(
+                "Context compaction is not allowed while a turn is running or suspended.".into(),
+            );
+        }
         if self.pending_compact_rx.is_some() || self.session.agent.manual_compact_running() {
             return Outcome::Error("Context compaction is already running.".into());
         }
@@ -1166,6 +1178,17 @@ impl Loop {
                 }
             }
         } else {
+            // L-msgloop③（降级后残余）：领域终态 CompactFinished{Skipped}
+            // 已存在，此处仅补命令级 receipt，让发起 compact 的 command_id
+            // 也能得到 ack（加法兼容，不改 envelope 形状）。
+            if let Some(cid) = causation.as_deref() {
+                self.emit_operation_failed(
+                    cid,
+                    qaqh_domain::ErrorScope::Conversation,
+                    "compact_noop",
+                    "Nothing to compact: history already fits the retention budget",
+                );
+            }
             self.paced_emitter
                 .emit_domain(qaqh_domain::DomainEvent::Conversation(
                     qaqh_domain::ConversationEvent::CompactFinished {
@@ -1230,7 +1253,7 @@ impl Loop {
         match env.command {
             RingingCommand::Control(command) => match command {
                 ControlCommand::SessionCreate {
-                    close_current,
+                    close_current: _,
                     cwd: _,
                     tool_mode,
                     custom_tools,
@@ -1242,13 +1265,10 @@ impl Loop {
                             .agent
                             .apply_tool_mode(&tool_mode, &custom_tools);
                     }
-                    if close_current {
-                        self.prepare_session_switch();
-                    } else {
-                        self.clear_injections();
-                        self.finish_pending_compact(qaqh_domain::CompactStatus::Cancelled);
-                        self.session.agent.reset_compaction_coordination();
-                    }
+                    // H2：无论 close_current 与否都必须走会话切换守卫——
+                    // 否则旧会话的挂起 turn/tool.pending 会指向被整包替换
+                    // 后的死 store，迟到 resume 直接打穿新会话。
+                    self.prepare_session_switch();
                     self.session_eng
                         .create(&mut self.session.agent, &self.cancel);
                     self.sync_emitter_seed();
@@ -1457,6 +1477,29 @@ impl Loop {
                     }
                     // images 已是 domain ImageBlock（Ringing 命令直接携带）。
                     // as_system=true 已在上方走注入通道；这里只处理用户输入。
+                    // H1：挂起 turn 被新用户输入取代——显式中止并分离旧悬空
+                    // 状态（镜像 undo_conflict 守卫），否则迟到 grant 会在新
+                    // turn 中间恢复旧 turn（幽灵 lap + 错位 backfill）。
+                    if self.session.turn.is_suspended() {
+                        let mut abort_ctx = RingContext {
+                            agent: &mut self.session.agent,
+                            emitter: &self.paced_emitter,
+                            cancel: &self.cancel,
+                            phase: &mut self.phase,
+                            pending: &mut self.pending,
+                            writer_dead: &self.writer_dead,
+                            stats: &mut self.session.stats,
+                            flow: &mut self.flow,
+                        };
+                        if let Some(stale_turn_id) =
+                            self.session.turn.abort_suspended(&mut abort_ctx)
+                        {
+                            log::warn!(
+                                "[INPUT] suspended turn {stale_turn_id} superseded by newer user input"
+                            );
+                            self.session.agent.msg.remove_last_step_if_incomplete();
+                        }
+                    }
                     let mut ctx = RingContext {
                         agent: &mut self.session.agent,
                         emitter: &self.paced_emitter,
@@ -1540,6 +1583,10 @@ impl Loop {
                     action,
                     args,
                 } => {
+                    // C2：UI 快捷工具调用前清两处取消 token——Stop 之后
+                    // 快捷工具不再被残留取消态在 execution.rs 秒拒。
+                    self.cancel.clear();
+                    qaqh_workspace::clear_cancel();
                     let mut ctx = RingContext {
                         agent: &mut self.session.agent,
                         emitter: &self.paced_emitter,
@@ -1620,6 +1667,34 @@ impl Loop {
     /// - `YieldToUser` → do nothing, wait for PermissionResponse or UserInput
     /// - `Handled` / `Error` / `Shutdown` → straightforward
     fn apply_outcome(&mut self, outcome: Outcome) {
+        // G5：孤儿 tool_result 升级为领域事件——store 只记录，此处统一
+        // 上报（覆盖所有执行路径），前端不再对"已授权执行却消失"零感知。
+        let orphans = self.session.agent.msg.take_orphan_tool_results();
+        if !orphans.is_empty() {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            self.paced_emitter
+                .emit_domain(qaqh_domain::DomainEvent::Control(
+                    qaqh_domain::ControlEvent::OperationFailed {
+                        occurrence_id: format!("orphan-tool-result-{now_ms}"),
+                        scope: qaqh_domain::ErrorScope::Tool,
+                        error: qaqh_domain::DomainError {
+                            error_id: format!("orphan-tool-result-err-{now_ms}"),
+                            code: "orphan_tool_result".into(),
+                            message: format!(
+                                "{} tool result(s) could not be attached to their tool_use (turn superseded or aborted): {}",
+                                orphans.len(),
+                                orphans.join(", ")
+                            ),
+                            retryable: false,
+                            dedupe_key: Some("orphan_tool_result".into()),
+                        },
+                        operation_id: None,
+                    },
+                ));
+        }
         match outcome {
             Outcome::TurnComplete { turn_id, usage } => {
                 self.session.agent.skills.complete_user_turn();

@@ -402,18 +402,6 @@ pub enum ToolEvent {
         round_num: u32,
         name: String,
     },
-    /// 工具输出增量（replaceable；PLAN 定稿字段，16ms 合并、256 KiB 上限）。
-    ToolProgress {
-        tool_call_id: String,
-        turn_id: String,
-        round_num: u32,
-        stream: String,
-        seq_start: u64,
-        seq_end: u64,
-        chunk: String,
-        dropped_bytes: u64,
-        truncated: bool,
-    },
     /// 工具执行成功终态（terminal；发送前必须 flush/覆盖同工具 replaceable 进度）。
     ToolFinished {
         tool_call_id: String,
@@ -470,9 +458,7 @@ pub enum ToolEvent {
 impl ToolEvent {
     pub fn delivery(&self) -> Delivery {
         match self {
-            ToolEvent::ToolCallPrepared { .. } | ToolEvent::ToolProgress { .. } => {
-                Delivery::Replaceable
-            }
+            ToolEvent::ToolCallPrepared { .. } => Delivery::Replaceable,
             _ => Delivery::Reliable,
         }
     }
@@ -482,7 +468,6 @@ impl ToolEvent {
         match self {
             ToolEvent::ToolCallPrepared { tool_call_id, .. }
             | ToolEvent::ToolStarted { tool_call_id, .. }
-            | ToolEvent::ToolProgress { tool_call_id, .. }
             | ToolEvent::ToolFinished { tool_call_id, .. }
             | ToolEvent::ToolPermissionRequested { tool_call_id, .. } => Some(tool_call_id),
             ToolEvent::ToolNotice { tool_call_id, .. } => tool_call_id.as_deref(),
@@ -504,6 +489,10 @@ impl ToolEvent {
 pub enum ControlEvent {
     /// 会话生命周期状态变更。
     SessionStateChanged { seed: String, state: SessionState },
+    /// 全局配置已变更（P2-D2）：`rev` = daemon 侧配置版本（每次 config.save
+    /// 自增）。消费者收到后重拉 `config.load`；seed 惯例为空串（全局广播，
+    /// 与 SessionStateChanged 的 per-seed 区分）。T20 axum SSE 同源复用。
+    ConfigChanged { rev: u64 },
     /// 会话活动状态变更（WaitingUser 汇总 interaction/permission 挂起）。
     SessionActivityChanged {
         seed: String,
@@ -680,27 +669,6 @@ mod tests {
     }
 
     #[test]
-    fn tool_progress_carries_plan_fields() {
-        let event = ToolEvent::ToolProgress {
-            tool_call_id: "call-1".into(),
-            turn_id: "t1".into(),
-            round_num: 0,
-            stream: "stdout".into(),
-            seq_start: 10,
-            seq_end: 20,
-            chunk: "abc".into(),
-            dropped_bytes: 0,
-            truncated: false,
-        };
-        assert_eq!(event.delivery(), Delivery::Replaceable);
-        assert_eq!(event.tool_call_id(), Some("call-1"));
-        let json = serde_json::to_string(&event).expect("serialize");
-        assert!(json.contains("\"seq_start\":10"));
-        assert!(json.contains("\"seq_end\":20"));
-        assert!(json.contains("\"dropped_bytes\":0"));
-    }
-
-    #[test]
     fn code_changed_accepts_legacy_shape_and_targets_new_events() {
         let legacy: ToolEvent = serde_json::from_value(serde_json::json!({
             "type": "code_changed",
@@ -831,16 +799,12 @@ mod tests {
 
     #[test]
     fn domain_event_channel_and_delivery_delegation() {
-        let ev = DomainEvent::Tool(ToolEvent::ToolProgress {
+        let ev = DomainEvent::Tool(ToolEvent::ToolCallPrepared {
             tool_call_id: "c".into(),
             turn_id: "t".into(),
             round_num: 0,
-            stream: "stderr".into(),
-            seq_start: 0,
-            seq_end: 1,
-            chunk: "!".into(),
-            dropped_bytes: 0,
-            truncated: false,
+            name: "exec".into(),
+            args_so_far: "{}".into(),
         });
         assert_eq!(ev.channel(), RingingChannel::Tool);
         assert_eq!(ev.delivery(), Delivery::Replaceable);

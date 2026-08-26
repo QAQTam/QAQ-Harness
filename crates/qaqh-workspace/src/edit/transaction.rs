@@ -51,6 +51,7 @@ pub(crate) enum Mode {
 /// partial：成功 hunk 应用（edited = Some + code = 首个失败码），报告含全部详情。
 pub(crate) fn run_edit(
     content: &str,
+    path: &str,
     hunks: &[Hunk],
     notes: Vec<String>,
     mode: Mode,
@@ -218,7 +219,7 @@ pub(crate) fn run_edit(
                 let (edited, shifts) = apply_ops(content, &ops);
                 let applied = ops.len();
                 return FileOutcome {
-                    diff: unified_diff(content, &edited, "file"),
+                    diff: unified_diff(content, &edited, path),
                     new_hash: Some(content_hash(&edited)),
                     edited: Some(edited),
                     reports,
@@ -256,7 +257,7 @@ pub(crate) fn run_edit(
 
     let (edited, shifts) = apply_ops(content, &ops);
     FileOutcome {
-        diff: unified_diff(content, &edited, "file"),
+        diff: unified_diff(content, &edited, path),
         new_hash: Some(content_hash(&edited)),
         edited: Some(edited),
         reports,

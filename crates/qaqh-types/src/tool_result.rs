@@ -64,12 +64,28 @@ pub struct ToolError {
     pub hint: Option<String>,
 }
 
+/// An image attachment carried by a tool result.
+///
+/// Stored alongside [`ToolResult`] so the message layer can append
+/// `ContentBlock::Image` blocks to the resulting tool message. Never
+/// serialized into the model text projection — the gate lowers images
+/// to provider-native media parts at request-build time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolImage {
+    pub mime_type: String,
+    /// Raw base64 payload (no `data:` prefix).
+    pub data: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolResult {
     pub status: ToolStatus,
     pub summary: String,
     pub data: serde_json::Value,
     pub model: ToolModelPayload,
+    /// Images to attach to the tool result message (e.g. `read_image`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ToolImage>,
     /// 展示平面的 unified diff（文件修改类工具的原始 diff 文本）。
     ///
     /// ⚠ 绝不进入模型投影（`project_for_model` 不携带它）：模型看到的仍是
@@ -189,12 +205,22 @@ impl ToolResult {
             diff: None,
             output_ref: None,
             error: None,
+            images: Vec::new(),
         }
     }
 
     /// Attach display-plane diff text (never projected to the model).
     pub fn with_diff(mut self, diff: impl Into<String>) -> Self {
         self.diff = Some(diff.into());
+        self
+    }
+
+    /// Attach an image (mime + base64) to be appended to the tool message.
+    pub fn with_image(mut self, mime_type: impl Into<String>, data: impl Into<String>) -> Self {
+        self.images.push(ToolImage {
+            mime_type: mime_type.into(),
+            data: data.into(),
+        });
         self
     }
 
@@ -238,6 +264,45 @@ impl ToolResult {
         // no-fold / extreme modes intentionally allow results beyond the
         // default TOOL_MODEL_MAX_CHARS, so no hard check is applied here.
         Ok(())
+    }
+
+    /// 统一 XML 信封：发给模型的 tool result 文本形态。
+    ///
+    /// 设计要点：
+    /// - 属性区承载全部信令（status/truncated/error_code/retryable），
+    ///   正文零转义省 token（替代旧 JSON to_string 的 \n 转义税）；
+    /// - 标签名纯字母数字（<qaqh_tool_result>），避开 <|...|> special-token
+    ///   命名空间（ChatML/Llama/DeepSeek 全家都占用了竖线形态）；
+    /// - 正文中字面闭合标签替换为 <\/...> 反斜杠变体防嵌套假闭合。
+    pub fn render_xml_envelope(&self) -> String {
+        let status = match self.status {
+            ToolStatus::Ok => "ok",
+            ToolStatus::Error => "error",
+            ToolStatus::Partial => "partial",
+            ToolStatus::Backgrounded => "backgrounded",
+            ToolStatus::Cancelled => "cancelled",
+        };
+        let mut out = format!("<qaqh_tool_result status=\"{status}\"");
+        if self.model.truncated {
+            out.push_str(" truncated=\"true\"");
+        }
+        if let Some(error) = &self.error {
+            out.push_str(&format!(" error_code=\"{}\"", error.code));
+            if error.retryable {
+                out.push_str(" retryable=\"true\"");
+            }
+        }
+        out.push_str(">\n");
+        let mut body = self.model.text.trim_end().to_string();
+        if body.is_empty() {
+            if let Some(error) = &self.error {
+                body = error.message.clone();
+            }
+        }
+        let body = body.replace("</qaqh_tool_result>", "<\\/qaqh_tool_result>");
+        out.push_str(&body);
+        out.push_str("\n</qaqh_tool_result>");
+        out
     }
 
     /// Stable payload used by provider adapters and context accounting.

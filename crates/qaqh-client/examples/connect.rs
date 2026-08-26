@@ -3,7 +3,7 @@
 //!
 //! Run against the dev daemon:
 //! ```powershell
-//! $env:QAQH_DATA_DIR = "F:\QAQ-Harness\.deepx-test-home\.deepx"
+//! $env:QAQH_DATA_DIR = "F:\QAQ-Harness\.qaqh-test-home\.qaqh"
 //! cargo run -p qaqh-client --example connect
 //! ```
 

@@ -116,6 +116,11 @@ pub struct MessageStore {
     /// becomes normal history instead of being re-presented as a fresh user
     /// message on every request.
     trailing_messages: Vec<Message>,
+    /// G3：最后 step 有未满足 tool_use 时延后的 trailing 注入。进程内
+    /// 缓冲（不持久化），由 flush_deferred_trailing 在安全点回灌。
+    deferred_trailing: Vec<Message>,
+    /// G5：被丢弃的孤儿 tool_result 的 call_id，宿主统一消费上报。
+    orphan_tool_results: Vec<String>,
     turns: Vec<Turn>,
     cancelled: bool,
     tool_executor: Option<ToolExecutorFn>,
@@ -159,6 +164,8 @@ impl Clone for MessageStore {
             seed: self.seed.clone(),
             system_messages: self.system_messages.clone(),
             trailing_messages: self.trailing_messages.clone(),
+            deferred_trailing: Vec::new(),
+            orphan_tool_results: self.orphan_tool_results.clone(),
             turns: self.turns.clone(),
             cancelled: self.cancelled,
             tool_executor: None,
@@ -180,6 +187,8 @@ impl MessageStore {
             seed: seed.to_string(),
             system_messages: Vec::new(),
             trailing_messages: Vec::new(),
+            deferred_trailing: Vec::new(),
+            orphan_tool_results: Vec::new(),
             turns: Vec::new(),
             cancelled: false,
             tool_executor: None,
@@ -353,15 +362,31 @@ impl MessageStore {
             msg.role,
             msg.name
         );
-        if !new_text.is_empty()
-            && self.trailing_messages.iter().any(|m| {
-                m.content.iter().any(|b| match b {
-                    qaqh_types::ContentBlock::Text { text } => text == new_text,
-                    _ => false,
-                })
+        // M-low②/M-doc：收窄为仅相邻去重——原全历史扫描会把间隔重现的
+        // 相同报告（如子代理同名任务的两次完成报告）误判为重复丢弃；
+        // 崩溃重放/双击产生的重复必然相邻，相邻口径已足够防护。
+        let adjacent_duplicate = self.trailing_messages.last().is_some_and(|m| {
+            m.content.iter().any(|b| match b {
+                qaqh_types::ContentBlock::Text { text } => text == new_text,
+                _ => false,
             })
-        {
+        });
+        if !new_text.is_empty() && adjacent_duplicate {
             return false;
+        }
+        // G3：最后 step 有未满足 tool_use 时延后写入——trailing 插在
+        // tool_use 与迟到 result 之间会被 Anthropic/OpenAI 直接 400。
+        if self.has_pending_tools() {
+            const MAX_DEFERRED_TRAILING: usize = 64;
+            if self.deferred_trailing.len() >= MAX_DEFERRED_TRAILING {
+                let dropped = self.deferred_trailing.remove(0);
+                log::error!(
+                    "[store] deferred trailing overflow; dropping oldest (msg_id={:?})",
+                    dropped.msg_id
+                );
+            }
+            self.deferred_trailing.push(msg);
+            return true;
         }
         let mut msg = msg;
         let id = self.save_msg(&msg);
@@ -371,6 +396,22 @@ impl MessageStore {
         self.trailing_messages.push(msg);
         self.context_revision = self.context_revision.saturating_add(1);
         true
+    }
+
+    /// 安全点回灌：无悬空 tool_use 时把延后的 trailing 注入按序落盘。
+    pub fn flush_deferred_trailing(&mut self) {
+        if self.deferred_trailing.is_empty() || self.has_pending_tools() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.deferred_trailing);
+        for msg in pending {
+            let _ = self.push_trailing_system(msg);
+        }
+    }
+
+    /// G5：取走本 store 记录的孤儿 tool_result call_id（观测上报用）。
+    pub fn take_orphan_tool_results(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.orphan_tool_results)
     }
 
     /// Access the persisted trailing system messages (injection history).
@@ -396,6 +437,8 @@ impl MessageStore {
         }
         self.turns.push(Turn::new(msg));
         self.context_revision = self.context_revision.saturating_add(1);
+        // G3：新 turn 前旧悬空已被 auto_complete 消解，安全点回灌延后注入。
+        self.flush_deferred_trailing();
         Effect::None
     }
 
@@ -480,7 +523,7 @@ impl MessageStore {
     }
 
     pub fn push_tool_result(&mut self, tool_call_id: &str, result: &str, success: bool) -> Effect {
-        if self.push_tool_result_inner(tool_call_id, result, success, None) {
+        if self.push_tool_result_inner(tool_call_id, result, success, None, &[]) {
             self.context_revision = self.context_revision.saturating_add(1);
         }
 
@@ -501,7 +544,7 @@ impl MessageStore {
     pub fn push_tool_results_batch(&mut self, results: &[(String, String, bool)]) -> Effect {
         let mut changed = false;
         for (tc_id, result, success) in results {
-            changed |= self.push_tool_result_inner(tc_id, result, *success, None);
+            changed |= self.push_tool_result_inner(tc_id, result, *success, None, &[]);
         }
         if changed {
             self.context_revision = self.context_revision.saturating_add(1);
@@ -527,6 +570,7 @@ impl MessageStore {
         result: &str,
         success: bool,
         diff: Option<String>,
+        images: &[qaqh_types::ToolImage],
     ) -> bool {
         // 工具结果已在工具侧定型（qaqh-workspace::tool_side_fold）：
         // 存储的就是最终形态，message 层不再改写。
@@ -540,6 +584,14 @@ impl MessageStore {
             {
                 result.diff = Some(diff);
             }
+        }
+        // 工具附着的图片（read_image）：追加为 Image block。gate 投影时
+        // 降级为紧随 tool 结果的合成 user 消息（image_url / input_image）。
+        for image in images {
+            tool_msg.content.push(qaqh_types::ContentBlock::Image {
+                mime_type: image.mime_type.clone(),
+                data: image.data.clone(),
+            });
         }
 
         for turn in self.turns.iter_mut().rev() {
@@ -564,38 +616,14 @@ impl MessageStore {
                 return false;
             }
         }
-        if let Some(turn) = self.turns.last_mut() {
-            if let Some(step) = turn.steps.last_mut() {
-                if step.has_tool_call(tool_call_id) {
-                    log::warn!(
-                        "push_tool_result: tool_result {} matched by last-step fallback — appending",
-                        tool_call_id
-                    );
-                    step.tool_results.push(tool_msg.clone());
-                    let id = self.save_msg(&tool_msg);
-                    if let Some(id) = id {
-                        for t in self.turns.iter_mut().rev() {
-                            if let Some(s) = t.find_step_for_mut(tool_call_id) {
-                                if let Some(tr) = s.tool_results.last_mut() {
-                                    tr.msg_id = Some(id);
-                                }
-                                break;
-                            }
-                        }
-                    }
-                    return true;
-                }
-                log::error!(
-                    "push_tool_result: orphan tool_result {} — last step does not own this call_id, dropped",
-                    tool_call_id
-                );
-                return false;
-            }
-        }
+        // M-low③：原 last-step fallback 分支已删——前置逆向扫描按同一谓词
+        // (has_tool_call) 遍历全部 turn，能到达此处说明任何 step 都不含该
+        // call_id，fallback 永不可达（死代码），孤儿统一走下方记录。
         log::error!(
             "push_tool_result: orphan tool_result {} — nowhere to place, dropped",
             tool_call_id
         );
+        self.orphan_tool_results.push(tool_call_id.to_string());
         false
     }
 
@@ -737,9 +765,11 @@ impl MessageStore {
 
     /// Push a tool result directly (for manual execution).
     pub fn push_tool_result_direct(&mut self, tool_call_id: &str, result: &str, success: bool) {
-        if self.push_tool_result_inner(tool_call_id, result, success, None) {
+        if self.push_tool_result_inner(tool_call_id, result, success, None, &[]) {
             self.context_revision = self.context_revision.saturating_add(1);
         }
+        // G3：结果落地后尝试回灌延后的 trailing 注入。
+        self.flush_deferred_trailing();
     }
 
     /// 同 `push_tool_result_direct`，另附着展示平面 diff（编辑/写入类工具）。
@@ -751,9 +781,27 @@ impl MessageStore {
         success: bool,
         diff: Option<String>,
     ) {
-        if self.push_tool_result_inner(tool_call_id, result, success, diff) {
+        if self.push_tool_result_inner(tool_call_id, result, success, diff, &[]) {
             self.context_revision = self.context_revision.saturating_add(1);
         }
+    }
+
+    /// 同 `push_tool_result_direct_with_diff`，另把工具产出的图片
+    /// （如 `read_image`）以 `ContentBlock::Image` 追加到 tool 消息。
+    /// gate 投影层负责把图片降级为 provider 原生 media part。
+    pub fn push_tool_result_direct_with_attachments(
+        &mut self,
+        tool_call_id: &str,
+        result: &str,
+        success: bool,
+        diff: Option<String>,
+        images: &[qaqh_types::ToolImage],
+    ) {
+        if self.push_tool_result_inner(tool_call_id, result, success, diff, images) {
+            self.context_revision = self.context_revision.saturating_add(1);
+        }
+        // G3：结果落地后尝试回灌延后的 trailing 注入。
+        self.flush_deferred_trailing();
     }
 
     /// Execute all pending tools in the current step. When `tool_executor` is None
@@ -795,7 +843,7 @@ impl MessageStore {
         }
         let mut changed = false;
         for (tc_id, content, success) in reports {
-            changed |= self.push_tool_result_inner(&tc_id, &content, success, None);
+            changed |= self.push_tool_result_inner(&tc_id, &content, success, None, &[]);
         }
         if changed {
             self.context_revision = self.context_revision.saturating_add(1);
@@ -1005,7 +1053,13 @@ impl MessageStore {
                     // push_trailing_system 回放以分配写入顺序 msg_id（replaying
                     // 期间 save_msg 不落盘），使 to_vec/build_context 的写入顺序
                     // 合并能恢复注入的原始时间位置。
-                    if text.starts_with("[SUBAGENT ") {
+                    // M-low④：判别优先用持久化 name 字段（写侧
+                    // handle_system_input 恒置 name="subagent"）；前缀仅作
+                    // 旧档回退——以 "[SUBAGENT " 开头的真实用户消息不再被
+                    // 误改类为注入。
+                    let is_injection = msgs[i].name.as_deref() == Some("subagent")
+                        || text.starts_with("[SUBAGENT ");
+                    if is_injection {
                         store.push_trailing_system(msgs[i].clone());
                     } else {
                         store.push_user(&text);
@@ -1057,6 +1111,7 @@ impl MessageStore {
                         })
                         .unwrap_or("");
                     if msgs[i].role == "developer"
+                        || msgs[i].name.as_deref() == Some("subagent")
                         || text.starts_with("<skill_context_envelope")
                         || text.starts_with("[SUBAGENT ")
                     {
@@ -1200,6 +1255,21 @@ impl MessageStore {
         true
     }
 
+    /// G2：计算从扁平消息流 msg_id ≥ boundary 起保留的真实 turn 数。
+    /// subagent 报告等非 turn 起始的 user 消息不再虚增 keep——原先
+    /// kept_user_count 扁平计数导致 apply_compact 早退却谎报成功。
+    pub fn count_live_turns_from(&self, boundary: Option<u64>) -> usize {
+        match boundary {
+            None => self.turns.len(),
+            Some(b) => self
+                .turns
+                .iter()
+                .filter(|t| t.user.msg_id.is_some_and(|id| id >= b))
+                .count()
+                .max(1),
+        }
+    }
+
     /// Compact: keep `keep` recent turns in LLM context, physically remove older ones.
     /// Inserts the summary as a synthetic user turn before the kept turns
     /// so that `to_vec()` serializes correctly without duplicating compacted data.
@@ -1227,7 +1297,18 @@ impl MessageStore {
         // message is intentionally omitted — it's redundant with the
         // summary and, after a manual compact, the user will send a fresh
         // message to resume work.
-        let compact_text = format!("[Compacted {} turns]\n{}", skip, summary.trim(),);
+        // H4：合成摘要占一个数组位但非真实 turn。重复压缩时把它从 skip
+        // 中扣除并累加上一轮头部计数，保证 [Compacted N] 恒等于"真实被
+        // 折叠的 turn 总数"，undo 的 seq→index 映射不再漂移。
+        let prev_compacted = self
+            .turns
+            .first()
+            .and_then(|t| Self::compacted_turn_count(&t.user))
+            .unwrap_or(0);
+        let summary_slot = if prev_compacted > 0 { 1 } else { 0 };
+        let skip_real = skip.saturating_sub(summary_slot);
+        let total_real = prev_compacted + skip_real;
+        let compact_text = format!("[Compacted {} turns]\n{}", total_real, summary.trim(),);
         // 摘要占据被压缩的最早 turn 的写入位置：与 trailing 注入按 msg_id 合并时，
         // 摘要保持最前，其后是按写入顺序的注入与保留 turn。
         let first_compacted_id = self.turns[0].user.msg_id;

@@ -107,7 +107,12 @@ impl Drop for MockServer {
 
 fn send_cmd(writer: &mut os_pipe::PipeWriter, seed: &str, command: RingingCommand) {
     let env = RingingWorkerCommandEnvelope::new(seed, format!("c{}", next_command_id()), command);
-    writeln!(writer, "{}", serde_json::to_string(&env).expect("serialize envelope")).expect("write frame");
+    writeln!(
+        writer,
+        "{}",
+        serde_json::to_string(&env).expect("serialize envelope")
+    )
+    .expect("write frame");
     writer.flush().expect("flush pipe");
 }
 
@@ -363,7 +368,19 @@ fn find_tool_result_content(value: &Value, call_id: &str) -> Option<String> {
 /// ToolResult 结构化后的工具输出：业务 JSON 在 `model.text`（或平铺 `text`）内嵌；
 /// ask 等内建交互工具直接存业务 JSON（无包装），三种形状都兼容。
 fn inner_tool_result(content: &str) -> Value {
-    let value: Value = serde_json::from_str(content).expect("tool result json");
+    // XML 信封形态：<qaqh_tool_result status=...>\n正文\n</qaqh_tool_result>；
+    // 正文即 model.text（ask 等内建工具为业务 JSON）。兼容旧裸 JSON 形态。
+    let content = if content.starts_with("<qaqh_tool_result") {
+        let start = content.find(">\n").expect("envelope attr end") + 2;
+        content
+            .get(start..)
+            .unwrap_or(content)
+            .strip_suffix("\n</qaqh_tool_result>")
+            .unwrap_or(content)
+    } else {
+        content
+    };
+    let value: Value = serde_json::from_str(content.trim()).expect("tool result json");
     let text = value
         .get("model")
         .and_then(|model| model.get("text"))
@@ -411,7 +428,7 @@ fn run_case_with_delay(
     )
     .expect("write test input");
     std::fs::write(temp.path().join("input2.txt"), "second permission input\n")
-    .expect("write test input");
+        .expect("write test input");
     let mock = MockServer::sequential_with_delay(scenarios, response_delay);
     let request_count = mock.requests.clone();
     qaqh_workspace::set_workspace(&temp.path().to_string_lossy());

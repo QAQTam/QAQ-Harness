@@ -13,7 +13,8 @@ use qaqh_types::{ContentBlock, Message, ToolDef, UsageInfo};
 
 use super::sse::SseDecoder;
 use super::types::{
-    ProviderConfig, StreamEvent, normalize_reasoning_effort, safe_provider_error_body,
+    EmptyStreamEof, ProviderConfig, StreamEvent, clamp_effort_to_allowlist,
+    normalize_reasoning_effort, safe_provider_error_body,
 };
 
 /// Polling interval for SSE streaming. When no data arrives within this
@@ -54,8 +55,11 @@ fn sleep_with_cancel(delay: Duration, cancel: Option<&Arc<AtomicBool>>) -> bool 
     false
 }
 
-const MAX_RETRIES: u32 = 3;
-const BASE_DELAY_SECS: u64 = 1;
+// Aligned with the official client's session retry policy (opencode
+// session/retry.ts: 5 retries, 2 s initial, doubling) so transient gateway
+// 5xx bursts — e.g. the opencode "Console Go" upstream pool — are absorbed.
+const MAX_RETRIES: u32 = 5;
+const BASE_DELAY_SECS: u64 = 2;
 
 fn is_retryable(status: u16) -> bool {
     matches!(status, 429 | 500 | 503)
@@ -139,13 +143,13 @@ pub fn chat_stream_openai(
 ) -> anyhow::Result<()> {
     let messages = normalize_skill_envelope(provider, messages).map_err(anyhow::Error::msg)?;
     // Stateful 模式：只发增量消息（最后一条 user + 其后的 tool 结果）
-    let messages = if provider.stateful {
+    let (messages, image_index_base) = if provider.stateful {
         filter_stateful_messages(messages)
     } else {
-        messages
+        (messages, 0)
     };
 
-    let api_msgs = convert_messages(provider, messages, None);
+    let api_msgs = convert_messages(provider, messages, None, image_index_base);
 
     let openai_tools: Option<Vec<serde_json::Value>> = tools.map(|tds| {
         tds.into_iter()
@@ -193,6 +197,13 @@ pub fn chat_stream_openai(
             // QAQ-Harness always reasons: promote none/minimal/disable to the
             // lowest thinking level instead of sending them through.
             let e = normalize_reasoning_effort(Some(e)).unwrap_or_else(|| e.clone());
+            // Router allowlist (e.g. OpenRouter ox-alpha: max/high/low): snap
+            // off-domain values to the nearest allowed level — routers ignore
+            // or reject unknown efforts when require_parameters is unset.
+            let e = match &provider.effort_allowlist {
+                Some(list) => clamp_effort_to_allowlist(&e, list),
+                None => e,
+            };
             body_map.insert("reasoning_effort".into(), serde_json::json!(e));
         }
     }
@@ -231,8 +242,8 @@ pub fn chat_stream_openai(
         }
 
         match block_on(async {
-            GLOBAL_CLIENT
-                .post(&url)
+            provider
+                .apply_opencode_headers(GLOBAL_CLIENT.post(&url))
                 .header("Authorization", format!("Bearer {}", provider.api_key))
                 .header("Content-Type", "application/json")
                 .json(&body)
@@ -242,7 +253,31 @@ pub fn chat_stream_openai(
             Ok(resp) => {
                 let status = resp.status().as_u16();
                 if status >= 200 && status < 300 {
-                    return stream_sse(resp, provider, user_id.as_deref(), cancel, on_event);
+                    match stream_sse(resp, provider, user_id.as_deref(), cancel, on_event) {
+                        Ok(()) => return Ok(()),
+                        // Upstream closed the stream before [DONE] with zero
+                        // content — treat like a transport error and retry the
+                        // whole request (mirrors opencode's stream-level retry).
+                        Err(e) if e.downcast_ref::<EmptyStreamEof>().is_some() => {
+                            if attempt >= MAX_RETRIES {
+                                let msg = "upstream closed stream before any content".to_string();
+                                on_event(StreamEvent::Error(msg.clone()));
+                                return Err(anyhow::anyhow!("{}", msg));
+                            }
+                            let delay = backoff_delay(attempt);
+                            on_event(StreamEvent::Retrying {
+                                attempt,
+                                max_retries: MAX_RETRIES,
+                                delay_secs: delay.as_secs(),
+                                error: "stream closed early (no content)".into(),
+                            });
+                            if sleep_with_cancel(delay, cancel) {
+                                return Err(anyhow::anyhow!("cancelled by user"));
+                            }
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
                 // HTTP error — read body for details
                 let text = block_on(resp.text()).unwrap_or_default();
@@ -662,6 +697,19 @@ fn stream_sse(
         }
     }
 
+    // 上游繁忙时可能不发错误码而是直接终止 HTTP 流：EOF 且既无 `[DONE]`
+    // 也无 `finish_reason` 即为掐流。零产出 → 哨兵错误并入重试；有部分
+    // 产出 → 照常组装（增量已流出，不可重来），由上层按 stop_reason=None
+    // 识别"不完整回合"并续写（对齐 opencode 的带词重启）。
+    if !done_reached && stop_reason.is_none() {
+        if reasoning_buf.is_empty() && text_buf.is_empty() && tool_acc.is_empty() {
+            return Err(anyhow::Error::new(EmptyStreamEof));
+        }
+        log::warn!(
+            "OpenAI SSE: upstream closed stream without [DONE]/finish_reason — partial output kept (stop_reason absent)"
+        );
+    }
+
     // Build final message from accumulated content
     let mut blocks: Vec<ContentBlock> = Vec::new();
 
@@ -732,9 +780,12 @@ fn stream_sse(
 /// 规则：
 ///   - 首次请求（无 assistant 历史）：发 system + 所有消息
 ///   - 后续请求：只发最后一条 assistant 之后的消息
-fn filter_stateful_messages(messages: Vec<Message>) -> Vec<Message> {
+///
+/// 同时返回被丢弃前缀中的图片块数量——`read_image` 的 [Image #N] 编号是
+/// 会话级累加的（与 registry 索引一致），过滤后转换时需要以此为基准续编。
+fn filter_stateful_messages(messages: Vec<Message>) -> (Vec<Message>, usize) {
     if messages.is_empty() {
-        return messages;
+        return (messages, 0);
     }
 
     let last_asst_idx = messages.iter().rposition(|m| m.role == "assistant");
@@ -752,8 +803,14 @@ fn filter_stateful_messages(messages: Vec<Message>) -> Vec<Message> {
     }
 
     if is_first {
-        return messages;
+        return (messages, 0);
     }
+
+    let dropped_images = messages[..start]
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter(|b| matches!(b, ContentBlock::Image { .. }))
+        .count();
 
     let mut out: Vec<Message> = Vec::new();
 
@@ -774,7 +831,7 @@ fn filter_stateful_messages(messages: Vec<Message>) -> Vec<Message> {
     let out_roles: Vec<&str> = out.iter().map(|m| m.role.as_str()).collect();
     eprintln!("[filter] 输出: {:?} (is_first={})", out_roles, is_first);
 
-    out
+    (out, dropped_images)
 }
 
 fn normalize_skill_envelope(
@@ -806,6 +863,7 @@ fn convert_messages(
     provider: &ProviderConfig,
     messages: Vec<Message>,
     system: Option<String>,
+    image_index_base: usize,
 ) -> Vec<serde_json::Value> {
     let mut out: Vec<serde_json::Value> = Vec::new();
     if let Some(sys) = system {
@@ -814,6 +872,7 @@ fn convert_messages(
         }
     }
 
+    let mut img_idx: usize = image_index_base;
     for msg in messages {
         let name = &msg.name;
         match msg.role.as_str() {
@@ -834,13 +893,14 @@ fn convert_messages(
             "user" => {
                 let mut text_parts: Vec<String> = Vec::new();
                 let mut image_refs: Vec<String> = Vec::new();
-                let mut img_idx: usize = 0;
+                // 图片编号跨消息累加（从 image_index_base 起）：与
+                // read_image registry 的会话级顺序索引保持一致。
                 for block in &msg.content {
                     match block {
                         ContentBlock::Text { text: t } => text_parts.push(t.clone()),
                         ContentBlock::Image { mime_type, data } => {
                             image_refs.push(format!(
-                                "[Image #{img_idx}: {mime_type}, ~{} bytes — to analyze, call: image_query(image_index={img_idx}, prompt=\"describe this image\")]",
+                                "[Image #{img_idx}: {mime_type}, ~{} bytes — call read_image(image_index={img_idx}) to view it yourself]",
                                 data.len()
                             ));
                             img_idx += 1;
@@ -903,17 +963,31 @@ fn convert_messages(
             }
             "tool" => {
                 for block in &msg.content {
-                    if let ContentBlock::ToolResult {
-                        tool_use_id,
-                        result,
-                        ..
-                    } = block
-                    {
-                        out.push(serde_json::json!({
-                            "role": "tool",
-                            "tool_call_id": tool_use_id,
-                            "content": result.project_for_model().to_string(),
-                        }));
+                    match block {
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            result,
+                            ..
+                        } => {
+                            out.push(serde_json::json!({
+                                "role": "tool",
+                                "tool_call_id": tool_use_id,
+                                "content": result.render_xml_envelope(),
+                            }));
+                        }
+                        // 工具产出的图片（read_image）：OpenAI 兼容端点的
+                        // tool 消息只接受字符串 content，图片降级为紧随的
+                        // 合成 user 消息（opencode 同款策略）。
+                        ContentBlock::Image { mime_type, data } => {
+                            out.push(serde_json::json!({
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "Attached media from tool result:"},
+                                    {"type": "image_url", "image_url": {"url": format!("data:{mime_type};base64,{data}")}},
+                                ],
+                            }));
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -933,12 +1007,12 @@ pub fn chat_sync_openai(
     max_tokens: u32,
 ) -> Result<String, String> {
     let messages = normalize_skill_envelope(provider, messages)?;
-    let messages = if provider.stateful {
+    let (messages, image_index_base) = if provider.stateful {
         filter_stateful_messages(messages)
     } else {
-        messages
+        (messages, 0)
     };
-    let api_msgs = convert_messages(provider, messages, None);
+    let api_msgs = convert_messages(provider, messages, None, image_index_base);
     let url = build_chat_url(&provider.base_url, provider.chat_path.as_deref());
 
     let mut body = serde_json::json!({
@@ -957,8 +1031,8 @@ pub fn chat_sync_openai(
     }
 
     let resp = block_on(
-        GLOBAL_CLIENT
-            .post(&url)
+        provider
+            .apply_opencode_headers(GLOBAL_CLIENT.post(&url))
             .header("Authorization", format!("Bearer {}", provider.api_key))
             .header("Content-Type", "application/json")
             .json(&body)
@@ -1013,6 +1087,48 @@ mod skill_envelope_tests {
     use super::*;
 
     #[test]
+    fn image_placeholders_number_globally_across_messages() {
+        let provider = provider();
+        let mk = |text: &str| {
+            let mut m = Message::user(text);
+            m.content.push(ContentBlock::image("image/png", "Zm9v"));
+            m
+        };
+        let messages = vec![mk("one"), mk("two")];
+        let out = convert_messages(&provider, messages, None, 0);
+        let joined: String = out
+            .iter()
+            .map(|o| o["content"].as_str().unwrap_or_default())
+            .collect();
+        assert!(joined.contains("[Image #0:"), "first upload → #0");
+        assert!(joined.contains("[Image #1:"), "second upload → #1");
+    }
+
+    #[test]
+    fn stateful_filter_reports_dropped_images_as_index_base() {
+        let provider = provider();
+        let mut old = Message::user("old turn");
+        old.content.push(ContentBlock::image("image/png", "Zm9v"));
+        let assistant = Message {
+            msg_id: None,
+            role: "assistant".into(),
+            name: None,
+            content: vec![ContentBlock::text("done")],
+        };
+        let mut fresh = Message::user("new turn");
+        fresh.content.push(ContentBlock::image("image/png", "Zm9v"));
+        let messages = vec![old, assistant, fresh];
+
+        let (filtered, dropped) = filter_stateful_messages(messages);
+        assert_eq!(dropped, 1, "dropped prefix holds exactly one image");
+        // 以丢弃数为基准续编，增量消息中的图仍是会话级 #1。
+        let out = convert_messages(&provider, filtered, None, dropped);
+        assert_eq!(out.len(), 1, "incremental request sends only the tail");
+        let text = out[0]["content"].as_str().unwrap_or_default();
+        assert!(text.contains("[Image #1:"), "got: {text}");
+    }
+
+    #[test]
     fn stateful_first_request_does_not_duplicate_system_slots() {
         let messages = vec![
             Message::system("base"),
@@ -1020,7 +1136,7 @@ mod skill_envelope_tests {
             Message::user("hi"),
             Message::system("envelope"),
         ];
-        let filtered = filter_stateful_messages(messages.clone());
+        let (filtered, _dropped_images) = filter_stateful_messages(messages.clone());
         assert_eq!(filtered.len(), messages.len());
     }
 
@@ -1038,7 +1154,7 @@ mod skill_envelope_tests {
             Message::user("next"),
             Message::system("<skill_context_envelope />"),
         ];
-        let filtered = filter_stateful_messages(messages);
+        let (filtered, _dropped_images) = filter_stateful_messages(messages);
         assert_eq!(
             filtered
                 .iter()

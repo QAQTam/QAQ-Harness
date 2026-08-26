@@ -202,6 +202,9 @@ pub struct RingingHub {
     /// 收尾据此区分「等待用户响应的活交互」（保护，不 seal）与「daemon 重启
     /// 遗留的幽灵交互」（seal）。worker 死亡/重启路径用 force 无视该守卫。
     live_interactions: Mutex<HashMap<String, String>>,
+    /// B9/H3：当前进程内存活的 worker（registry 维护）。bootstrap 的
+    /// force=false 孤儿收尾在 worker 存活时整体跳过，防止误杀活 turn。
+    live_workers: Mutex<std::collections::HashSet<String>>,
     /// 持久化 journal（None = 非持久模式；I/O 失败只记录日志，不阻塞事件路径）。
     journal_store: Mutex<Option<JournalStore>>,
     /// Ringing V1 timeline transcript 的唯一 writer。它与三频道 Ringing v1 完全隔离，
@@ -257,6 +260,7 @@ impl RingingHub {
             channels: Mutex::new(HashMap::new()),
             live: Mutex::new(HashMap::new()),
             live_interactions: Mutex::new(HashMap::new()),
+            live_workers: Mutex::new(std::collections::HashSet::new()),
             journal_store: Mutex::new(journal_store),
             timeline: Arc::new(Mutex::new(TimelineAppender::new())),
             timeline_live,
@@ -422,7 +426,9 @@ impl RingingHub {
     /// - 磁盘有记录：读取该 seed 的 ops → 重放重建 state → 精确恢复序号 →
     ///   超大文件顺手压缩（P0 收敛，不依赖 RoundCompleted）→ 插入 channels。
     /// 全程持有 `lazy_load` 串行锁，避免并发首访双重重放。
-    fn ensure_seed_loaded(&self, channel: RingingChannel, seed: &str) {
+    /// - Err：磁盘加载失败（fail-closed，R3）——调用方不得以全新空状态
+    ///   继续发布/回放，否则重启后序号永久冲突。
+    fn ensure_seed_loaded(&self, channel: RingingChannel, seed: &str) -> Result<(), String> {
         let _serial = self.lazy_load.lock().unwrap_or_else(|e| e.into_inner());
         let loaded = {
             let guard = self.channel_state(channel);
@@ -431,7 +437,7 @@ impl RingingHub {
                 .is_some_and(|seeds| seeds.contains_key(seed))
         };
         if loaded {
-            return;
+            return Ok(());
         }
         let on_disk = self
             .disk_seeds
@@ -440,23 +446,28 @@ impl RingingHub {
             .get(&channel)
             .is_some_and(|seeds| seeds.contains(seed));
         if !on_disk {
-            return;
+            return Ok(());
         }
         // 读磁盘（短暂持有 journal_store 锁；读完即释放，不与 channel_state 嵌套）。
         let ops = {
+            // R3：读盘失败必须 fail-closed 上报，禁止静默降级为全新状态——
+            // 那会让该 seed 以 seq=1 重新发布，重启重放后永久乱序重复。
             let mut guard = self.journal_store.lock().unwrap_or_else(|e| e.into_inner());
             match guard.as_mut() {
                 Some(store) => match store.load_seed(channel, seed) {
                     Ok(ops) => ops,
                     Err(error) => {
-                        log::warn!(
+                        log::error!(
                             "[ringing] lazy load failed for {seed} on {}: {error}",
                             channel.as_str()
                         );
-                        return;
+                        return Err(format!(
+                            "lazy load failed for {seed} on {}: {error}",
+                            channel.as_str()
+                        ));
                     }
                 },
-                None => return,
+                None => return Ok(()),
             }
         };
         if ops.is_empty() {
@@ -465,7 +476,7 @@ impl RingingHub {
                 .entry(channel)
                 .or_default()
                 .insert(seed.to_string(), SeedChannelState::new(channel));
-            return;
+            return Ok(());
         }
         let state = SeedChannelState::with_ops(channel, seed, &ops);
         // 精确恢复序号（比启动水位更完整：channel/session seq 一并恢复）。
@@ -490,6 +501,7 @@ impl RingingHub {
             channel.as_str(),
             ops.len()
         );
+        Ok(())
     }
 
     /// 启动装载（懒加载模式）：只扫描磁盘 timeline seed 清单，不 restore 任何
@@ -803,7 +815,35 @@ impl RingingHub {
     ///
     /// 调用方必须在 `ensure_seed_loaded` 完成之后调用（本函数内部 publish 会
     /// 再次调用 `ensure_seed_loaded`，重入 lazy_load 锁会死锁）。
+    /// B9/H3：registry 在 spawn 成功/worker 关闭时维护活表。
+    pub fn mark_worker_live(&self, seed: &str) {
+        self.live_workers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(seed.to_string());
+    }
+
+    pub fn mark_worker_dead(&self, seed: &str) {
+        self.live_workers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(seed);
+    }
+
     pub fn seal_orphan_channel_state(&self, seed: &str, force: bool) -> bool {
+        // B9/H3 liveness gate：force=false 的 bootstrap 路径在 worker 仍
+        // 存活时整体跳过——活 worker 的 running/pending 状态不是孤儿。
+        if !force
+            && self
+                .live_workers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(seed)
+        {
+            log::info!("[ringing] worker alive for {seed}; skipping bootstrap orphan seal");
+            return false;
+        }
+
         let mut changed = false;
 
         // 1) conversation：active_turn 无终态（journal 重放后仍有值）→ 取消。
@@ -943,11 +983,16 @@ impl RingingHub {
                     }),
                     None,
                 );
-                // 强制收尾后从活交互表清除，防止残留误导后续 bootstrap 守卫。
-                self.live_interactions
+                // B9/H3c：条件删除——仅当活表仍指向被收尾的 id 才清除；
+                // 并发发布的新 ask 可能已注册了不同 id，不能误抹。
+                let mut live = self
+                    .live_interactions
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(seed);
+                    .unwrap_or_else(|e| e.into_inner());
+                if live.get(seed).is_some_and(|cur| cur == id) {
+                    live.remove(seed);
+                }
+                drop(live);
                 changed = true;
             }
         }
@@ -1179,8 +1224,18 @@ impl RingingHub {
         let channel = event.channel();
         // P1: 懒加载——publish 前确保该 seed 历史已重放入内存，防止新事件
         // 的序号与磁盘历史冲突（sequencer 水位随后续加载精确恢复）。
-        self.ensure_seed_loaded(channel, seed);
+        if let Err(error) = self.ensure_seed_loaded(channel, seed) {
+            // R3：fail-closed——加载失败不得以全新空状态继续发布。
+            log::error!("[ringing] publish fail-closed (load error): {error}");
+            return PublishOutcome::Backpressure;
+        }
         let delivery = event.delivery();
+
+        // R1：取号移入 channels 临界区内（guard 之后），保证取号序 == 提交序。
+        // 懒加载必须在持锁外完成（内部会再取 channels 锁，std Mutex 不可重入）。
+        let mut guard = self.channel_state(channel);
+        let st = self.seed_state(&mut guard, channel, seed);
+
         let (stream_seq, channel_seq, session_seq) = self.sequencer.next(channel, seed);
         if !is_safe_integer(stream_seq)
             || !is_safe_integer(channel_seq)
@@ -1196,9 +1251,6 @@ impl RingingHub {
             seed,
             stream_seq
         );
-
-        let mut guard = self.channel_state(channel);
-        let st = self.seed_state(&mut guard, channel, seed);
 
         // 幂等：journal 侧 event_id 去重（replaceable 也检查，防重复投递）
         let envelope = RingingEventEnvelope::new(
@@ -1305,14 +1357,7 @@ impl RingingHub {
                                 .entry(key.clone())
                                 .or_default();
                             *count = count.saturating_add(1);
-                            let first_progress = matches!(
-                                &envelope.event,
-                                RingingEvent::Tool(qaqh_domain::ToolEvent::ToolProgress {
-                                    seq_start: 0,
-                                    ..
-                                })
-                            );
-                            if *count == 1 || *count >= 64 || first_progress {
+                            if *count == 1 || *count >= 64 {
                                 self.persist_replaceable(
                                     channel,
                                     seed,
@@ -1354,7 +1399,11 @@ impl RingingHub {
         seed: &str,
         after_stream_seq: u64,
     ) -> Result<Vec<RingingEventEnvelope>, CursorExpired> {
-        self.ensure_seed_loaded(channel, seed);
+        // R3：加载失败时让客户端走 reset→snapshot 路径，而非回放半截状态。
+        self.ensure_seed_loaded(channel, seed)
+            .map_err(|_| CursorExpired {
+                earliest_available_seq: 0,
+            })?;
         let guard = self.channel_state(channel);
         let st = guard
             .get(&channel)
@@ -1363,13 +1412,15 @@ impl RingingHub {
                 earliest_available_seq: 0,
             })?;
         st.journal.replay_since(after_stream_seq).map(|mut events| {
-            // 追加当前 replaceable 值（慢消费者恢复增量）
+            // 追加当前 replaceable 值（慢消费者恢复增量）；R4：合并后按
+            // stream_seq 排序，对齐频道级回放的全局顺序保证。
             events.extend(
                 st.router
                     .replay_since(after_stream_seq)
                     .into_iter()
                     .filter(|e| e.delivery != Delivery::Reliable),
             );
+            events.sort_by_key(|e| e.stream_seq);
             events
         })
     }
@@ -1427,7 +1478,8 @@ impl RingingHub {
 
     /// 读取领域快照（HTTP `GET /ringing/v1/sessions/{seed}/bootstrap`）。
     pub fn snapshot(&self, channel: RingingChannel, seed: &str) -> RingingChannelSnapshot {
-        self.ensure_seed_loaded(channel, seed);
+        // R3：只读路径加载失败时降级为空快照/零水位，不阻断读取。
+        let _ = self.ensure_seed_loaded(channel, seed);
         let guard = self.channel_state(channel);
         guard
             .get(&channel)
@@ -1450,7 +1502,8 @@ impl RingingHub {
 
     /// 记 replaceable checkpoint（稀疏）。
     pub fn checkpoint(&self, channel: RingingChannel, seed: &str, identity: &str, stream_seq: u64) {
-        self.ensure_seed_loaded(channel, seed);
+        // R3：只读路径加载失败时降级为空快照/零水位，不阻断读取。
+        let _ = self.ensure_seed_loaded(channel, seed);
         let mut guard = self.channel_state(channel);
         let st = self.seed_state(&mut guard, channel, seed);
         st.last_stream_seq = st.last_stream_seq.max(stream_seq);
@@ -1459,7 +1512,8 @@ impl RingingHub {
     }
 
     pub fn last_stream_seq(&self, channel: RingingChannel, seed: &str) -> u64 {
-        self.ensure_seed_loaded(channel, seed);
+        // R3：只读路径加载失败时降级为空快照/零水位，不阻断读取。
+        let _ = self.ensure_seed_loaded(channel, seed);
         let guard = self.channel_state(channel);
         guard
             .get(&channel)
@@ -1698,17 +1752,13 @@ mod tests {
         })
     }
 
-    fn tool_progress(chunk: &str) -> DomainEvent {
-        DomainEvent::Tool(ToolEvent::ToolProgress {
+    fn tool_prepared(tag: &str) -> DomainEvent {
+        DomainEvent::Tool(ToolEvent::ToolCallPrepared {
             tool_call_id: "c1".into(),
             turn_id: "t".into(),
             round_num: 0,
-            stream: "stdout".into(),
-            seq_start: 0,
-            seq_end: 1,
-            chunk: chunk.into(),
-            dropped_bytes: 0,
-            truncated: false,
+            name: "exec".into(),
+            args_so_far: tag.into(),
         })
     }
 
@@ -1886,7 +1936,7 @@ mod tests {
         {
             let hub = RingingHub::with_persistence("epoch-1", &root);
             let _ = hub.publish("s", round_delta(1));
-            let _ = hub.publish("s", tool_progress("a"));
+            let _ = hub.publish("s", tool_prepared("a"));
         }
         let hub = RingingHub::with_persistence("epoch-2", &root);
         // reliable 事件重放
@@ -1907,7 +1957,7 @@ mod tests {
         assert!(
             tool_replay
                 .iter()
-                .any(|e| matches!(&e.event, RingingEvent::Tool(ToolEvent::ToolProgress { chunk, .. }) if chunk == "a")),
+                .any(|e| matches!(&e.event, RingingEvent::Tool(ToolEvent::ToolCallPrepared { args_so_far, .. }) if args_so_far == "a")),
             "replaceable latest value must survive restart"
         );
         // 序号继续递增（新 epoch 内不从头冲突）
@@ -2122,30 +2172,26 @@ mod tests {
     }
 
     #[test]
-    fn replaceable_progress_covers_in_router() {
+    fn replaceable_prepared_covers_in_router() {
         let hub = RingingHub::new("epoch-1");
-        let progress = |chunk: &str| {
-            DomainEvent::Tool(ToolEvent::ToolProgress {
+        let prepared = |tag: &str| {
+            DomainEvent::Tool(ToolEvent::ToolCallPrepared {
                 tool_call_id: "c1".into(),
                 turn_id: "t".into(),
                 round_num: 0,
-                stream: "stdout".into(),
-                seq_start: 0,
-                seq_end: 1,
-                chunk: chunk.into(),
-                dropped_bytes: 0,
-                truncated: false,
+                name: "exec".into(),
+                args_so_far: tag.into(),
             })
         };
-        let _ = hub.publish("s", progress("a"));
-        let _ = hub.publish("s", progress("ab"));
+        let _ = hub.publish("s", prepared("a"));
+        let _ = hub.publish("s", prepared("ab"));
         let replayed = hub.replay_since(RingingChannel::Tool, "s", 0).expect("ok");
         let progress_events: Vec<_> = replayed
             .iter()
             .filter(|e| {
                 matches!(
                     e.event,
-                    qaqh_ringing::RingingEvent::Tool(ToolEvent::ToolProgress { .. })
+                    qaqh_ringing::RingingEvent::Tool(ToolEvent::ToolCallPrepared { .. })
                 )
             })
             .collect();

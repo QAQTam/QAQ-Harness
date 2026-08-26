@@ -1,7 +1,6 @@
 use crate::secrets::{CONFIG_MARKER, SecretSlot, SecretStore};
 use qaqh_types::{
-    ConfigStore, PersistentConfig, PersistentMultimodalConfig, PersistentSubagentConfig,
-    PersistentWorkspaceConfig,
+    ConfigStore, PersistentConfig, PersistentSubagentConfig, PersistentWorkspaceConfig,
 };
 use std::collections::HashMap; // still used by profiles
 use std::sync::{Mutex, OnceLock};
@@ -52,61 +51,6 @@ impl Default for SubagentConfig {
     }
 }
 
-/// Multimodal (vision) LLM configuration for image understanding.
-///
-/// Separate from the main LLM provider so users can use a vision-capable
-/// model (e.g. MiMo) for image analysis while keeping their primary text
-/// provider (e.g. DeepSeek) for general conversation and tool use.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct MultimodalConfig {
-    /// Whether multimodal image understanding is enabled.
-    #[serde(default)]
-    pub enabled: bool,
-    /// Provider type: "mimo", "ollama", "openai_compat", "lmstudio".
-    /// Determines which backend adapter is used.
-    #[serde(default = "default_multimodal_provider_type")]
-    pub provider_type: String,
-    /// Provider ID for multimodal (e.g. "mimo").
-    #[serde(default)]
-    pub provider_id: String,
-    /// API key for multimodal provider. Empty = use main API key.
-    #[serde(default)]
-    pub api_key: String,
-    /// Base URL override for multimodal. Empty = use provider default.
-    #[serde(default)]
-    pub base_url: String,
-    /// Model name for multimodal (e.g. "mimo-v2.5").
-    #[serde(default = "default_multimodal_model")]
-    pub model: String,
-    /// Max output tokens for multimodal requests.
-    #[serde(default = "default_multimodal_max_tokens")]
-    pub max_tokens: u32,
-}
-
-fn default_multimodal_provider_type() -> String {
-    "mimo".into()
-}
-fn default_multimodal_model() -> String {
-    "mimo-v2.5".into()
-}
-fn default_multimodal_max_tokens() -> u32 {
-    4096
-}
-
-impl Default for MultimodalConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            provider_type: "mimo".into(),
-            provider_id: "mimo".into(),
-            api_key: String::new(),
-            base_url: String::new(),
-            model: "mimo-v2.5".into(),
-            max_tokens: 4096,
-        }
-    }
-}
-
 /// RAG（检索增强生成）配置
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RagConfig {
@@ -119,7 +63,7 @@ pub struct RagConfig {
     /// 嵌入向量维度（512 = bge-small, 768 = bge-base）
     #[serde(default = "default_embed_dim")]
     pub embed_dim: usize,
-    /// 数据存储目录（None = 自动选择 ~/.deepx/vector/）
+    /// 数据存储目录（None = 自动选择 ~/.qaqh/vector/）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub store_dir: Option<String>,
     /// 技能语义检索 top-K
@@ -206,8 +150,6 @@ pub struct Config {
     pub compliance_extra_keywords: Vec<String>,
     /// Whitelisted patterns exempt from content filtering.
     pub compliance_allowlist: Vec<String>,
-    /// Multimodal (vision) LLM configuration for image understanding.
-    pub multimodal: MultimodalConfig,
     /// RAG 向量引擎配置（embedding / 语义搜索 / 跨会话记忆）
     pub rag: RagConfig,
     /// Agent permission level:
@@ -275,7 +217,6 @@ impl Default for Config {
             compliance_enabled: true,
             compliance_extra_keywords: Vec::new(),
             compliance_allowlist: Vec::new(),
-            multimodal: MultimodalConfig::default(),
             rag: RagConfig::default(),
             permission_level: 4, // Unrestricted — backward compat
             tokenizer_path: None,
@@ -327,6 +268,8 @@ impl Config {
         let mut config = Self::load_unlocked()?;
         mutate(&mut config)?;
         config.save_unlocked()?;
+        // P2-D1：磁盘先落盘，再广播内存快照（消费者永远读到已持久化状态）。
+        crate::watch::publish(std::sync::Arc::new(config.clone()));
         Ok(config)
     }
 
@@ -342,6 +285,15 @@ impl Config {
         // - None/空 → 未配置。
 
         if let Some(mut pc) = pc {
+            // P1-C3：扁平模型族六字段退役检测——存在即触发一次性迁移写回
+            // （值固化进 profile 后从顶层剥离，见下方 needs_rewrite 块）。
+            let legacy_flat_fields = pc.model.is_some()
+                || pc.base_url.is_some()
+                || pc.max_tokens.is_some()
+                || pc.context_limit.is_some()
+                || pc.endpoint.is_some()
+                || pc.reasoning_effort.is_some();
+            needs_rewrite |= legacy_flat_fields;
             // ── Backward compat: migrate old provider_id → new (provider_id, endpoint) ──
             let raw_pid = pc.provider_id.unwrap_or_default();
             let (provider_id, endpoint) = if raw_pid.is_empty() {
@@ -505,40 +457,9 @@ impl Config {
             }
 
             // ── Multimodal (vision) ──
-            if let Some(ref mut mm) = pc.multimodal {
-                if let Some(enabled) = mm.enabled {
-                    cfg.multimodal.enabled = enabled;
-                }
-                if let Some(ref pt) = mm.provider_type {
-                    cfg.multimodal.provider_type = pt.clone();
-                }
-                if let Some(ref pid) = mm.provider_id {
-                    cfg.multimodal.provider_id = pid.clone();
-                }
-                if let Some(key) = mm.api_key.clone() {
-                    if key == CONFIG_MARKER {
-                        cfg.multimodal.api_key =
-                            secrets.load(SecretSlot::Multimodal).unwrap_or_default();
-                    } else {
-                        match secrets.set(SecretSlot::Multimodal, &key) {
-                            Ok(()) => needs_rewrite = true,
-                            Err(e) => log::warn!(
-                                "[config] migrate multimodal api key to secret store failed: {e}; keeping plaintext until retry"
-                            ),
-                        }
-                        cfg.multimodal.api_key = key;
-                    }
-                }
-                if let Some(ref url) = mm.base_url {
-                    cfg.multimodal.base_url = url.clone();
-                }
-                if let Some(ref model) = mm.model {
-                    cfg.multimodal.model = model.clone();
-                }
-                if let Some(mt) = mm.max_tokens {
-                    cfg.multimodal.max_tokens = mt;
-                }
-            }
+            // 2026-08 移除：外挂视觉模型配置已废弃（read_image 工具直接走
+            // 主模型视觉输入）。旧 config.toml 中的 [multimodal] 段被
+            // serde 忽略；残留的 secrets.toml multimodal 槽位不再读取。
 
             // ── Permission ──
             if let Some(pl) = pc.permission_level {
@@ -579,11 +500,48 @@ impl Config {
                     {
                         s.api_key = Some(CONFIG_MARKER.to_owned());
                     }
-                    if let Some(ref mut m) = fresh.multimodal
-                        && is_plain(&m.api_key)
-                    {
-                        m.api_key = Some(CONFIG_MARKER.to_owned());
+                    // C3 迁移：扁平值先固化进 active/default profile（已有条目
+                    // 不覆盖——profile 为权威），再剥离顶层键。fresh 无 profiles
+                    // 时就地建表；缺失的分量用合并结果 cfg 兜底，确保零丢失。
+                    if legacy_flat_fields {
+                        let active = fresh
+                            .active_profile
+                            .clone()
+                            .unwrap_or_else(|| "default".to_string());
+                        // 先在 profiles 借用前固化兜底条目，避免可变借用重叠。
+                        let fallback = qaqh_types::ProfileConfig {
+                            model: fresh.model.clone().unwrap_or_else(|| cfg.model.clone()),
+                            max_tokens: fresh.max_tokens.unwrap_or(cfg.max_tokens),
+                            effort: Some(
+                                fresh
+                                    .reasoning_effort
+                                    .clone()
+                                    .unwrap_or_else(|| cfg.reasoning_effort.clone()),
+                            ),
+                            context_limit: fresh.context_limit.unwrap_or(cfg.context_limit),
+                            base_url: fresh
+                                .base_url
+                                .clone()
+                                .unwrap_or_else(|| cfg.base_url.clone()),
+                            endpoint: Some(
+                                fresh
+                                    .endpoint
+                                    .clone()
+                                    .unwrap_or_else(|| cfg.endpoint.clone()),
+                            ),
+                        };
+                        let profiles = fresh.profiles.get_or_insert_with(HashMap::new);
+                        // 无条件以扁平值覆盖：历史读语义是"扁平胜出"，扁平即用户
+                        // 最新意图；旧条目只可能是更早一次保存的陈值。
+                        profiles.insert(active, fallback);
+                        fresh.model = None;
+                        fresh.base_url = None;
+                        fresh.max_tokens = None;
+                        fresh.context_limit = None;
+                        fresh.endpoint = None;
+                        fresh.reasoning_effort = None;
                     }
+                    log::info!("[config] legacy flat model fields migrated into [profiles.*]");
                     let _ = store.save(&fresh);
                 }
             }
@@ -644,13 +602,6 @@ impl Config {
                 .set(SecretSlot::Subagent, &self.subagent.api_key)
                 .map_err(|e| format!("failed to store subagent api key: {e}"))?;
         }
-        if self.multimodal.api_key.is_empty() {
-            let _ = secrets.delete(SecretSlot::Multimodal);
-        } else {
-            secrets
-                .set(SecretSlot::Multimodal, &self.multimodal.api_key)
-                .map_err(|e| format!("failed to store multimodal api key: {e}"))?;
-        }
 
         let mut profiles = self.profiles.clone();
         profiles.insert(
@@ -670,13 +621,15 @@ impl Config {
             } else {
                 Some(CONFIG_MARKER.to_owned())
             },
-            model: Some(self.model.clone()),
-            base_url: Some(self.base_url.clone()),
-            max_tokens: Some(self.max_tokens),
-            context_limit: Some(self.context_limit),
+            // P1-C3：扁平模型族字段退役——一律 None（serde skip_serializing），
+            // 唯一持久化真相是上方 upsert 进 profiles[active] 的条目。
+            model: None,
+            base_url: None,
+            max_tokens: None,
+            context_limit: None,
             provider_id: Some(self.provider_id.clone()),
-            endpoint: Some(self.endpoint.clone()),
-            reasoning_effort: Some(self.reasoning_effort.clone()),
+            endpoint: None,
+            reasoning_effort: None,
             profiles: Some(profiles),
             active_profile: Some(self.active_profile.clone()),
             lang: self.lang.clone(),
@@ -722,31 +675,6 @@ impl Config {
             } else {
                 Some(self.compliance_allowlist.clone())
             },
-            multimodal: Some(PersistentMultimodalConfig {
-                enabled: Some(self.multimodal.enabled),
-                provider_type: if self.multimodal.provider_type.is_empty() {
-                    None
-                } else {
-                    Some(self.multimodal.provider_type.clone())
-                },
-                provider_id: if self.multimodal.provider_id.is_empty() {
-                    None
-                } else {
-                    Some(self.multimodal.provider_id.clone())
-                },
-                api_key: if self.multimodal.api_key.is_empty() {
-                    None
-                } else {
-                    Some(CONFIG_MARKER.to_owned())
-                },
-                base_url: if self.multimodal.base_url.is_empty() {
-                    None
-                } else {
-                    Some(self.multimodal.base_url.clone())
-                },
-                model: Some(self.multimodal.model.clone()),
-                max_tokens: Some(self.multimodal.max_tokens),
-            }),
             permission_level: Some(self.permission_level),
             tokenizer_path: self.tokenizer_path.clone(),
             auto_compact_threshold: Some(self.auto_compact_threshold),
@@ -934,6 +862,143 @@ mod secret_tests {
         assert!(!secrets.has(SecretSlot::Main));
         assert!(secrets.load(SecretSlot::Main).is_none());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+// ── P1-C3：双真相源收敛迁移测试 ─────────────────────────────────────
+#[cfg(test)]
+mod c3_migration_tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        static SEQ: AtomicU32 = AtomicU32::new(0);
+        let n = SEQ.fetch_add(1, Ordering::SeqCst);
+        std::env::temp_dir().join(format!("qaqh-config-c3-{tag}-{}-{n}", std::process::id()))
+    }
+
+    fn setup(tag: &str, toml_text: &str) -> (PathBuf, ConfigStore, SecretStore) {
+        let dir = temp_dir(tag);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join("config.toml"), toml_text).expect("write toml");
+        let store = ConfigStore::new(dir.join("config.toml"));
+        let secrets = SecretStore::new(dir.join("secrets.toml"));
+        (dir, store, secrets)
+    }
+
+    fn top_level_absent(text: &str) -> bool {
+        // 顶层模型族键必须全部消失（[profiles.*] 内的同名键不算）。
+        let doc: toml::Value = toml::from_str(text).expect("parse toml");
+        doc.get("model").is_none()
+            && doc.get("base_url").is_none()
+            && doc.get("max_tokens").is_none()
+            && doc.get("context_limit").is_none()
+            && doc.get("endpoint").is_none()
+            && doc.get("reasoning_effort").is_none()
+    }
+
+    /// 旧形态（纯扁平）：load 即触发一次性迁移——值固化进 profile、顶层剥离；
+    /// 重载后值不丢。
+    #[test]
+    fn legacy_flat_migrates_on_first_load() {
+        let (dir, store, secrets) = setup(
+            "legacy",
+            "model = \"legacy-model\"
+             base_url = \"https://legacy/v1\"
+             max_tokens = 8192
+             context_limit = 256000
+             endpoint = \"openai\"
+             reasoning_effort = \"max\"
+             active_profile = \"default\"
+",
+        );
+        let cfg = Config::load_from_paths_with(store.clone(), secrets.clone()).expect("load");
+        assert_eq!(cfg.model, "legacy-model");
+        assert_eq!(cfg.context_limit, 256000);
+
+        // load 的 needs_rewrite 已完成迁移写回。
+        let text = std::fs::read_to_string(dir.join("config.toml")).expect("read back");
+        assert!(
+            top_level_absent(&text),
+            "top-level flats must be stripped: {text}"
+        );
+        let doc: toml::Value = toml::from_str(&text).expect("toml");
+        assert_eq!(
+            doc["profiles"]["default"]["model"].as_str(),
+            Some("legacy-model")
+        );
+        assert_eq!(
+            doc["profiles"]["default"]["context_limit"].as_integer(),
+            Some(256000)
+        );
+
+        // 重载幂等：值经 profile 回来，不再有扁平覆盖。
+        let cfg2 = Config::load_from_paths_with(store, secrets).expect("reload");
+        assert_eq!(cfg2.model, "legacy-model");
+        assert_eq!(cfg2.context_limit, 256000);
+        assert_eq!(cfg2.reasoning_effort, "max");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 混合形态：扁平与 profile 并存且值不同 → 读时扁平胜出（历史语义），
+    /// 迁移写回后收敛为扁平值入 profile。
+    #[test]
+    fn mixed_shape_flat_wins_then_converges() {
+        let (dir, store, secrets) = setup(
+            "mixed",
+            "model = \"flat-model\"
+             active_profile = \"default\"
+             [profiles.default]
+             model = \"profile-model\"
+             max_tokens = 4096
+             context_limit = 128000
+             base_url = \"https://p/v1\"
+             endpoint = \"openai\"
+",
+        );
+        let cfg = Config::load_from_paths_with(store.clone(), secrets.clone()).expect("load");
+        assert_eq!(cfg.model, "flat-model");
+
+        let text = std::fs::read_to_string(dir.join("config.toml")).expect("read back");
+        assert!(top_level_absent(&text), "{text}");
+        let doc: toml::Value = toml::from_str(&text).expect("toml");
+        // 扁平值为最新意图：迁移时无条件覆盖同名 profile 条目。
+        assert_eq!(
+            doc["profiles"]["default"]["model"].as_str(),
+            Some("flat-model")
+        );
+        let cfg2 = Config::load_from_paths_with(store, secrets).expect("reload");
+        assert_eq!(cfg2.model, "flat-model");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 新形态（纯 profile）：读写稳定，无迁移发生。
+    #[test]
+    fn new_format_profile_only_stable() {
+        let (dir, store, secrets) = setup(
+            "newfmt",
+            "active_profile = \"default\"
+             [profiles.default]
+             model = \"m1\"
+             max_tokens = 96000
+             effort = \"max\"
+             context_limit = 1000000
+             base_url = \"https://x/v1\"
+             endpoint = \"openai\"
+",
+        );
+        let cfg = Config::load_from_paths_with(store.clone(), secrets.clone()).expect("load");
+        assert_eq!(cfg.model, "m1");
+        assert_eq!(cfg.context_limit, 1_000_000);
+        cfg.save_with(&store, &secrets).expect("save");
+        let text = std::fs::read_to_string(dir.join("config.toml")).expect("read back");
+        assert!(top_level_absent(&text), "{text}");
+        let cfg2 = Config::load_from_paths_with(store, secrets).expect("reload");
+        assert_eq!(cfg2.model, "m1");
+        assert_eq!(cfg2.reasoning_effort, "max");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

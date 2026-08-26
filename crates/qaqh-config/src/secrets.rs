@@ -22,7 +22,6 @@ use std::path::{Path, PathBuf};
 pub enum SecretSlot {
     Main,
     Subagent,
-    Multimodal,
 }
 
 impl SecretSlot {
@@ -30,7 +29,6 @@ impl SecretSlot {
         match self {
             SecretSlot::Main => "main",
             SecretSlot::Subagent => "subagent",
-            SecretSlot::Multimodal => "multimodal",
         }
     }
 }

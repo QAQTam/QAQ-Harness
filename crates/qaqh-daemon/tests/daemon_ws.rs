@@ -66,7 +66,7 @@ fn spawn_daemon() -> (Child, String) {
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_else(|_| ".".into());
     let discovery_path = std::path::PathBuf::from(home)
-        .join(".deepx")
+        .join(".qaqh")
         .join("daemon.json");
 
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -91,7 +91,7 @@ fn read_token() -> String {
     let discovery: Value = serde_json::from_str(
         &std::fs::read_to_string(
             std::path::PathBuf::from(home)
-                .join(".deepx")
+                .join(".qaqh")
                 .join("daemon.json"),
         )
         .expect("read daemon.json"),

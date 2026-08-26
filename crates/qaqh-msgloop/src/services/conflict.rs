@@ -37,6 +37,21 @@ pub(crate) fn file_write_paths(tool_name: &str, args: &serde_json::Value) -> Vec
             // provider ignores the guidance to use one create(items=[...]).
             paths.push("__qaqh_session_todo__".to_string());
         }
+        "copy_range" => {
+            // M1：写目标是 target_path（source_path 为读端，不参与写冲突）。
+            if let Some(p) = args.get("target_path").and_then(|v| v.as_str()) {
+                paths.push(p.to_string());
+            }
+        }
+        "apply_patch" => {
+            // M1：目标在 patch 文本里（Codex 格式头），解析后按同文件分组；
+            // 原名单只匹配 "patch" 等旧名，apply_patch 双调用曾并行竞态。
+            if let Some(patch) = args.get("patch").and_then(|v| v.as_str()) {
+                for target in qaqh_workspace::permission::patch_target_paths(patch) {
+                    paths.push(target);
+                }
+            }
+        }
         _ => {}
     }
     paths
@@ -133,6 +148,42 @@ mod tests {
 
         let (groups, serial_after) = resolve_write_conflicts(&pending);
 
+        assert_eq!(groups, vec![vec![0, 1]]);
+        assert_eq!(serial_after, HashSet::from([1]));
+    }
+
+    #[test]
+    fn same_file_double_apply_patch_serialized() {
+        let mk = |id: &str, target: &str| PendingTool {
+            id: id.to_string(),
+            name: "apply_patch".to_string(),
+            args: serde_json::json!({
+                "patch": format!(
+                    "*** Begin Patch\n*** Update File: {target}\n@@\n-old\n+new\n*** End Patch"
+                )
+            }),
+        };
+        let pending = vec![mk("ap-1", "src/a.rs"), mk("ap-2", "src/a.rs")];
+        let (groups, serial_after) = resolve_write_conflicts(&pending);
+        assert_eq!(groups, vec![vec![0, 1]]);
+        assert_eq!(serial_after, HashSet::from([1]));
+    }
+
+    #[test]
+    fn copy_range_write_targets_are_grouped() {
+        let pending = vec![
+            PendingTool {
+                id: "cr-1".into(),
+                name: "copy_range".into(),
+                args: serde_json::json!({"source_path":"a.txt","target_path":"out/b.txt"}),
+            },
+            PendingTool {
+                id: "cr-2".into(),
+                name: "copy_range".into(),
+                args: serde_json::json!({"source_path":"c.txt","target_path":"out/b.txt"}),
+            },
+        ];
+        let (groups, serial_after) = resolve_write_conflicts(&pending);
         assert_eq!(groups, vec![vec![0, 1]]);
         assert_eq!(serial_after, HashSet::from([1]));
     }

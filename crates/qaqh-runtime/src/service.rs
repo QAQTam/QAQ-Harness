@@ -323,12 +323,14 @@ impl QaqhService {
             "workspace.get" => Ok(json!(workspace(&seed()?))),
             "workspace.set" => {
                 let seed = seed()?;
+                // 空 path 防护：canonical_cwd("") = "" 会把 meta.cwd 清空，
+                // 导致会话工作区/归属丢失（前端重启后回空 cwd 的 bug 通道）。
+                let path = pstr(params, "path")?.trim().to_string();
+                if path.is_empty() {
+                    return Err("workspace.set: empty path rejected".into());
+                }
                 // 统一数据源：运行环境工作目录存 meta.cwd（workspace.txt 退役）。
-                qaqh_session::SessionManager::global().set_cwd(
-                    &seed,
-                    pstr(params, "path")?.trim(),
-                    true,
-                );
+                qaqh_session::SessionManager::global().set_cwd(&seed, &path, true);
                 self.send_ringing_cmd(
                     seed,
                     RingingCommand::Control(ControlCommand::AgentReloadConfig),
@@ -593,6 +595,21 @@ impl QaqhService {
 
     /// 配置写后广播（所有 config.* / profile.* 写路径共用）。
     fn notify_config_changed(&self) {
+        // P2-D2：除 worker 广播外，向 Control 频道发布 ConfigChanged（空 seed =
+        // 全局），前端/TUI/web 订阅后重拉 config.load——轮询降级为兜底。
+        if let Some(hub) = self.hub.get() {
+            let rev = qaqh_config::watch::latest().map_or(0, |_| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0)
+            });
+            let _ = hub.publish_with_causation(
+                "",
+                qaqh_domain::DomainEvent::Control(qaqh_domain::ControlEvent::ConfigChanged { rev }),
+                None,
+            );
+        }
         let failed = match self.registry() {
             Ok(mut registry) => registry
                 .broadcast_ringing(&RingingCommand::Control(ControlCommand::AgentReloadConfig)),
@@ -622,165 +639,13 @@ impl QaqhService {
     fn save_config(&self, params: &Value) -> Result<(), String> {
         // Never log config.save payloads: they may contain provider credentials.
         log::info!("[config.save] saving configuration");
-        self.update_config_and_reload(|cfg| {
-            // 审计 P0-1：apiKey 处理（2026-08 修复 Bug 根因 1）：
-            // - "****" = 掩码占位符，保持现值（与 Web isMasked 一致）；
-            // - 空串 = 保持现值（与 update_string 语义一致，防前端误发空导致误删）；
-            //   显式删除需走专用接口/手动清文件，避免“任意保存都清密钥”的幽灵重置。
-            //   此前 winui 前端在未编辑密钥时仍发送 ""，被误判为删除。
-            if let Some(value) = value2(params, "api_key", "apiKey").and_then(Value::as_str) {
-                if value != "****" && !value.is_empty() {
-                    cfg.api_key = value.to_string();
-                } else if value.is_empty() {
-                    log::info!("[config.save] apiKey empty -> keep existing (skip delete)");
-                }
-            }
-            update_string(&mut cfg.model, params, "model", "model");
-            update_string(&mut cfg.base_url, params, "base_url", "baseUrl");
-            update_string(&mut cfg.provider_id, params, "provider_id", "providerId");
-            update_string(&mut cfg.endpoint, params, "endpoint", "endpoint");
-            update_string(
-                &mut cfg.reasoning_effort,
-                params,
-                "reasoning_effort",
-                "reasoningEffort",
-            );
-            update_u32(&mut cfg.max_tokens, params, "max_tokens", "maxTokens");
-            update_u32(
-                &mut cfg.context_limit,
-                params,
-                "context_limit",
-                "contextLimit",
-            );
-            if let Some(lang) = value2(params, "lang", "lang")
-                .and_then(Value::as_str)
-                .filter(|v| !v.is_empty())
-            {
-                cfg.lang = Some(lang.to_string());
-            }
-            // ── UI 字体（空字符串 = 恢复系统默认；掩码守卫同 update_string）──
-            if let Some(value) = value2(params, "font_family", "fontFamily").and_then(Value::as_str)
-            {
-                if value != "****" {
-                    cfg.font_family = value.to_string();
-                }
-            }
-            // ── UI 主题（空值/null = 跟随系统）──
-            if let Some(value) = value2(params, "theme", "theme").and_then(Value::as_str) {
-                cfg.theme = if value.is_empty() {
-                    None
-                } else {
-                    Some(value.to_string())
-                };
-            }
-            // ── 桌面通知（缺省 = 开启）──
-            if let Some(enabled) = value2(params, "notifications_enabled", "notificationsEnabled")
-                .and_then(Value::as_bool)
-            {
-                cfg.notifications_enabled = Some(enabled);
-            }
-            update_string(
-                &mut cfg.subagent.model,
-                params,
-                "subagent_model",
-                "subagentModel",
-            );
-            update_string(
-                &mut cfg.subagent.base_url,
-                params,
-                "subagent_base_url",
-                "subagentBaseUrl",
-            );
-            update_string(
-                &mut cfg.subagent.api_key,
-                params,
-                "subagent_api_key",
-                "subagentApiKey",
-            );
-            update_u32(
-                &mut cfg.subagent.max_tokens,
-                params,
-                "subagent_max_tokens",
-                "subagentMaxTokens",
-            );
-            if let Some(value) = value2(params, "subagent_timeout_secs", "subagentTimeoutSecs")
-                .and_then(Value::as_u64)
-                .filter(|v| *v > 0)
-            {
-                cfg.subagent.timeout_secs = value;
-            }
-            // 允许空数组保存：配置语义中 `default_tools = []` 表示"全部工具可用"，
-            // 用户在前端取消所有勾选时应能表达该状态（此前空数组被过滤、无法保存）。
-            if let Some(values) = value2(params, "subagent_default_tools", "subagentDefaultTools")
-                .and_then(Value::as_array)
-            {
-                cfg.subagent.default_tools = values
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect();
-            }
-            if let Some(path) =
-                value2(params, "tokenizer_path", "tokenizerPath").and_then(Value::as_str)
-            {
-                cfg.tokenizer_path = (!path.is_empty()).then(|| path.to_string());
-            }
-            // ── Multimodal (vision) config ──
-            if let Some(enabled) =
-                value2(params, "multimodal_enabled", "multimodalEnabled").and_then(Value::as_bool)
-            {
-                cfg.multimodal.enabled = enabled;
-            }
-            update_string(
-                &mut cfg.multimodal.provider_type,
-                params,
-                "multimodal_provider_type",
-                "multimodalProviderType",
-            );
-            update_string(
-                &mut cfg.multimodal.provider_id,
-                params,
-                "multimodal_provider_id",
-                "multimodalProviderId",
-            );
-            update_string(
-                &mut cfg.multimodal.api_key,
-                params,
-                "multimodal_api_key",
-                "multimodalApiKey",
-            );
-            update_string(
-                &mut cfg.multimodal.base_url,
-                params,
-                "multimodal_base_url",
-                "multimodalBaseUrl",
-            );
-            update_string(
-                &mut cfg.multimodal.model,
-                params,
-                "multimodal_model",
-                "multimodalModel",
-            );
-            update_u32(
-                &mut cfg.multimodal.max_tokens,
-                params,
-                "multimodal_max_tokens",
-                "multimodalMaxTokens",
-            );
-            if let Some(threshold) =
-                value2(params, "auto_compact_threshold", "autoCompactThreshold")
-                    .and_then(Value::as_f64)
-            {
-                cfg.auto_compact_threshold = threshold;
-            }
-            if let Some(enabled) =
-                value2(params, "compliance_enabled", "complianceEnabled").and_then(Value::as_bool)
-            {
-                cfg.compliance_enabled = enabled;
-            }
-            Ok(())
-        })?;
-        Ok(())
+        // P1-C2：wire 切换为 Merge Patch 契约（qaqh-config-api）——值域校验在
+        // api 层 validate()；逐字段守卫语义集中在 qaqh_config::dto::apply_patch
+        // （穷举映射，新增字段未同步会编译失败）。旧 snake/camel 双键 shim 就此退役。
+        let patch: qaqh_config_api::ConfigPatch = serde_json::from_value(params.clone())
+            .map_err(|e| format!("invalid config.save payload: {e}"))?;
+        self.update_config_and_reload(|cfg| qaqh_config::dto::apply_patch(cfg, &patch))
+            .map(|_| ())
     }
 }
 
@@ -940,28 +805,6 @@ fn parse_json_string(value: String) -> Result<Value, String> {
     serde_json::from_str(&value).map_err(err)
 }
 
-fn update_string(target: &mut String, params: &Value, snake: &str, camel: &str) {
-    if let Some(value) = value2(params, snake, camel)
-        .and_then(Value::as_str)
-        .filter(|v| !v.is_empty())
-    {
-        // Guard: skip the masked placeholder used by load_config
-        if value == "****" {
-            log::info!("[update_string] skipping masked placeholder '****' for field '{snake}'");
-            return;
-        }
-        *target = value.to_string();
-    }
-}
-fn update_u32(target: &mut u32, params: &Value, snake: &str, camel: &str) {
-    if let Some(value) = value2(params, snake, camel)
-        .and_then(Value::as_u64)
-        .filter(|v| *v > 0)
-    {
-        *target = value as u32;
-    }
-}
-
 fn workspace(seed: &str) -> String {
     if seed.is_empty() {
         return String::new();
@@ -1056,14 +899,10 @@ fn activity(seed: &str) -> Result<Value, String> {
 
 fn load_config() -> Result<Value, String> {
     let cfg = qaqh_config::Config::load().map_err(err)?;
-    let providers = qaqh_config::registry::all_providers().into_iter().map(|provider| json!({"id":provider.id,"display":provider.display,"endpoints":provider.endpoints.into_iter().map(|endpoint|json!({"id":endpoint.id,"display":endpoint.display,"protocol":endpoint.protocol,"base_url":endpoint.base_url,"default_model":endpoint.default_model,"models":endpoint.models,"stateful":endpoint.stateful,"beta":endpoint.beta})).collect::<Vec<_>>() })).collect::<Vec<_>>();
-    // profile 名称列表（前端 profile 管理 UI 用；不含敏感字段）。
-    let profile_names: Vec<String> = cfg.profiles.keys().cloned().collect();
-    Ok(
-        json!({"api_key":if cfg.api_key.is_empty(){""}else{"****"},"api_key_set":!cfg.api_key.is_empty(),"model":cfg.model,"base_url":cfg.base_url,"provider_id":cfg.provider_id,"endpoint":cfg.endpoint,"max_tokens":cfg.max_tokens,"context_limit":cfg.context_limit,"reasoning_effort":cfg.reasoning_effort,"auto_compact_threshold":cfg.auto_compact_threshold,"permission_level":cfg.permission_level,"lang":cfg.lang,"font_family":cfg.font_family,"theme":cfg.theme,"notifications_enabled":cfg.notifications_enabled.unwrap_or(true),"active_profile":cfg.active_profile,"profiles":profile_names,"compliance_enabled":cfg.compliance_enabled,"providers":providers,"subagent":{"model":cfg.subagent.model,"base_url":cfg.subagent.base_url,"api_key":if cfg.subagent.api_key.is_empty(){""}else{"****"},"api_key_set":!cfg.subagent.api_key.is_empty(),"max_tokens":cfg.subagent.max_tokens,"timeout_secs":cfg.subagent.timeout_secs,"default_tools":cfg.subagent.default_tools},"multimodal":{"enabled":cfg.multimodal.enabled,"provider_type":cfg.multimodal.provider_type,"provider_id":cfg.multimodal.provider_id,"api_key":if cfg.multimodal.api_key.is_empty(){""}else{"****"},"api_key_set":!cfg.multimodal.api_key.is_empty(),"base_url":cfg.multimodal.base_url,"model":cfg.multimodal.model,"max_tokens":cfg.multimodal.max_tokens},"workspace":{"mode":cfg.workspace.mode},"tokenizer_path":cfg.tokenizer_path}),
-    )
+    // P1-C2：读模型统一走 ConfigDto（camelCase wire + providers 目录内聚到
+    // qaqh-config::dto），service 层不再手拼 json。
+    serde_json::to_value(qaqh_config::dto::to_dto(&cfg)).map_err(err)
 }
-
 fn context_stats(seed: &str) -> Result<Value, String> {
     // 统一数据源：meta.json 的 context_stats 字段（原独立文件退役）。
     // 旧 context_stats.json 为可再生缓存，忽略不迁移。
@@ -1145,7 +984,7 @@ fn qaqh_dir(seed: &str) -> std::path::PathBuf {
     if workspace.is_empty() || workspace == "." {
         qaqh_types::platform::data_dir().join("workspace")
     } else {
-        std::path::Path::new(&workspace).join(".deepx")
+        std::path::Path::new(&workspace).join(".qaqh")
     }
 }
 fn read_plan(seed: &str) -> Result<Value, String> {

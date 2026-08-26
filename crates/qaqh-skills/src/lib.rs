@@ -34,9 +34,9 @@ const MAX_COMPATIBILITY_CHARS: usize = 500;
 /// User skills live in the home directory and are personal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillScope {
-    /// Workspace-relative directory (`.deepx/skills`, `.agents/skills`, `skills`).
+    /// Workspace-relative directory (`.qaqh/skills`, `.agents/skills`, `skills`).
     Project,
-    /// User home directory (`~/.deepx/skills`, `~/.agents/skills`).
+    /// User home directory (`~/.qaqh/skills`, `~/.agents/skills`).
     User,
 }
 
@@ -169,17 +169,17 @@ struct ParsedMetadata {
 
 /// 动态发现当前工作区和用户目录中的 skills。
 ///
-/// 优先级固定为：项目 `.deepx` > `.agents` > `skills`，随后是用户
-/// `.deepx` > `.agents`。同名 skill 只保留优先级最高者。
+/// 优先级固定为：项目 `.qaqh` > `.agents` > `skills`，随后是用户
+/// `.qaqh` > `.agents`。同名 skill 只保留优先级最高者。
 pub fn discover(workspace: &Path) -> SkillCatalog {
     let workspace = absolutize(workspace);
     let mut roots = vec![
-        (workspace.join(".deepx/skills"), SkillScope::Project),
+        (workspace.join(".qaqh/skills"), SkillScope::Project),
         (workspace.join(".agents/skills"), SkillScope::Project),
         (workspace.join("skills"), SkillScope::Project),
     ];
     if let Some(home) = home_dir() {
-        roots.push((home.join(".deepx/skills"), SkillScope::User));
+        roots.push((home.join(".qaqh/skills"), SkillScope::User));
         roots.push((home.join(".agents/skills"), SkillScope::User));
     }
     discover_roots(&roots)
@@ -377,7 +377,8 @@ fn validate_standard_fields(
 }
 
 fn parse_frontmatter(frontmatter: &str) -> Result<Frontmatter, String> {
-    serde_saphyr::from_str(frontmatter).map_err(|error| format!("invalid YAML frontmatter: {error}"))
+    serde_saphyr::from_str(frontmatter)
+        .map_err(|error| format!("invalid YAML frontmatter: {error}"))
 }
 
 /// Parse the YAML frontmatter boundary. Only `---\n` start is accepted;
@@ -515,12 +516,12 @@ pub fn managed_skill_for_path(workspace: &Path, candidate: &Path) -> Option<Stri
     let resolved = candidate.canonicalize().ok()?;
     let workspace = absolutize(workspace);
     let mut roots = vec![
-        workspace.join(".deepx/skills"),
+        workspace.join(".qaqh/skills"),
         workspace.join(".agents/skills"),
         workspace.join("skills"),
     ];
     if let Some(home) = home_dir() {
-        roots.push(home.join(".deepx/skills"));
+        roots.push(home.join(".qaqh/skills"));
         roots.push(home.join(".agents/skills"));
     }
     for root in roots {

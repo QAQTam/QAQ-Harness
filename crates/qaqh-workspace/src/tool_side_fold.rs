@@ -69,7 +69,7 @@ impl ToolResultFoldPolicy for StandardPolicy {
             // 命令输出
             "bash" | "exec" | "pwsh" => Some(EXEC_CHAR_LIMIT),
             // 大内容
-            "image" | "web_fetch" | "process" => Some(CONTENT_BEARING_CHAR_LIMIT),
+            "read_image" | "web_fetch" | "process" => Some(CONTENT_BEARING_CHAR_LIMIT),
             // 未知工具：透传（ToolResult 构造时默认 24K 硬顶兜底）
             _ => None,
         }
@@ -172,7 +172,7 @@ mod tests {
         assert_eq!(p.limit_for("bash"), Some(EXEC_CHAR_LIMIT));
         assert_eq!(p.limit_for("pwsh"), Some(EXEC_CHAR_LIMIT));
         assert_eq!(p.limit_for("web_fetch"), Some(CONTENT_BEARING_CHAR_LIMIT));
-        assert_eq!(p.limit_for("image"), Some(CONTENT_BEARING_CHAR_LIMIT));
+        assert_eq!(p.limit_for("read_image"), Some(CONTENT_BEARING_CHAR_LIMIT));
         assert_eq!(p.limit_for("unknown_tool"), None);
         assert_eq!(p.exec_max_output_tokens(), Some(10_000));
     }
@@ -258,8 +258,8 @@ mod tests {
     }
 
     #[test]
-    fn web_fetch_and_image_use_content_bearing_limit() {
-        for name in ["web_fetch", "image"] {
+    fn web_fetch_and_read_image_use_content_bearing_limit() {
+        for name in ["web_fetch", "read_image"] {
             let body = "content\n".repeat(5_000); // 40K chars > 16K cap
             let mut result = ok(&body);
             apply(name, &mut result);

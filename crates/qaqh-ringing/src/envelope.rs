@@ -278,16 +278,12 @@ mod tests {
 
     #[test]
     fn event_envelope_round_trip() {
-        let event = RingingEvent::Tool(qaqh_domain::ToolEvent::ToolProgress {
+        let event = RingingEvent::Tool(qaqh_domain::ToolEvent::ToolCallPrepared {
             tool_call_id: "c1".into(),
             turn_id: "t1".into(),
             round_num: 0,
-            stream: "stdout".into(),
-            seq_start: 0,
-            seq_end: 2,
-            chunk: "hi".into(),
-            dropped_bytes: 0,
-            truncated: false,
+            name: "exec".into(),
+            args_so_far: "{}".into(),
         });
         let env = RingingEventEnvelope::new("seed-1", 5, 3, 2, "evt-1", event)
             .with_causation("cmd-9")
@@ -303,7 +299,7 @@ mod tests {
         assert_eq!(back.delivery, Delivery::Replaceable);
         assert!(matches!(
             back.event,
-            RingingEvent::Tool(ToolEvent::ToolProgress { .. })
+            RingingEvent::Tool(ToolEvent::ToolCallPrepared { .. })
         ));
     }
 

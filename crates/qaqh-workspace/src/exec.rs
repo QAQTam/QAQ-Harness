@@ -588,6 +588,13 @@ fn direct_exec(
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
+    #[cfg(unix)]
+    {
+        // H6：独立进程组——取消/超时 kill 时可对整组 SIGKILL，
+        // 孙进程不再持有管道写端导致 reader 永不 EOF。
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
@@ -762,12 +769,25 @@ fn direct_exec(
     }
 
     // Collect pipe output (threads finish after child exits)
+    // W-low①：收集超时不再伪造占位——回退注册表已捕获部分（H6 修复后
+    // EOF 正常到达，此分支仅极端场景兜底）。
+    let registry_snapshot = crate::process_registry::ProcessRegistry::captured(proc_id);
     let (stdout_out, stdout_trunc) = stdout_rx
         .recv_timeout(std::time::Duration::from_secs(2))
-        .unwrap_or_else(|_| (b"[WARN] stdout pipe timed out\n".to_vec(), true));
+        .unwrap_or_else(|_| {
+            registry_snapshot
+                .as_ref()
+                .map(|(o, _)| (o.clone().into_bytes(), true))
+                .unwrap_or((b"[WARN] stdout pipe timed out\n".to_vec(), true))
+        });
     let (stderr_out, stderr_trunc) = stderr_rx
         .recv_timeout(std::time::Duration::from_secs(2))
-        .unwrap_or_else(|_| (b"[WARN] stderr pipe timed out\n".to_vec(), true));
+        .unwrap_or_else(|_| {
+            registry_snapshot
+                .clone()
+                .map(|(_, e)| (e.into_bytes(), true))
+                .unwrap_or((b"[WARN] stderr pipe timed out\n".to_vec(), true))
+        });
 
     let stdout_out = decode_captured(&stdout_out);
     let stderr_out = decode_captured(&stderr_out);

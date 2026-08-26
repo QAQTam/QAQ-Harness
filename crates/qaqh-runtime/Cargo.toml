@@ -6,6 +6,7 @@ description = "GUI-independent QAQ-Harness daemon application runtime"
 
 [dependencies]
 qaqh-config = { path = "../qaqh-config" }
+qaqh-config-api = { path = "../qaqh-config-api" }
 qaqh-domain = { path = "../qaqh-domain" }
 qaqh-msgloop = { path = "../qaqh-msgloop" }
 qaqh-proto = { path = "../qaqh-proto" }

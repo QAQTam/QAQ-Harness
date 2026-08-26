@@ -10,7 +10,7 @@
 //!
 //! 安全边界（loopback 信任模型）：
 //! - **仅限本机回环连接**：非 loopback 来源一律 403。token 已明文存在于
-//!   `~/.deepx/daemon.json`，本页内联 token 与既有威胁模型一致；LAN server
+//!   `~/.qaqh/daemon.json`，本页内联 token 与既有威胁模型一致；LAN server
 //!   模式下远端壳是持有 token 的原生应用，无需也不得从本端点获取 token；
 //! - 静态服务仅限 renderer 目录内（防目录穿越）；
 //! - 只读：无命令、无写端点。切流等写操作仍走带 lease 的 Ringing 端点。

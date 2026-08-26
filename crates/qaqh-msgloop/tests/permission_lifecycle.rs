@@ -174,7 +174,12 @@ fn next_command_id() -> u64 {
 
 fn send_cmd(writer: &mut os_pipe::PipeWriter, seed: &str, command: RingingCommand) {
     let env = RingingWorkerCommandEnvelope::new(seed, format!("c{}", next_command_id()), command);
-    writeln!(writer, "{}", serde_json::to_string(&env).expect("serialize envelope")).expect("write frame");
+    writeln!(
+        writer,
+        "{}",
+        serde_json::to_string(&env).expect("serialize envelope")
+    )
+    .expect("write frame");
     writer.flush().expect("flush pipe");
 }
 

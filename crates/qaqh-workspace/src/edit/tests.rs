@@ -46,11 +46,11 @@ fn rp_hint(old: &str, new: &str, hint: usize) -> Hunk {
 }
 
 fn edit(content: &str, hunks: &[Hunk]) -> FileOutcome {
-    run_edit(content, hunks, Vec::new(), Mode::Strict)
+    run_edit(content, "test.rs", hunks, Vec::new(), Mode::Strict)
 }
 
 fn edit_partial(content: &str, hunks: &[Hunk]) -> FileOutcome {
-    run_edit(content, hunks, Vec::new(), Mode::Partial)
+    run_edit(content, "test.rs", hunks, Vec::new(), Mode::Partial)
 }
 
 fn err_code(o: &FileOutcome) -> &str {
@@ -220,7 +220,7 @@ fn crlf_in_request_normalized_with_notes() {
         &mut notes,
     )
     .unwrap();
-    let out = run_edit("a\nb\n", &[hunk], notes, Mode::Strict);
+    let out = run_edit("a\nb\n", "test.rs", &[hunk], notes, Mode::Strict);
     assert_eq!(out.edited.as_deref(), Some("A\nB\n"));
     assert_eq!(out.reports[0].status, "ok");
     assert!(out.notes.iter().any(|n| n.contains("CRLF")));

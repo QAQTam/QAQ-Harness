@@ -313,8 +313,12 @@ impl ContextFlow {
         let n = pending.len();
         let mut command_ids = Vec::new();
         for p in pending {
-            let _ = self.ingest(store, p.source_id, p.msg);
-            if let Some(command_id) = p.command_id {
+            let receipt = self.ingest(store, p.source_id, p.msg);
+            // G1：只有 stored/deduped 才回执 committed——被拒/跳过的注入若
+            // 也标 committed，重试与崩溃重放都会被吞，注入即静默丢失。
+            if (receipt.stored || receipt.deduped)
+                && let Some(command_id) = p.command_id
+            {
                 command_ids.push(command_id);
             }
         }
@@ -349,8 +353,13 @@ impl ContextFlow {
             self.trace_push(source_id, role.as_str(), sink.as_str(), "skipped");
             return IngestReceipt::default();
         }
-        if let Some(key) = src.dedupe_key(&msg) {
-            if self.last_keys.get(source_id) == Some(&key) {
+        // dedup 双层语义（M-doc+M-low② 统一后）：flow 层 last-key 仅阻断
+        // 相邻重复；store 层 trailing 文本去重亦已收窄为仅相邻（原全历史
+        // 扫描会吞掉间隔数小时重现的相同报告）。A,B,A 全链路放行，
+        // 由 aba_pattern_passes_by_design 测试锁定。
+        let pending_key = src.dedupe_key(&msg);
+        if let Some(key) = &pending_key {
+            if self.last_keys.get(source_id) == Some(key) {
                 self.trace_push(source_id, role.as_str(), sink.as_str(), "deduped");
                 return IngestReceipt {
                     stored: false,
@@ -358,7 +367,6 @@ impl ContextFlow {
                     effect: None,
                 };
             }
-            self.last_keys.insert(source_id, key);
         }
 
         // (stored, effect) — effect carries the store-layer decision for
@@ -390,7 +398,7 @@ impl ContextFlow {
                         result,
                     } = block
                     {
-                        let projected = result.project_for_model().to_string();
+                        let projected = result.render_xml_envelope();
                         store.push_tool_result_direct(
                             tool_use_id,
                             &projected,
@@ -408,6 +416,12 @@ impl ContextFlow {
             // keep their existing build-time path.
             Sink::Annotation => (false, None),
         };
+
+        // G1：last_keys 在 store 确定性接受之后落账——原先先记账后落盘，
+        // 失败路径会让合法重试被永久误判 dedup。
+        if stored && let Some(key) = pending_key {
+            self.last_keys.insert(source_id, key);
+        }
 
         self.trace_push(
             source_id,
@@ -837,6 +851,54 @@ mod tests {
         assert!(r1.stored);
         assert!(!r2.stored && r2.deduped);
         assert_eq!(store.trailing_messages().len(), 1);
+    }
+
+    /// M-doc/M-low②：A,B,A 锁定测试——两层去重均只阻断相邻重复；间隔重现
+    /// 的相同文本（第三个 A）视为新事件正常放行。文档化设计，勿当吞错修。
+    #[test]
+    fn aba_pattern_passes_by_design() {
+        struct Keyed;
+        impl ContextSource for Keyed {
+            fn id(&self) -> &'static str {
+                "keyed"
+            }
+            fn role(&self) -> FlowRole {
+                FlowRole::Developer
+            }
+            fn sink(&self) -> Sink {
+                Sink::Trailing
+            }
+            fn timing(&self) -> Timing {
+                Timing::TurnBoundary
+            }
+            fn visibility(&self) -> Visibility {
+                Visibility {
+                    timeline: false,
+                    persist: true,
+                    context: true,
+                }
+            }
+            fn lifecycle(&self) -> LifecyclePolicy {
+                LifecyclePolicy {
+                    undo: UndoBehavior::Keep,
+                    compact: CompactBehavior::Preserved,
+                }
+            }
+            fn dedupe_key(&self, msg: &Message) -> Option<String> {
+                Some(extract_text(msg))
+            }
+        }
+        let mut flow = ContextFlow::new();
+        flow.register(Arc::new(Keyed));
+        let mut store = MessageStore::new_ephemeral("seed-aba");
+        let r1 = flow.ingest(&mut store, "keyed", Message::developer("A"));
+        let r2 = flow.ingest(&mut store, "keyed", Message::developer("B"));
+        let r3 = flow.ingest(&mut store, "keyed", Message::developer("A"));
+        assert!(r1.stored);
+        assert!(r2.stored);
+        // 第三个 A：last_keys 已被 B 覆盖 → 放行而非 dedup。
+        assert!(r3.stored, "A,B,A 的第三个 A 应放行（非相邻重复）");
+        assert_eq!(store.trailing_messages().len(), 3);
     }
 
     #[test]

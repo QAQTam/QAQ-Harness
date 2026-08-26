@@ -28,8 +28,8 @@ pub mod token;
 
 pub use api_types::UsageInfo;
 pub use config::{
-    BalanceInfo, ConfigStore, PersistentConfig, PersistentMultimodalConfig,
-    PersistentSubagentConfig, PersistentWorkspaceConfig, ProfileConfig,
+    BalanceInfo, ConfigStore, PersistentConfig, PersistentSubagentConfig,
+    PersistentWorkspaceConfig, ProfileConfig,
 };
 pub use message::{ContentBlock, FunctionCall, Message, ToolCall};
 pub use provider::{CacheTokenField, EndpointSpec, ProviderSpec, ThinkingParamMode, UserSendMode};
@@ -43,7 +43,7 @@ pub use tool_mode::{
 };
 pub use tool_result::{
     ContentRef, TOOL_MODEL_MAX_CHARS, TOOL_SUMMARY_MAX_CHARS, ToolContinuation, ToolError,
-    ToolModelPayload, ToolResult, ToolStatus,
+    ToolImage, ToolModelPayload, ToolResult, ToolStatus,
 };
 
 // ── Unified arg parsers ──

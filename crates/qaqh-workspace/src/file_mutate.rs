@@ -328,8 +328,8 @@ pub(super) fn exec_delete_file(args: &serde_json::Value) -> String {
             "timeis": crate::now_utc8(),
             "status": "ok",
             "path": path,
-            "trash_path": format!(".deepx/trash/{}", trash_path.file_name().unwrap_or_default().to_string_lossy()),
-            "content": format!("Moved to trash: .deepx/trash/{}", trash_path.file_name().unwrap_or_default().to_string_lossy()),
+            "trash_path": format!(".qaqh/trash/{}", trash_path.file_name().unwrap_or_default().to_string_lossy()),
+            "content": format!("Moved to trash: .qaqh/trash/{}", trash_path.file_name().unwrap_or_default().to_string_lossy()),
             "hint": format!("Restore with exec argv [\"mv\", \"{}\", \"{}\"]", trash_path.display(), path),
         }).to_string()
         }
@@ -371,8 +371,8 @@ pub(super) fn exec_delete_file(args: &serde_json::Value) -> String {
                         "timeis": crate::now_utc8(),
                         "status": "ok",
                         "path": path,
-                        "trash_path": format!(".deepx/trash/{}", trash_path.file_name().unwrap_or_default().to_string_lossy()),
-                        "content": format!("Moved to trash (cross-device): .deepx/trash/{}", trash_path.file_name().unwrap_or_default().to_string_lossy()),
+                        "trash_path": format!(".qaqh/trash/{}", trash_path.file_name().unwrap_or_default().to_string_lossy()),
+                        "content": format!("Moved to trash (cross-device): .qaqh/trash/{}", trash_path.file_name().unwrap_or_default().to_string_lossy()),
                         "hint": format!("Restore with exec argv [\"cp\", \"{}\", \"{}\"]", trash_path.display(), path),
                 }).to_string()
                     }
@@ -408,7 +408,7 @@ pub fn register(mgr: &mut crate::ToolManager) {
 );
     mgr.register_with_placement(ToolHandler {
         key: "delete".to_string(),
-        description: "Move file to trash (.deepx/trash/) instead of permanent deletion.",
+        description: "Move file to trash (.qaqh/trash/) instead of permanent deletion.",
         input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"File path to delete"}},"required":["path"],"additionalProperties":false}),
         handler: handle_delete_file,
         risk: ToolRisk::Destructive,

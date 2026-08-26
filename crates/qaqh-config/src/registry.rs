@@ -302,14 +302,19 @@ fn openrouter() -> ProviderSpec {
             default_model: String::new(),
             models: vec![],
             // Limit the picker to text-only models that declare native tool
-            // support. QAQ-Harness does not yet serialize multimodal content.
+            // support (image input is currently gated per-endpoint via
+            // `supports_image_tool`, not discovered from this list).
             models_url: Some(
                 "https://openrouter.ai/api/v1/models?output_modalities=text&supported_parameters=tools&sort=pricing-low-to-high"
                     .into(),
             ),
             has_balance: false,
+            // OpenRouter 接受 OpenAI `reasoning_effort` 简写(ChatRequest 规范
+            // 字段);router 侧按模型 supported_efforts 归一,配合下方稀疏
+            // allowlist 由 gate 钳制到合法档位,避免 off-domain 值被静默忽略。
             supports_thinking: false,
-            supports_reasoning_effort: false,
+            supports_reasoning_effort: true,
+            effort_allowlist: Some(vec!["max".into(), "high".into(), "low".into()]),
             tool_call_content_null: true,
             supports_reasoning_content: false,
             require_provider_parameters: true,
@@ -393,6 +398,7 @@ fn opencode_go() -> ProviderSpec {
                 has_balance: false,
                 supports_thinking: false,
                 supports_reasoning_effort: true,
+                supports_image_tool: true,
                 ..Default::default()
             },
             // Grok 4.5 / GPT-5.6 Luna：本家走 Responses API（@ai-sdk/openai）。
@@ -415,6 +421,7 @@ fn opencode_go() -> ProviderSpec {
                 responses_effort_max: "high".into(),
                 responses_web_search: false,
                 responses_echo_web_search_call: false,
+                supports_image_tool: true,
                 beta: true,
                 ..Default::default()
             },
@@ -454,6 +461,11 @@ pub fn find_endpoint(provider_id: &str, endpoint_id: &str) -> Option<EndpointSpe
 
 pub fn first_endpoint_for(provider_id: &str) -> Option<EndpointSpec> {
     find_provider(provider_id).and_then(|p| p.endpoints.into_iter().next())
+}
+
+/// Whether the endpoint accepts image input (gates the `read_image` tool).
+pub fn image_tool_enabled(provider_id: &str, endpoint_id: &str) -> bool {
+    find_endpoint(provider_id, endpoint_id).is_some_and(|e| e.supports_image_tool)
 }
 
 pub fn first_provider_endpoint() -> (String, String) {
@@ -570,7 +582,12 @@ mod tests {
         );
         assert!(!endpoint.has_balance);
         assert!(!endpoint.supports_thinking);
-        assert!(!endpoint.supports_reasoning_effort);
+        // reasoning_effort 简写 + 稀疏档位钳制(ox-alpha: max/high/low)。
+        assert!(endpoint.supports_reasoning_effort);
+        assert_eq!(
+            endpoint.effort_allowlist.as_deref(),
+            Some(["max", "high", "low"].as_slice())
+        );
         assert!(endpoint.tool_call_content_null);
         assert!(!endpoint.supports_reasoning_content);
         assert!(endpoint.require_provider_parameters);

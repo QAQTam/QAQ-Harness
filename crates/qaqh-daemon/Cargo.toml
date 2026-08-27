@@ -19,6 +19,12 @@ rand = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+# axum migration P0 scaffolding (feature-gated, default off to keep winui stability)
+axum = { version = "0.8", optional = true }
+tower = { version = "0.5", optional = true }
+tower-http = { version = "0.6", optional = true, features = ["trace", "fs", "limit", "cors", "set-header", "util"] }
+tokio-stream = { version = "0.1", optional = true }
+futures-util = { version = "0.3", optional = true }
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
@@ -26,6 +32,7 @@ winresource = "0.1"
 [features]
 default = ["memory"]
 memory = ["qaqh-runtime/memory"]
+axum = ["dep:axum", "dep:tower", "dep:tower-http", "dep:tokio-stream", "dep:futures-util"]
 
 [lints]
 workspace = true

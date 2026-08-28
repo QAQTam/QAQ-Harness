@@ -11,7 +11,7 @@ mod axum_impl {
     use rust_embed::RustEmbed;
 
     #[derive(RustEmbed)]
-    #[folder = "../../../qaqh-webui/out/renderer"]
+    #[folder = "webui-dist"]
     struct WebUi;
 
     use axum::{

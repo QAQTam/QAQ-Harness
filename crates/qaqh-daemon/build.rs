@@ -5,6 +5,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=QAQH_CHANNEL");
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/index");
+    println!("cargo:rerun-if-changed=webui-dist/index.html");
+    println!("cargo:rerun-if-changed=webui-dist/assets");
     println!("cargo:rerun-if-changed=../../../qaqh-webui/src");
     println!("cargo:rerun-if-changed=../../../qaqh-webui/index.html");
     println!("cargo:rerun-if-changed=../../../qaqh-webui/package.json");
@@ -46,14 +48,32 @@ fn embed_windows_icon() {
 fn embed_windows_icon() {}
 
 fn ensure_webui_embed() {
-    // rust-embed 要求 folder 在编译时存在，否则报错。开发期 out/renderer 可能尚未 `bun run build`，
-    // 此时创建占位目录+index，避免编译失败；运行时会显示“前端产物缺失”提示，引导用户构建。
-    let webui_out = std::path::Path::new("../../../qaqh-webui/out/renderer");
-    if !webui_out.join("index.html").exists() {
-        let _ = std::fs::create_dir_all(webui_out);
-        let placeholder = r#"<!doctype html><meta charset="utf-8"><title>QAQ Harness</title><p style="font-family:system-ui;padding:2rem">前端产物缺失：请在 <code>qaqh-webui</code> 执行 <code>bun run build</code> 后重新 <code>cargo build -p qaqh-daemon</code>。此占位由 build.rs 自动生成。</p>"#;
-        let _ = std::fs::write(webui_out.join("index.html"), placeholder);
-        println!("cargo:warning=webui out/renderer missing — generated placeholder index.html; run `bun run build` in qaqh-webui for full UI");
+    // 优先使用主仓库内已提交的 webui-dist（单仓库构建），缺失时自动从 sibling qaqh-webui/out 同步，
+    // 仍缺失则生成占位，保证 rust-embed 编译不失败。
+    let embedded = std::path::Path::new("webui-dist");
+    let sibling = std::path::Path::new("../../../qaqh-webui/out/renderer");
+    if !embedded.join("index.html").exists() {
+        if sibling.join("index.html").exists() {
+            let _ = std::fs::create_dir_all(embedded);
+            // 轻量同步：若 sibling 存在则拷贝（避免跨仓库手动 cp）
+            let _ = std::process::Command::new("cp")
+                .args(["-r", &sibling.to_string_lossy().to_string(), &embedded.to_string_lossy().to_string()])
+                .output();
+            // cp -r 会创建 webui-dist/renderer 子目录，需扁平化
+            let nested = embedded.join("renderer");
+            if nested.exists() {
+                for entry in std::fs::read_dir(&nested).into_iter().flatten().flatten() {
+                    let _ = std::fs::rename(entry.path(), embedded.join(entry.file_name()));
+                }
+                let _ = std::fs::remove_dir(nested);
+            }
+        }
+    }
+    if !embedded.join("index.html").exists() {
+        let _ = std::fs::create_dir_all(embedded);
+        let placeholder = r#"<!doctype html><meta charset="utf-8"><title>QAQ Harness</title><p style="font-family:system-ui;padding:2rem">前端产物缺失：请在 <code>qaqh-webui</code> 执行 <code>bun run build</code> 后重新 <code>cargo build -p qaqh-daemon</code>，或执行 <code>cp -r ../qaqh-webui/out/renderer crates/qaqh-daemon/webui-dist</code>。此占位由 build.rs 自动生成。</p>"#;
+        let _ = std::fs::write(embedded.join("index.html"), placeholder);
+        println!("cargo:warning=webui-dist missing — generated placeholder; run `bun run build` in qaqh-webui and copy to webui-dist");
     }
 }
 

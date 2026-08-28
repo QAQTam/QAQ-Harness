@@ -8,6 +8,12 @@ mod axum_impl {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
+    use rust_embed::RustEmbed;
+
+    #[derive(RustEmbed)]
+    #[folder = "../../../qaqh-webui/out/renderer"]
+    struct WebUi;
+
     use axum::{
         Router,
         extract::{ConnectInfo, Path, Query, State},
@@ -1529,12 +1535,51 @@ mod axum_impl {
         State(_state): State<AppState>,
         Path(path): Path<String>,
     ) -> Response {
-        let root = renderer_root();
         let rel = if path.is_empty() { "index.html" } else { &path };
+        // 优先尝试编译时嵌入的产物（单文件分发），缺失时回退到文件系统（dev 实时构建）
+        let decoded_rel = rel.replace("%20", " ").replace("%2E", ".");
+        if !decoded_rel.contains("..") && !decoded_rel.starts_with('/') {
+            if let Some(embedded) = WebUi::get(&decoded_rel) {
+                let data = embedded.data;
+                let mime = mime_for(StdPath::new(&decoded_rel));
+                // index.html 注入桥脚本（与文件系统路径一致，CSP 兼容）
+                let is_index = decoded_rel == "index.html" || decoded_rel.ends_with("/index.html");
+                if is_index {
+                    let mut html = String::from_utf8_lossy(&data).into_owned();
+                    let script = "<script src=\"./__qaqh_bridge__.js\"></script>";
+                    if let Some(idx) = html.find("</head>") { html.insert_str(idx, script); } else { html.push_str(script); }
+                    return ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-cache")], html).into_response();
+                }
+                return ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-cache")], data.into_owned()).into_response();
+            }
+            // 尝试嵌入的 index.html 作为 SPA 回退（前端路由）——仅当 rel 非文件且嵌入存在
+            if WebUi::get(&decoded_rel).is_none() && !decoded_rel.contains('.') {
+                if let Some(embedded) = WebUi::get("index.html") {
+                    let data = embedded.data;
+                    let mime = mime_for(StdPath::new("index.html"));
+                    let mut html = String::from_utf8_lossy(&data).into_owned();
+                    let script = "<script src=\"./__qaqh_bridge__.js\"></script>";
+                    if let Some(idx) = html.find("</head>") { html.insert_str(idx, script); } else { html.push_str(script); }
+                    return ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-cache")], html).into_response();
+                }
+            }
+        }
+        let root = renderer_root();
         let Some(file) = safe_join(&root, rel) else {
             return (StatusCode::BAD_REQUEST, [(header::CACHE_CONTROL, "no-cache")], "invalid path").into_response();
         };
         if !file.exists() || !file.is_file() {
+            // 文件系统缺失 → 仅对 SPA 路由（无扩展名）回退到嵌入 index.html
+            if !decoded_rel.contains('.') {
+                if let Some(embedded) = WebUi::get("index.html") {
+                    let data = embedded.data;
+                    let mime = mime_for(StdPath::new("index.html"));
+                    let mut html = String::from_utf8_lossy(&data).into_owned();
+                    let script = "<script src=\"./__qaqh_bridge__.js\"></script>";
+                    if let Some(idx) = html.find("</head>") { html.insert_str(idx, script); } else { html.push_str(script); }
+                    return ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-cache")], html).into_response();
+                }
+            }
             return (StatusCode::NOT_FOUND, [(header::CACHE_CONTROL, "no-cache")], "not found").into_response();
         }
         let bytes = match tokio::fs::read(&file).await {

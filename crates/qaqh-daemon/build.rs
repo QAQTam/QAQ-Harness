@@ -5,6 +5,11 @@ fn main() {
     println!("cargo:rerun-if-env-changed=QAQH_CHANNEL");
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/index");
+    println!("cargo:rerun-if-changed=../../../qaqh-webui/src");
+    println!("cargo:rerun-if-changed=../../../qaqh-webui/index.html");
+    println!("cargo:rerun-if-changed=../../../qaqh-webui/package.json");
+
+    ensure_webui_embed();
 
     embed_windows_icon();
 
@@ -39,6 +44,18 @@ fn embed_windows_icon() {
 
 #[cfg(not(target_os = "windows"))]
 fn embed_windows_icon() {}
+
+fn ensure_webui_embed() {
+    // rust-embed 要求 folder 在编译时存在，否则报错。开发期 out/renderer 可能尚未 `bun run build`，
+    // 此时创建占位目录+index，避免编译失败；运行时会显示“前端产物缺失”提示，引导用户构建。
+    let webui_out = std::path::Path::new("../../../qaqh-webui/out/renderer");
+    if !webui_out.join("index.html").exists() {
+        let _ = std::fs::create_dir_all(webui_out);
+        let placeholder = r#"<!doctype html><meta charset="utf-8"><title>QAQ Harness</title><p style="font-family:system-ui;padding:2rem">前端产物缺失：请在 <code>qaqh-webui</code> 执行 <code>bun run build</code> 后重新 <code>cargo build -p qaqh-daemon</code>。此占位由 build.rs 自动生成。</p>"#;
+        let _ = std::fs::write(webui_out.join("index.html"), placeholder);
+        println!("cargo:warning=webui out/renderer missing — generated placeholder index.html; run `bun run build` in qaqh-webui for full UI");
+    }
+}
 
 fn git_commit() -> Option<String> {
     let output = Command::new("git")

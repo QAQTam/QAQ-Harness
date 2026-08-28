@@ -24,6 +24,7 @@ tower = { version = "0.5", features = ["limit"] }
 tower-http = { version = "0.6", features = ["trace", "fs", "limit", "cors", "set-header", "util"] }
 tokio-stream = "0.1"
 futures-util = "0.3"
+rust-embed = "8"
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

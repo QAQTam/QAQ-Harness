@@ -1,9 +1,8 @@
+mod axum_server;
 mod debug_http;
 mod http;
 mod ringing_http;
 mod server;
-#[cfg(feature = "axum")]
-mod axum_server;
 
 use std::io::{Read, Write};
 

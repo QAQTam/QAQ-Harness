@@ -3,7 +3,7 @@
 AI 编码代理的跨平台 **Rust 后端核心**(monorepo,16 个 workspace 成员)。单个常驻 daemon 承载多会话对话循环、LLM 网关、22 个内置工具、Agent Skills 与子代理隔离执行;Windows 桌面壳(WinUI3)/ TUI / Web 壳位于独立仓库,通过统一的 **Ringing V1** HTTP/SSE 协议接入。
 
 - Edition 2024 · License MIT · 状态:alpha
-- 无 axum/框架依赖:HTTP/SSE 为手写 tokio TCP 实现,release 产物为静态 CRT 单文件 exe(`opt-level=z` + LTO + strip)
+- HTTP 栈: `axum 0.8 + hyper 1.1 + tower 0.5 + tower-http 0.6 + tokio 1.44`，`SSE KeepAlive 15s`，release 静态 CRT 单文件 exe(`opt-level=z` + LTO + strip)
 
 ## 架构总览
 

@@ -1,7 +1,6 @@
-//! axum 迁移 P1：feature-gated，前向兼容手写 TCP。
-//! P0 已完成 health；P1 补齐无状态 REST + 中间件/限流骨架。
+//! axum 迁移 P1.5：主干直切，已去 feature-gated。
+//! P0 已完成 health；P1 补齐无状态 REST + 中间件/限流骨架；P1.5 起为默认 HTTP 栈。
 
-#[cfg(feature = "axum")]
 mod axum_impl {
     use std::collections::{HashMap, HashSet};
     use std::sync::{Arc, Mutex};
@@ -1210,10 +1209,9 @@ mod axum_impl {
         axum::serve(listener, app).await.map_err(|e| e.to_string())
     }
 }
-#[cfg(feature = "axum")]
 pub use axum_impl::{AppState, build_router, run_axum_with};
 
-#[cfg(all(test, feature = "axum"))]
+#[cfg(test)]
 mod axum_tests {
     use super::*;
     use axum::{body::Body, http::{Request, StatusCode}};

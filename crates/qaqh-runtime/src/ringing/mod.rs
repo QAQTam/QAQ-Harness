@@ -7,14 +7,21 @@
 //! - `projection`：领域 snapshot projection（禁止事件数组模拟状态）
 //! - `hub`：三频道聚合入口 `RingingHub`
 
+pub mod attachment;
 pub mod content_store;
 pub mod conversation_snapshot;
 pub mod hub;
 pub mod journal;
 pub mod journal_store;
+pub mod lease_store;
 pub mod outbox;
+pub mod pending_store;
 pub mod projection;
 pub mod query;
 pub mod router;
 pub mod sequencer;
 pub(crate) mod timeline_rebuild;
+
+pub use attachment::hydrate_attachment_previews;
+pub use lease_store::RingingLeaseStore;
+pub use pending_store::PendingCommandStore;

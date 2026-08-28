@@ -25,9 +25,8 @@ mod axum_impl {
         RINGING_SCHEMA, RINGING_VERSION,
     };
     use qaqh_runtime::{QaqhService, RingingHub};
-    use qaqh_runtime::ringing::query;
+    use qaqh_runtime::ringing::{query, PendingCommandStore, RingingLeaseStore};
 
-    use crate::ringing_http::{PendingCommandStore, RingingLeaseStore};
     use crate::server::random_hex;
 
     const RENEW_TTL_MS: u64 = 30_000;
@@ -118,48 +117,7 @@ mod axum_impl {
         })
     }
 
-    fn hydrate_attachment_previews(
-        hub: &RingingHub,
-        seed: &str,
-        command: &mut qaqh_ringing::RingingCommand,
-    ) -> Result<(), String> {
-        let qaqh_ringing::RingingCommand::Conversation(
-            qaqh_domain::ConversationCommand::ConversationSendMessage { text, attachments, .. },
-        ) = command
-        else {
-            return Ok(());
-        };
-        let Some(references) = attachments.take() else {
-            return Ok(());
-        };
-        if references.is_empty() {
-            return Ok(());
-        }
-        let mut parts = vec!["[Files]".to_string()];
-        for reference in references {
-            let entry = hub
-                .get_content(seed, &reference.content_id)
-                .ok_or_else(|| "attachment_not_found".to_string())?;
-            if entry.sha256 != reference.sha256 || entry.media_type != reference.media_type {
-                return Err("attachment_mismatch".into());
-            }
-            let preview = String::from_utf8_lossy(&entry.bytes)
-                .lines()
-                .take(10)
-                .collect::<Vec<_>>()
-                .join("\n")
-                .chars()
-                .take(1000)
-                .collect::<String>();
-            parts.push(format!(
-                "\n{} ({}):\n{}",
-                reference.content_id, reference.media_type, preview
-            ));
-        }
-        parts.push(format!("\n\n[Message]\n{text}"));
-        *text = parts.join("");
-        Ok(())
-    }
+    use qaqh_runtime::ringing::hydrate_attachment_previews;
 
     fn query_method(name: &str) -> Option<&'static str> {
         match name.trim_matches('/') {
@@ -1223,8 +1181,8 @@ mod axum_tests {
             String::from("test-epoch"),
             std::env::temp_dir().join("qaqh-axum-test"),
         ));
-        let leases = std::sync::Arc::new(std::sync::Mutex::new(crate::ringing_http::RingingLeaseStore::new()));
-        let pending = std::sync::Arc::new(std::sync::Mutex::new(crate::ringing_http::PendingCommandStore::new()));
+        let leases = std::sync::Arc::new(std::sync::Mutex::new(qaqh_runtime::ringing::RingingLeaseStore::new()));
+        let pending = std::sync::Arc::new(std::sync::Mutex::new(qaqh_runtime::ringing::PendingCommandStore::new()));
         let service = TEST_SERVICE.get_or_init(|| qaqh_runtime::QaqhService::init()).clone();
         AppState {
             hub,

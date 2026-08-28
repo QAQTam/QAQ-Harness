@@ -1,5 +1,4 @@
 mod axum_server;
-mod ringing_http;
 mod server;
 
 use std::io::{Read, Write};

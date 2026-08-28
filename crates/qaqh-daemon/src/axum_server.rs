@@ -1166,6 +1166,64 @@ mod axum_impl {
             .unwrap_or_else(|_| Event::default().data("{}"))
     }
 
+    // --- helpers migrated from ringing_http (pure) ---
+    #[allow(dead_code)]
+    fn parse_query_param(query: &str, key: &str) -> Option<String> {
+        query.split('&').find_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            (k == key).then(|| v.to_string())
+        })
+    }
+
+    #[allow(dead_code)]
+    fn parse_timeline_query(raw_path: &str) -> (Option<String>, Option<usize>) {
+        let Some(query) = raw_path.split('?').nth(1) else { return (None, None); };
+        let mut before_turn = None;
+        let mut limit = None;
+        for kv in query.split('&') {
+            let Some((k, v)) = kv.split_once('=') else { continue; };
+            match k {
+                "before_turn" => before_turn = Some(v.to_string()),
+                "limit" => limit = v.parse::<usize>().ok(),
+                _ => {}
+            }
+        }
+        (before_turn, limit)
+    }
+
+    #[allow(dead_code)]
+    fn sse_frame(epoch: &str, channel: RingingChannel, envelope: &qaqh_ringing::RingingEventEnvelope) -> String {
+        let event_type = serde_json::to_value(&envelope.event).ok().and_then(|v| v["type"].as_str().map(|s| s.to_string())).unwrap_or_else(|| "message".into());
+        let data = serde_json::to_string(envelope).unwrap_or_else(|_| "{}".into());
+        format!("id: {}:{}:{}\nevent: {}\ndata: {}\n\n", epoch, channel.as_str(), envelope.stream_seq, event_type, data)
+    }
+
+    #[allow(dead_code)]
+    fn sse_reset_frame(reset: &RingingResetRequired) -> String {
+        let data = serde_json::to_string(reset).unwrap_or_else(|_| "{}".into());
+        format!("event: ringing.reset_required\ndata: {data}\n\n")
+    }
+
+    #[allow(dead_code)]
+    fn timeline_sse_frame(epoch: &str, seed: &str, entry: &qaqh_domain::TimelineEntry) -> String {
+        let data = serde_json::json!({"schema":"qaqh.Ringing","version":1,"server_epoch":epoch,"seed":seed,"entry":entry});
+        format!("id: {epoch}:timeline:{}\nevent: timeline.entry\ndata: {}\n\n", entry.timeline_seq, serde_json::to_string(&data).unwrap_or_else(|_| "{}".into()))
+    }
+
+    #[allow(dead_code)]
+    fn action_fingerprint(method: &str, params: &serde_json::Value) -> Result<String, String> {
+        let payload = serde_json::to_vec(&serde_json::json!({"method":method,"params":params})).map_err(|e| e.to_string())?;
+        Ok(qaqh_runtime::ringing::content_store::sha256_hex(&payload))
+    }
+
+    #[allow(dead_code)]
+    fn publish_session_state(hub: &RingingHub, seed: &str, state: qaqh_domain::SessionState, command_id: &str) {
+        let _ = hub.publish_with_causation(seed, qaqh_domain::DomainEvent::Control(qaqh_domain::ControlEvent::SessionStateChanged { seed: seed.to_string(), state }), Some(command_id));
+    }
+
+    #[allow(dead_code)]
+    fn stringify(error: impl std::fmt::Display) -> String { error.to_string() }
+
     fn filter_replay_for_session(
         mut replay: qaqh_runtime::ringing::hub::ChannelReplay,
         session_id: &str,
@@ -1175,6 +1233,105 @@ mod axum_impl {
         replay.events.retain(|e| g.owns_seed(session_id, &e.seed));
         replay.resets.retain(|r| g.owns_seed(session_id, &r.seed));
         replay
+    }
+
+    #[cfg(test)]
+    mod pure_tests {
+        use super::*;
+        use qaqh_ringing::RingingResetRequired;
+        #[test] fn action_whitelist_allows_session_set_tool_mode() {
+            assert!(is_allowed_action("session.set_tool_mode"));
+            assert!(is_allowed_action("config.save"));
+            assert!(is_allowed_action("subagent.spawn"));
+            assert!(!is_allowed_action("session.new"));
+            assert!(!is_allowed_action("conversation.send_message"));
+        }
+        #[test] fn channel_parsing() {
+            assert_eq!(parse_channel("control"), Some(RingingChannel::Control));
+            assert_eq!(parse_channel("conversation"), Some(RingingChannel::Conversation));
+            assert_eq!(parse_channel("tool"), Some(RingingChannel::Tool));
+            assert_eq!(parse_channel("bogus"), None);
+        }
+        #[test] fn sse_cursor_parsing() {
+            assert_eq!(parse_sse_cursor("epoch-1:tool:42", "epoch-1", RingingChannel::Tool), 42);
+            assert_eq!(parse_sse_cursor("epoch-2:tool:42", "epoch-1", RingingChannel::Tool), 0);
+            assert_eq!(parse_sse_cursor("epoch-1:conversation:7", "epoch-1", RingingChannel::Tool), 0);
+            assert_eq!(parse_sse_cursor("garbage", "epoch-1", RingingChannel::Tool), 0);
+        }
+        #[test] fn timeline_cursor_is_separate() {
+            assert_eq!(parse_timeline_cursor("epoch-1:timeline:42", "epoch-1"), 42);
+            assert_eq!(parse_timeline_cursor("epoch-1:tool:42", "epoch-1"), 0);
+            assert_eq!(parse_timeline_cursor("epoch-2:timeline:42", "epoch-1"), 0);
+            assert_eq!(parse_timeline_cursor("epoch-1:timeline:42:extra", "epoch-1"), 0);
+        }
+        fn paged_turns(n: usize) -> Vec<qaqh_domain::TimelineTurn> {
+            (1..=n).map(|i| qaqh_domain::TimelineTurn { turn_id: format!("t{i}"), created_seq: i as u64, user_text: format!("q{i}"), sealed: true, state: qaqh_domain::TimelineTurnState::Completed, failure: None, rounds: vec![] }).collect()
+        }
+        #[test] fn timeline_pagination_first_page_is_tail_window() {
+            let (page, has_more) = paginate_turns(paged_turns(40), None, 30);
+            assert_eq!(page.len(), 30); assert_eq!(page.first().unwrap().turn_id, "t11"); assert_eq!(page.last().unwrap().turn_id, "t40"); assert!(has_more);
+        }
+        #[test] fn timeline_pagination_short_session_has_no_more() {
+            let (page, has_more) = paginate_turns(paged_turns(10), None, 30);
+            assert_eq!(page.len(), 10); assert!(!has_more);
+        }
+        #[test] fn timeline_pagination_before_turn_fetches_earlier_page() {
+            let (page, has_more) = paginate_turns(paged_turns(40), Some("t11"), 10);
+            assert_eq!(page.len(), 10); assert_eq!(page.first().unwrap().turn_id, "t1"); assert_eq!(page.last().unwrap().turn_id, "t10"); assert!(!has_more);
+        }
+        #[test] fn timeline_pagination_before_turn_mid_page_and_unknown_fallback() {
+            let (page, has_more) = paginate_turns(paged_turns(40), Some("t21"), 10);
+            assert_eq!(page.first().unwrap().turn_id, "t11"); assert_eq!(page.last().unwrap().turn_id, "t20"); assert!(has_more);
+            let (page, _) = paginate_turns(paged_turns(40), Some("t-unknown"), 10);
+            assert_eq!(page.last().unwrap().turn_id, "t40");
+            let (page, has_more) = paginate_turns(vec![], Some("t1"), 10);
+            assert!(page.is_empty()); assert!(!has_more);
+        }
+        #[test] fn timeline_query_parses_before_turn_and_limit() {
+            assert_eq!(parse_timeline_query("/ringing/v1/sessions/s1/timeline?before_turn=t11&limit=10"), (Some("t11".into()), Some(10)));
+            assert_eq!(parse_timeline_query("/ringing/v1/sessions/s1/timeline?limit=abc"), (None, None));
+            assert_eq!(parse_timeline_query("/ringing/v1/sessions/s1/timeline"), (None, None));
+        }
+        #[test] fn sse_frame_format_matches_plan() {
+            let env = qaqh_ringing::RingingEventEnvelope::new("s1", 7, 3, 2, "e1", qaqh_ringing::RingingEvent::Tool(qaqh_domain::ToolEvent::ToolStarted { tool_call_id: "c".into(), turn_id: "t".into(), round_num: 0, name: "exec".into() }));
+            let frame = sse_frame("epoch-1", RingingChannel::Tool, &env);
+            assert!(frame.starts_with("id: epoch-1:tool:7\nevent: tool_started\ndata: ")); assert!(frame.ends_with("\n\n"));
+            let data = frame.split("\ndata: ").nth(1).expect("data field").trim_end_matches("\n\n");
+            let parsed: serde_json::Value = serde_json::from_str(data).expect("data is JSON");
+            assert_eq!(parsed["seed"], "s1"); assert_eq!(parsed["event_id"], "e1"); assert_eq!(parsed["stream_seq"], 7); assert_eq!(parsed["event"]["type"], "tool_started");
+        }
+        #[test] fn sse_reset_frame_format() {
+            let reset = RingingResetRequired::new(RingingChannel::Tool, "s1", 7);
+            let frame = sse_reset_frame(&reset);
+            assert!(frame.starts_with("event: ringing.reset_required\ndata: ")); assert!(frame.ends_with("\n\n")); assert!(frame.contains("\"seed\":\"s1\"")); assert!(frame.contains("\"earliest_available_seq\":7"));
+        }
+        #[test] fn action_fingerprint_matches_js_client_wire_bytes() {
+            let body = br#"{"lang":"en","autoCompactThreshold":0.75,"subagentDefaultTools":["file","exec"]}"#;
+            let mut params: serde_json::Value = serde_json::from_slice(body).unwrap();
+            params.as_object_mut().unwrap().remove("action_id"); params.as_object_mut().unwrap().remove("fingerprint");
+            let fingerprint = action_fingerprint("config.save", &params).unwrap();
+            let js_payload = br#"{"method":"config.save","params":{"lang":"en","autoCompactThreshold":0.75,"subagentDefaultTools":["file","exec"]}}"#;
+            let js_fingerprint = qaqh_runtime::ringing::content_store::sha256_hex(js_payload);
+            assert_eq!(fingerprint, js_fingerprint);
+        }
+        #[test] fn session_close_seed_resolution_prefers_command_seed() {
+            assert_eq!(session_close_seed("s-command", &Some("s-envelope".into())), "s-command");
+            assert_eq!(session_close_seed("s-command", &None), "s-command");
+            assert_eq!(session_close_seed("", &Some("s-envelope".into())), "s-envelope");
+            assert_eq!(session_close_seed("", &None), "");
+        }
+        #[test] fn session_create_event_carries_command_causation() {
+            let hub = RingingHub::new("epoch-1");
+            publish_session_created(&hub, "s-created", "cmd-create");
+            let replay = hub.replay_channel_since(RingingChannel::Control, 0, false);
+            assert_eq!(replay.events.len(), 1); assert_eq!(replay.events[0].seed, "s-created"); assert_eq!(replay.events[0].causation_id.as_deref(), Some("cmd-create"));
+            assert!(matches!(&replay.events[0].event, qaqh_ringing::RingingEvent::Control(qaqh_domain::ControlEvent::SessionStateChanged { state: qaqh_domain::SessionState::Created, .. })));
+        }
+        #[test] fn parse_query_param_extracts_seed() {
+            assert_eq!(parse_query_param("seed=abc", "seed"), Some("abc".into()));
+            assert_eq!(parse_query_param("a=1&seed=xyz", "seed"), Some("xyz".into()));
+            assert_eq!(parse_query_param("a=1", "seed"), None);
+        }
     }
 
     // ---- SSE handlers (P2) ----

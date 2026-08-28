@@ -203,9 +203,9 @@ pub async fn run_with(config: ServerNetworkConfig) -> Result<(), String> {
             generation: 0,
         });
     }
-    let ringing_leases = Arc::new(Mutex::new(crate::ringing_http::RingingLeaseStore::new()));
+    let ringing_leases = Arc::new(Mutex::new(qaqh_runtime::ringing::RingingLeaseStore::new()));
     let pending_commands = Arc::new(Mutex::new(
-        crate::ringing_http::PendingCommandStore::new_persistent(),
+        qaqh_runtime::ringing::PendingCommandStore::new_persistent(),
     ));
     // Fold causally-linked business terminal events into persistent command
     // receipts. One observer per physical channel preserves channel isolation.

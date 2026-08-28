@@ -3,13 +3,14 @@
 
 mod axum_impl {
     use std::collections::{HashMap, HashSet};
+    use std::net::SocketAddr;
     use std::path::{Component, Path as StdPath, PathBuf};
     use std::sync::{Arc, Mutex};
-    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    use std::time::Duration;
 
     use axum::{
         Router,
-        extract::{Path, Query, State},
+        extract::{ConnectInfo, Path, Query, State},
         http::{HeaderMap, StatusCode, header},
         response::{IntoResponse, Response, sse::{Event, KeepAlive, Sse}},
         routing::{get, post},
@@ -24,7 +25,7 @@ mod axum_impl {
     use qaqh_domain::{ControlCommand, RingingChannel};
     use qaqh_ringing::{
         ClientOpenRequest, ClientOpenResponse, RingingCommandAck, RingingCommandAckStatus,
-        RingingCommandEnvelope, RingingCommandState, RingingEvent, RingingResetRequired, RINGING_BASE_PATH,
+        RingingCommandEnvelope, RingingCommandState, RingingResetRequired,
         RINGING_SCHEMA, RINGING_VERSION,
     };
     use qaqh_runtime::{QaqhService, RingingHub};
@@ -37,7 +38,6 @@ mod axum_impl {
     const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
     const MAX_CONNECTIONS: usize = 128;
     const TIMELINE_PAGE_LIMIT: usize = 30;
-    const RECEIPT_TTL_DUR: Duration = Duration::from_secs(300);
 
     fn lease_ttl_ms() -> u64 {
         std::env::var("QAQH_TEST_LEASE_TTL_MS")
@@ -112,13 +112,6 @@ mod axum_impl {
             }),
             Some(command_id),
         );
-    }
-
-    fn parse_query_param(query: &str, key: &str) -> Option<String> {
-        query.split('&').find_map(|pair| {
-            let (k, v) = pair.split_once('=')?;
-            (k == key).then(|| v.to_string())
-        })
     }
 
     use qaqh_runtime::ringing::hydrate_attachment_previews;
@@ -1376,7 +1369,7 @@ mod axum_impl {
     }
 
     async fn handle_debug(
-        State(state): State<AppState>,
+        State(_state): State<AppState>,
         Path(path): Path<String>,
     ) -> Response {
         let root = renderer_root();
@@ -1403,6 +1396,17 @@ mod axum_impl {
 
     async fn handle_debug_index(State(state): State<AppState>) -> Response {
         handle_debug(State(state), Path("index.html".to_string())).await
+    }
+
+    async fn loopback_guard(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+        if req.uri().path().starts_with("/debug") {
+            if let Some(ConnectInfo(addr)) = req.extensions().get::<ConnectInfo<SocketAddr>>().cloned() {
+                if !addr.ip().is_loopback() {
+                    return (StatusCode::FORBIDDEN, [(header::CONTENT_TYPE, "text/plain"), (header::CACHE_CONTROL, "no-cache")], "webUI hosting is restricted to loopback connections").into_response();
+                }
+            }
+        }
+        next.run(req).await
     }
 
     async fn handle_stop(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -1452,12 +1456,14 @@ mod axum_impl {
             .route("/debug/", get(handle_debug_index))
             .route("/debug/{*path}", get(handle_debug))
             .fallback(not_found)
+            .layer(axum::middleware::from_fn(loopback_guard))
             .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
             .layer(ConcurrencyLimitLayer::new(MAX_CONNECTIONS))
             .layer(TraceLayer::new_for_http())
             .with_state(state)
     }
 
+    #[allow(dead_code)]
     pub async fn run_axum_with(
         config: crate::server::ServerNetworkConfig,
         state: AppState,
@@ -1476,6 +1482,7 @@ mod axum_impl {
             .map_err(|e| e.to_string())
     }
 }
+#[allow(unused_imports)]
 pub use axum_impl::{AppState, build_router, run_axum_with};
 
 #[cfg(test)]
@@ -1707,5 +1714,27 @@ mod axum_tests {
         let resp = app.oneshot(req).await.unwrap();
         // In test, no active work, so 200; if busy would be 409
         assert!(resp.status() == StatusCode::OK || resp.status() == StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn debug_bridge_rejects_non_loopback() {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+        use axum::extract::ConnectInfo;
+        let app = build_router(test_state());
+        let mut req = Request::builder().uri("/debug/__qaqh_bridge__.js").body(Body::empty()).unwrap();
+        req.extensions_mut().insert(ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), 12345)));
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn debug_bridge_allows_loopback() {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+        use axum::extract::ConnectInfo;
+        let app = build_router(test_state());
+        let mut req = Request::builder().uri("/debug/__qaqh_bridge__.js").body(Body::empty()).unwrap();
+        req.extensions_mut().insert(ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345)));
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }

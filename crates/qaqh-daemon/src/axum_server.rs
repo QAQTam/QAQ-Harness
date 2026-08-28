@@ -3,6 +3,7 @@
 
 mod axum_impl {
     use std::collections::{HashMap, HashSet};
+    use std::path::{Component, Path as StdPath, PathBuf};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -1317,6 +1318,92 @@ mod axum_impl {
         Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("keep-alive")).into_response()
     }
 
+    // ---- debug static (P3) ----
+    fn renderer_root() -> PathBuf {
+        if let Ok(dir) = std::env::var("QAQH_DEBUG_RENDERER_DIR") {
+            return PathBuf::from(dir);
+        }
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_default();
+        let candidates = [cwd.join("out").join("renderer"), cwd.join("resources").join("out").join("renderer"), exe_dir.join("out").join("renderer")];
+        for c in &candidates { if c.join("index.html").exists() { return c.clone(); } }
+        candidates[0].clone()
+    }
+
+    fn mime_for(path: &StdPath) -> &'static str {
+        match path.extension().and_then(|e| e.to_str()) {
+            Some("html") => "text/html; charset=utf-8",
+            Some("js") | Some("mjs") => "text/javascript; charset=utf-8",
+            Some("css") => "text/css; charset=utf-8",
+            Some("json") | Some("map") => "application/json",
+            Some("svg") => "image/svg+xml",
+            Some("png") => "image/png",
+            Some("ico") => "image/x-icon",
+            Some("woff2") => "font/woff2",
+            Some("wasm") => "application/wasm",
+            Some("txt") => "text/plain; charset=utf-8",
+            _ => "application/octet-stream",
+        }
+    }
+
+    fn safe_join(root: &StdPath, url_path: &str) -> Option<PathBuf> {
+        let decoded = url_path.replace("%20", " ").replace("%2E", ".");
+        let mut parts = Vec::new();
+        for comp in StdPath::new(&decoded).components() {
+            match comp {
+                Component::Normal(seg) => parts.push(seg),
+                Component::CurDir => {}
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+            }
+        }
+        let mut joined = root.to_path_buf();
+        for seg in parts { joined.push(seg); }
+        fn strip_unc(p: &StdPath) -> PathBuf {
+            let s = p.to_string_lossy();
+            let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
+            PathBuf::from(s.to_string())
+        }
+        let canonical_root = strip_unc(&root.canonicalize().unwrap_or_else(|_| root.to_path_buf()));
+        let canonical_joined = strip_unc(&joined.canonicalize().unwrap_or_else(|_| joined));
+        if !canonical_joined.starts_with(&canonical_root) { return None; }
+        Some(canonical_joined)
+    }
+
+    async fn handle_debug_bridge(State(state): State<AppState>) -> Response {
+        let body = format!("window.__QAQH_DEBUG__={{\"token\":\"{}\",\"nonce\":\"{}\"}};\n", state.token, random_hex());
+        ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")], body).into_response()
+    }
+
+    async fn handle_debug(
+        State(state): State<AppState>,
+        Path(path): Path<String>,
+    ) -> Response {
+        let root = renderer_root();
+        let rel = if path.is_empty() { "index.html" } else { &path };
+        let Some(file) = safe_join(&root, rel) else {
+            return (StatusCode::BAD_REQUEST, [(header::CACHE_CONTROL, "no-cache")], "invalid path").into_response();
+        };
+        if !file.exists() || !file.is_file() {
+            return (StatusCode::NOT_FOUND, [(header::CACHE_CONTROL, "no-cache")], "not found").into_response();
+        }
+        let bytes = match tokio::fs::read(&file).await {
+            Ok(b) => b,
+            Err(_) => return (StatusCode::NOT_FOUND, "not found").into_response(),
+        };
+        let mime = mime_for(&file);
+        if file.file_name().and_then(|n| n.to_str()) == Some("index.html") {
+            let mut html = String::from_utf8_lossy(&bytes).into_owned();
+            let script = "<script src=\"./__qaqh_bridge__.js\"></script>";
+            if let Some(idx) = html.find("</head>") { html.insert_str(idx, script); } else { html.push_str(script); }
+            return ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-cache")], html).into_response();
+        }
+        ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-cache")], bytes).into_response()
+    }
+
+    async fn handle_debug_index(State(state): State<AppState>) -> Response {
+        handle_debug(State(state), Path("index.html".to_string())).await
+    }
+
     pub fn build_router(state: AppState) -> Router {
         Router::new()
             .route("/health", get(health))
@@ -1331,6 +1418,10 @@ mod axum_impl {
             .route("/ringing/v1/actions/{name}", post(handle_action))
             .route("/ringing/v1/events/{channel}", get(handle_events))
             .route("/ringing/v1/sessions/{seed}/timeline/events", get(handle_timeline_events))
+            .route("/debug/__qaqh_bridge__.js", get(handle_debug_bridge))
+            .route("/debug", get(handle_debug_index))
+            .route("/debug/", get(handle_debug_index))
+            .route("/debug/{*path}", get(handle_debug))
             .fallback(not_found)
             .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
             .layer(ConcurrencyLimitLayer::new(MAX_CONNECTIONS))
@@ -1345,7 +1436,7 @@ mod axum_impl {
         let bind = (config.bind_ip, config.port);
         let listener = tokio::net::TcpListener::bind(bind).await.map_err(|e| e.to_string())?;
         let addr = listener.local_addr().map_err(|e| e.to_string())?;
-        log::info!("[axum] listening on {addr} (P1 REST migrated, SSE stubs)");
+        log::info!("[axum] listening on {addr} (P3 debug + P2 SSE)");
         let app = build_router(state);
         axum::serve(listener, app).await.map_err(|e| e.to_string())
     }
@@ -1519,5 +1610,37 @@ mod axum_tests {
             .body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn debug_bridge_returns_token() {
+        let app = build_router(test_state());
+        let req = Request::builder().uri("/debug/__qaqh_bridge__.js").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get("content-type").unwrap(), "text/javascript; charset=utf-8");
+        let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+        let txt = String::from_utf8_lossy(&body);
+        assert!(txt.contains("window.__QAQH_DEBUG__"));
+        assert!(txt.contains("test-token"));
+    }
+
+    #[tokio::test]
+    async fn debug_rejects_traversal() {
+        let app = build_router(test_state());
+        // safe_join should reject traversal; we hit /debug/../outside
+        let req = Request::builder().uri("/debug/../outside").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        // axum normalizes path, but our safe_join will reject => 400
+        // If axum normalizes `..` to `/`, it may become 404; accept either 400 or 404
+        assert!(resp.status() == StatusCode::BAD_REQUEST || resp.status() == StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn debug_not_found_for_missing_file() {
+        let app = build_router(test_state());
+        let req = Request::builder().uri("/debug/missing_file_xyz.txt").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }

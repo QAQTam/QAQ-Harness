@@ -116,6 +116,7 @@ fn discovery_reachable(discovery: &qaqh_proto::DaemonDiscovery) -> bool {
     let address = discovery
         .endpoint
         .trim_start_matches("ws://")
+        .trim_start_matches("http://")
         .split('/')
         .next()
         .unwrap_or_default();
@@ -133,7 +134,10 @@ fn stop() {
             return;
         }
     };
-    let endpoint = discovery.endpoint.trim_start_matches("ws://");
+    let endpoint = discovery
+        .endpoint
+        .trim_start_matches("ws://")
+        .trim_start_matches("http://");
     let address = endpoint.split('/').next().unwrap_or(endpoint);
     let Ok(socket_address) = address.parse() else {
         eprintln!("invalid daemon address");

@@ -10,7 +10,7 @@ use crate::error::{ClientError, Result};
 /// Contents of `<data-dir>/daemon.json` (see `qaqh-proto::DaemonDiscovery`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct DaemonDiscovery {
-    /// `ws://<host>:<port>/control/v1`
+    /// `http://<host>:<port>` (legacy `ws://<host>:<port>/control/v1` still accepted)
     pub endpoint: String,
     pub token: String,
     pub pid: u32,
@@ -21,24 +21,24 @@ pub struct DaemonDiscovery {
 }
 
 impl DaemonDiscovery {
-    /// HTTP base URL derived from the WS endpoint (`ws://` → `http://`).
+    /// HTTP base URL derived from discovery endpoint.
+    /// Supports both legacy `ws://` (→ `http://`) and new `http://`/`https://`.
     pub fn base_url(&self) -> Result<String> {
-        let rest = self
-            .endpoint
-            .strip_prefix("ws://")
-            .or_else(|| self.endpoint.strip_prefix("wss://"))
-            .ok_or_else(|| {
-                ClientError::Discovery(format!("unexpected endpoint: {}", self.endpoint))
-            })?;
+        let (rest, scheme) = if let Some(r) = self.endpoint.strip_prefix("ws://") {
+            (r, "http")
+        } else if let Some(r) = self.endpoint.strip_prefix("wss://") {
+            (r, "https")
+        } else if let Some(r) = self.endpoint.strip_prefix("http://") {
+            (r, "http")
+        } else if let Some(r) = self.endpoint.strip_prefix("https://") {
+            (r, "https")
+        } else {
+            return Err(ClientError::Discovery(format!("unexpected endpoint: {}", self.endpoint)));
+        };
         let host = rest.split('/').next().unwrap_or("");
         if host.is_empty() {
             return Err(ClientError::Discovery("endpoint has no host".into()));
         }
-        let scheme = if self.endpoint.starts_with("wss://") {
-            "https"
-        } else {
-            "http"
-        };
         Ok(format!("{scheme}://{host}"))
     }
 }

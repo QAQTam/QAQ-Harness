@@ -12,7 +12,7 @@
 | envelope / ack 载荷形状 | `qaqh-ringing`（`RingingCommandEnvelope` 等） | 字段名、判别式、错误 code 集合 |
 | 能力协商 | `POST /ringing/v1/clients/open` | schema=`"qaqh.Ringing"`, version=1；现有四能力：`Ringing_v1 / Ringing_batch_v1 / Ringing_bootstrap_v1 / Ringing_command_status_v1` |
 | 会话头 | `X-QAQH-Client-Session-Id` | 所有 lease 校验端点依赖；名称冻结 |
-| discovery 文件 | `{data_dir}/daemon.json` (`DaemonDiscovery`) | 字段集合与语义；注意 endpoint 当前值格式为遗留的 `ws://host:port/control/v1`（见 issue 待办）|
+| discovery 文件 | `{data_dir}/daemon.json` (`DaemonDiscovery`) | 字段集合与语义；`endpoint` 自 axum 迁移起为 `http://host:port`（`ws://host:port/control/v1` 仍被 `qaqh-client` 兼容解析）|
 | 生命周期端点 | `POST /control/v1/stop(-if-idle)` | 安装器断电协议：200 = 可安全关闭，409 = 忙碌 |
 | qaqh-client 公开 API | `crates/qaqh-client` | 外部壳直接依赖的 Rust SDK |
 

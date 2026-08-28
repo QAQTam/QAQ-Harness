@@ -129,7 +129,7 @@ pub async fn run_with(config: ServerNetworkConfig) -> Result<(), String> {
         config.bind_ip
     };
     let discovery = DaemonDiscovery {
-        endpoint: format!("ws://{advertise_ip}:{}/control/v1", address.port()),
+        endpoint: format!("http://{advertise_ip}:{}", address.port()),
         token: token.clone(),
         pid: std::process::id(),
         server_epoch: epoch.clone(),

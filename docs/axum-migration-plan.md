@@ -36,7 +36,7 @@ tokio-stream = "0.1"
 futures-util = "0.3"
 tokio-util = "0.7" # BroadcastStream
 ```
-已落地：P0 骨架（`696aca5`）、P1 无状态 REST（`40e6b20`）在 `axum_server.rs` 验证通过；**下一步去 `#[cfg(feature="axum")]` 与 `optional`，`cargo check --workspace` 即 axum 路径**。
+已落地：P0 骨架（`696aca5`）、P1 REST（`40e6b20`）、P1.5 去门控（`7ed9253`）、P2 SSE（`b6e8961`）、P3 静态（`66a55f5`）、P4 收口（`ae8b2e1`）—— `cargo check --workspace` 即 axum，`cargo test -p qaqh-daemon` 40/40 绿。
 
 ## 5. API 映射（0.8 防旧）
 
@@ -58,22 +58,22 @@ tokio-util = "0.7" # BroadcastStream
 
 `middleware::from_fn(auth_bearer)` 统一 `401`，白名单 `open/renew`，其余校验 `leases.is_active_session`；`loopback_guard` 用 `ConnectInfo<SocketAddr>` 判 `is_loopback()`，LAN `0.0.0.0` 下非回环 `403`，与 `debug_http.rs` 一致。
 
-## 8. 分阶段（进度 2026-08-28，main 直推，不再 feature-gated）
+## 8. 分阶段（进度 2026-08-29，main 直推完成）
 
 - **P0 搭架** ✅ `696aca5`：`axum_server.rs` 骨架 + `build_router / AppState / run_axum_with` + `health` 探针，双绿。
-- **P1 无状态 REST** ✅ `40e6b20`：`open/renew/commands/{id}(POST+GET)/queries/actions/content(POST+GET)/sessions/{seed}/bootstrap/timeline` 12 路由，`RequestBodyLimitLayer(16M) + ConcurrencyLimitLayer(128) + TraceLayer`，`Router::oneshot` 4 例。
-- **P1.5 去门控** ⏳ **(立即)**：去 `#[cfg(feature="axum")]`/`optional`，`axum` 进主依赖；`qaqh-daemon/src/main.rs` 与 `server.rs` 切 `run_axum_with` 为默认 `run_with`，旧 `http.rs` 标记 `deprecated` 待 P4 删除。
-- **P2 SSE** ⏳：`events/{channel}` + `timeline/events`，`Sse<Stream<…>> + BroadcastStream + KeepAlive 15s + Lagged=>close`，`timeline` cursor 独立。当前 `501 stub` 占位，**P1.5 后立即替换为真实流**（不再保留手写 SSE 回退）。
-- **P3 静态** ⏳：`ServeDir + safe_join + loopback 403 + index.html 注入 __qaqh_bridge__.js`，`ConnectInfo` 落地。
-- **P4 收口** ⏳：删除 `http.rs`，`stop/stop-if-idle` 进 `Router`，`Semaphore128` 完全由 `ConcurrencyLimitLayer` 接管，`peek` 分流整段删除；`qaqh-client` 与 `webui` 切 axum 端点验证后即视为完成。
+- **P1 无状态 REST** ✅ `40e6b20`：`open/renew/commands/{id}(POST+GET)/queries/actions/content(POST+GET)/sessions/{seed}/bootstrap/timeline` 12 路由，`Router::oneshot` 4 例。
+- **P1.5 去门控** ✅ `7ed9253`：去 `#[cfg(feature="axum")]`/`optional`，`axum` 主依赖化；`README` 去“无axum”；`server.rs` 仍 peek，待 P4。
+- **P2 SSE** ✅ `b6e8961`：`events/{channel}` + `timeline/events` `Sse + ReceiverStream(mpsc 128) + KeepAlive 15s + Lagged=>close`，`envelope_to_event` 复刻 `ringing_http.rs`，`Router::oneshot` 10/10。
+- **P3 静态** ✅ `66a55f5`：`/debug/__qaqh_bridge__.js` + `/debug` + `/debug/{*path}` 三路由，`safe_join` + `index.html` 注入，`Router::oneshot` 13/13。
+- **P4 收口** ✅ `ae8b2e1`：`server.rs` 移除 `Semaphore128/peek/handle_connection`，`axum::serve(...into_make_service_with_connect_info)` + `watch` graceful，`/control/v1/stop`/`stop-if-idle` 进 Router，`endpoint` 改 `http://`，`qaqh-client` 兼容 `ws/http`。
 
 **不再一次性 big-bang 回滚**：任一阶段失败直接在 `main` 上修复前滚；P2 前的 §11-12 预研合并入 P1.5 同步做（协议抽离 + Linux 可编译）。
 
-## 9. 验证（主干 axum，无 --features 区分）
+## 9. 验证（主干 axum，2026-08-29）
 
-- 单测：`Router::oneshot` 4 例（`health/auth/426/open_success`），`cargo test -p qaqh-daemon axum_tests` 4/4；`cargo check --workspace` 即 axum。
-- 集成：`daemon_ws --ignored` + `qaqh-client` 长连（P1 已 REST 直通，P2 后覆盖 SSE）；`GET /debug/` 非回环 `403`（`ConnectInfo`）。
-- 手工（P2 后）：`curl -H "Authorization: Bearer $token" http://127.0.0.1:$port/ringing/v1/events/control -H "Last-Event-ID: epoch:control:123"` 断点续传；`curl http://127.0.0.1:$port/debug/` 注入脚本校验。
+- 单测：`Router::oneshot` 16 例（`health/open/sse/timeline/debug/stop`），`cargo test -p qaqh-daemon` 40/40；`cargo check --workspace` 即 axum。
+- 集成：`daemon_ws --ignored` + `qaqh-client` 长连（`lease_renegotiation`）；`GET /debug/` + `GET /debug/__qaqh_bridge__.js` 注入校验。
+- 手工：`curl -H "Authorization: Bearer $token" http://127.0.0.1:$port/ringing/v1/events/control -H "Last-Event-ID: epoch:control:123"` 断点续传；`curl http://127.0.0.1:$port/debug/` + `curl -X POST http://127.0.0.1:$port/control/v1/stop -H "Authorization: Bearer $token"` 200。
 
 ## 10. 风险（直推模式）
 

@@ -67,7 +67,7 @@
 ## 3. 端点契约速查
 
 前缀：业务面 `RINGING_BASE_PATH = /ringing/v1`；
-timeline 面 `RINGING_TIMELINE_BASE_PATH = /ringing/timeline`（**不在 v1 下**）。
+timeline 面 `RINGING_TIMELINE_BASE_PATH = /ringing/v1`（与业务面同前缀，路由为 `/ringing/v1/sessions/{seed}/timeline` 与 `/ringing/v1/sessions/{seed}/timeline/events`）。
 
 ### 3.1 open 协商
 ```
@@ -120,9 +120,9 @@ GET /ringing/v1/events/{control|conversation|tool}
 
 ### 3.5 timeline（transcript 权威）
 ```
-快照分页  GET /ringing/timeline/sessions/{seed}/timeline?before_turn=<id>&limit=<n>
-事件流    GET /ringing/timeline/sessions/{seed}/timeline/events
-断点续传  请求头 Last-Event-ID: "<server_epoch>:<channel>:<stream_seq>"
+快照分页  GET /ringing/v1/sessions/{seed}/timeline?before_turn=<id>&limit=<n>
+事件流    GET /ringing/v1/sessions/{seed}/timeline/events
+断点续传  请求头 Last-Event-ID: "<server_epoch>:timeline:<timeline_seq>"
           （fetch 无法改头的场景可用 query 兜底 ?last_event_id=…）
 ```
 - bootstrap（3.6）给全量历史，快照分页只用于向上翻页渲染。

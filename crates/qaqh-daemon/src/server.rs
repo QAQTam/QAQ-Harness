@@ -6,13 +6,8 @@ use qaqh_proto::{CONTROL_PROTOCOL_VERSION, DaemonDiscovery};
 use qaqh_runtime::QaqhService;
 use qaqh_runtime::RingingHub;
 use qaqh_runtime::{WorkspaceMode, WorkspaceSupervisor};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Semaphore, watch};
-
-/// 并发 TCP 连接上限：1 个客户端常态占 5+ 连接（open/renew 短连 +
-/// 3 通道 SSE + timeline SSE 长连）。曾因 32 过紧 + 壳 rebuild 风暴
-/// 打满后静默 drop 新连接，导致 lease 无法续期、SSE 全断死循环。
-const MAX_CONNECTIONS: usize = 128;
+use tokio::net::TcpListener;
+use tokio::sync::watch;
 
 fn daemon_channel() -> String {
     std::env::var("QAQH_CHANNEL").unwrap_or_else(|_| {
@@ -240,8 +235,7 @@ pub async fn run_with(config: ServerNetworkConfig) -> Result<(), String> {
             }
         });
     }
-    let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
-    let (shutdown, mut shutdown_rx) = watch::channel(false);
+    let (shutdown, _) = watch::channel(false);
     // F4: worker reader 线程 panic/崩溃时，registry 会把死实例标记为可重生；
     // 此周期任务负责真正重新拉起，避免单条事件流故障永久饿死会话。
     {
@@ -266,30 +260,23 @@ pub async fn run_with(config: ServerNetworkConfig) -> Result<(), String> {
     // "已写 daemon.json 但 HTTP 未就绪"的假端口而导航失败（白屏/错误页），
     // 也让 ensure_daemon_running 的轮询与真实就绪时刻对齐。
     write_discovery(&discovery)?;
-    loop {
-        tokio::select! {
-            accepted = listener.accept() => {
-                let Ok((stream, _)) = accepted else { break };
-                let Ok(permit) = connections.clone().try_acquire_owned() else {
-                    log::warn!(
-                        "[qaqh-daemon] connection rejected: {} concurrent connections (max {MAX_CONNECTIONS}); client should back off",
-                        MAX_CONNECTIONS - connections.available_permits()
-                    );
-                    drop(stream);
-                    continue;
-                };
-                let service = service.clone(); let token = token.clone();
-                let hub = hub.clone(); let ringing_leases = ringing_leases.clone();
-                let pending_commands = pending_commands.clone();
-                let shutdown = shutdown.clone();
-                tokio::spawn(async move {
-                    let _permit = permit;
-                    if let Err(error)=handle_connection(stream,token,service,shutdown,hub,ringing_leases,pending_commands).await { log::warn!("control connection: {error}"); }
-                });
-            }
-            changed = shutdown_rx.changed() => if changed.is_err() || *shutdown_rx.borrow() { break },
-        }
-    }
+    let app_state = crate::axum_server::AppState {
+        hub: hub.clone(),
+        leases: ringing_leases.clone(),
+        pending: pending_commands.clone(),
+        service: service.clone(),
+        token: token.clone(),
+        epoch: epoch.clone(),
+        shutdown: shutdown.clone(),
+    };
+    let app = crate::axum_server::build_router(app_state);
+    let mut shutdown_rx = shutdown.subscribe();
+    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.changed().await;
+        })
+        .await
+        .map_err(stringify)?;
     service.shutdown();
     // 退出前主动收尾孤儿（stop 协议已在 handler 做过；此处兜底其他退出
     // 路径，如生命周期接管/信号退出。幂等：已 seal 的 turn 跳过）。
@@ -302,94 +289,6 @@ pub async fn run_with(config: ServerNetworkConfig) -> Result<(), String> {
     }
     let _ = std::fs::remove_file(qaqh_types::platform::daemon_discovery_path());
     let _ = std::fs::remove_file(qaqh_types::platform::daemon_lock_path());
-    Ok(())
-}
-
-async fn handle_connection(
-    mut stream: TcpStream,
-    token: String,
-    service: QaqhService,
-    shutdown: watch::Sender<bool>,
-    hub: Arc<RingingHub>,
-    ringing_leases: Arc<Mutex<crate::ringing_http::RingingLeaseStore>>,
-    pending_commands: Arc<Mutex<crate::ringing_http::PendingCommandStore>>,
-) -> Result<(), String> {
-    let mut peek = [0_u8; 2048];
-    let count = stream.peek(&mut peek).await.map_err(stringify)?;
-    let preview = String::from_utf8_lossy(&peek[..count]);
-    if preview.starts_with("POST /control/v1/stop ")
-        || preview.starts_with("POST /control/v1/stop-if-idle ")
-    {
-        use tokio::io::AsyncWriteExt;
-        let authorized = preview
-            .lines()
-            .any(|line| line.eq_ignore_ascii_case(&format!("Authorization: Bearer {token}")));
-        let idle_required = preview.starts_with("POST /control/v1/stop-if-idle ");
-        let busy = idle_required && service.has_active_work();
-        if !authorized {
-            let _ = stream
-                .write_all(
-                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                )
-                .await
-                .map_err(stringify)?;
-            return Ok(());
-        }
-        if busy {
-            let _ = stream
-                .write_all(
-                    b"HTTP/1.1 409 Conflict\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                )
-                .await
-                .map_err(stringify)?;
-            return Ok(());
-        }
-        // Windows 95 语义：收尾完成后才返回 200（"现在可以安全关闭电源了"）。
-        // ① worker 优雅退出（SessionShutdown 帧 + 等进程退出 + join stdout
-        //    消费线程排空管道——尾部 intent 含 seal_turn 已 publish/落盘）；
-        // ② seal_all_orphans 兜底：worker 超时被杀时不留未 seal turn；
-        // ③ flush 异步 timeline checkpoint（此时数据已齐）。
-        // 安装器收到 200 即确认可安全关闭；超时降级强杀（win_process.rs）。
-        service.shutdown();
-        hub.seal_all_orphans();
-        hub.flush_timeline_persistence();
-        let _ = stream
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-            .await
-            .map_err(stringify)?;
-        let _ = shutdown.send(true);
-        return Ok(());
-    }
-
-    // Ringing HTTP/SSE 分流（PLAN：legacy WS 与 Ringing HTTP/SSE 并行、互不嵌套）
-    if preview.starts_with("POST /ringing/") || preview.starts_with("GET /ringing/") {
-        return crate::ringing_http::handle_ringing_http(
-            stream,
-            &preview,
-            &token,
-            hub,
-            ringing_leases,
-            service,
-            pending_commands,
-        )
-        .await;
-    }
-
-    // webUI 静态托管（浏览器直连入口；仅限 loopback，端点内部校验）
-    if preview.starts_with("GET /debug") {
-        return crate::debug_http::handle_debug_http(stream, &token).await;
-    }
-
-    // M3：legacy `/control/v1` WS 数据协议已拆除；此处只剩生命周期与
-    // Ringing HTTP/SSE 分流。未知请求返回 404 而非直接断连——
-    // 浏览器对缺失资源（favicon 等）期望 HTTP 响应，断连表现为
-    // ERR_CONNECTION_RESET 刷屏控制台。
-    use tokio::io::AsyncWriteExt;
-    let _ = stream
-        .write_all(
-            b"HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found",
-        )
-        .await;
     Ok(())
 }
 

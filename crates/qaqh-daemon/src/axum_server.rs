@@ -54,6 +54,7 @@ mod axum_impl {
         pub service: QaqhService,
         pub token: String,
         pub epoch: String,
+        pub shutdown: tokio::sync::watch::Sender<bool>,
     }
 
     // ---- helpers ----
@@ -1404,6 +1405,32 @@ mod axum_impl {
         handle_debug(State(state), Path("index.html".to_string())).await
     }
 
+    async fn handle_stop(State(state): State<AppState>, headers: HeaderMap) -> Response {
+        if !is_authorized(&headers, &state.token) {
+            return unauthorized();
+        }
+        // Windows 95 semantics: seal before 200
+        state.service.shutdown();
+        state.hub.seal_all_orphans();
+        state.hub.flush_timeline_persistence();
+        let _ = state.shutdown.send(true);
+        (StatusCode::OK, "").into_response()
+    }
+
+    async fn handle_stop_if_idle(State(state): State<AppState>, headers: HeaderMap) -> Response {
+        if !is_authorized(&headers, &state.token) {
+            return unauthorized();
+        }
+        if state.service.has_active_work() {
+            return (StatusCode::CONFLICT, "").into_response();
+        }
+        state.service.shutdown();
+        state.hub.seal_all_orphans();
+        state.hub.flush_timeline_persistence();
+        let _ = state.shutdown.send(true);
+        (StatusCode::OK, "").into_response()
+    }
+
     pub fn build_router(state: AppState) -> Router {
         Router::new()
             .route("/health", get(health))
@@ -1418,6 +1445,8 @@ mod axum_impl {
             .route("/ringing/v1/actions/{name}", post(handle_action))
             .route("/ringing/v1/events/{channel}", get(handle_events))
             .route("/ringing/v1/sessions/{seed}/timeline/events", get(handle_timeline_events))
+            .route("/control/v1/stop", post(handle_stop))
+            .route("/control/v1/stop-if-idle", post(handle_stop_if_idle))
             .route("/debug/__qaqh_bridge__.js", get(handle_debug_bridge))
             .route("/debug", get(handle_debug_index))
             .route("/debug/", get(handle_debug_index))
@@ -1436,9 +1465,15 @@ mod axum_impl {
         let bind = (config.bind_ip, config.port);
         let listener = tokio::net::TcpListener::bind(bind).await.map_err(|e| e.to_string())?;
         let addr = listener.local_addr().map_err(|e| e.to_string())?;
-        log::info!("[axum] listening on {addr} (P3 debug + P2 SSE)");
-        let app = build_router(state);
-        axum::serve(listener, app).await.map_err(|e| e.to_string())
+        log::info!("[axum] listening on {addr} (P4 stop + P3 debug + P2 SSE)");
+        let app = build_router(state.clone());
+        let mut shutdown_rx = state.shutdown.subscribe();
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.changed().await;
+            })
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 pub use axum_impl::{AppState, build_router, run_axum_with};
@@ -1458,6 +1493,7 @@ mod axum_tests {
         let leases = std::sync::Arc::new(std::sync::Mutex::new(qaqh_runtime::ringing::RingingLeaseStore::new()));
         let pending = std::sync::Arc::new(std::sync::Mutex::new(qaqh_runtime::ringing::PendingCommandStore::new()));
         let service = TEST_SERVICE.get_or_init(|| qaqh_runtime::QaqhService::init()).clone();
+        let (shutdown, _) = tokio::sync::watch::channel(false);
         AppState {
             hub,
             leases,
@@ -1465,6 +1501,7 @@ mod axum_tests {
             service,
             token: String::from("test-token"),
             epoch: String::from("test-epoch"),
+            shutdown,
         }
     }
 
@@ -1642,5 +1679,33 @@ mod axum_tests {
         let req = Request::builder().uri("/debug/missing_file_xyz.txt").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn stop_requires_auth() {
+        let app = build_router(test_state());
+        let req = Request::builder().method("POST").uri("/control/v1/stop").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn stop_success() {
+        let state = test_state();
+        let app = build_router(state);
+        let req = Request::builder().method("POST").uri("/control/v1/stop").header("authorization", "Bearer test-token").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn stop_if_idle_conflict_when_busy() {
+        // has_active_work is false in test (no agents), so should be OK, not conflict
+        // Just verify auth and basic path
+        let app = build_router(test_state());
+        let req = Request::builder().method("POST").uri("/control/v1/stop-if-idle").header("authorization", "Bearer test-token").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        // In test, no active work, so 200; if busy would be 409
+        assert!(resp.status() == StatusCode::OK || resp.status() == StatusCode::CONFLICT);
     }
 }

@@ -98,6 +98,11 @@ pub struct EndpointSpec {
     pub has_balance: bool,
     /// Whether this endpoint supports the thinking/reasoning parameter. Default: true.
     pub supports_thinking: bool,
+    /// 大上下文模型的 thinking 预算档位（如 GLM-5.3 的 1M 窗口）：
+    /// low/medium/high/xhigh/max ↔ 16k/32k/64k/80k/96k（默认档 1k-16k）。
+    /// 仅供 gate 的 Anthropic thinking 分支消费——新 provider 只加配置，
+    /// gate 不写 provider 特判。
+    pub thinking_budget_large: bool,
     /// Whether this endpoint accepts OpenAI's `reasoning_effort` parameter.
     /// Kept separately because an endpoint may support neither vendor-specific
     /// thinking toggles nor OpenAI reasoning effort.
@@ -196,6 +201,7 @@ impl Default for EndpointSpec {
             include_stream_usage: false,
             has_balance: true,
             supports_thinking: true,
+            thinking_budget_large: false,
             supports_reasoning_effort: true,
             effort_allowlist: None,
             tool_call_content_null: false,

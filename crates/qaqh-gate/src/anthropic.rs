@@ -787,11 +787,11 @@ pub fn chat_stream_anthropic(
         }
     }
     // Thinking budget: only when provider explicitly supports it.
-    // ZCode GLM endpoint sets supports_thinking=false, so we omit for ZCode.
     if provider.supports_thinking {
         if let Some(e) = effort_norm.as_deref() {
-            // zcode GLM-5.3 1M 上下文，budget 已 96k 起步，跟随后端传入不截断（原 1k-16k 对新模型过小）
-            let budget: u32 = if provider.id == "zcode" {
+            // 大上下文模型（EndpointSpec::thinking_budget_large，如 zcode
+            // GLM-5.3 1M 窗口）放宽到 16k-96k；默认档保持 1k-16k。
+            let budget: u32 = if provider.thinking_budget_large {
                 match e {
                     "low" => 16384,
                     "medium" => 32768,

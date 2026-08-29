@@ -178,6 +178,10 @@ pub struct ProviderConfig {
     pub cache_field: CacheTokenField,
     pub include_stream_usage: bool,
     pub supports_thinking: bool,
+    /// 大上下文模型（如 zcode GLM-5.3）的 thinking 预算档位，镜像自
+    /// `EndpointSpec::thinking_budget_large`；默认档 1k-16k，开启后
+    /// 16k-96k。仅 Anthropic thinking 分支消费。
+    pub thinking_budget_large: bool,
     pub supports_reasoning_effort: bool,
     /// Sparse allowlist of accepted `reasoning_effort` values (mirrored from
     /// `EndpointSpec::effort_allowlist`). When set, the requested effort is
@@ -292,6 +296,7 @@ impl ProviderConfig {
             cache_field,
             include_stream_usage: false,
             supports_thinking,
+            thinking_budget_large: false,
             supports_reasoning_effort: true,
             effort_allowlist: None,
             tool_call_content_null: false,
@@ -326,6 +331,7 @@ impl ProviderConfig {
             cache_field: CacheTokenField::default(),
             include_stream_usage: false,
             supports_thinking: false,
+            thinking_budget_large: false,
             supports_reasoning_effort: true,
             effort_allowlist: None,
             tool_call_content_null: false,
@@ -365,6 +371,7 @@ impl ProviderConfig {
             cache_field: CacheTokenField::default(),
             include_stream_usage: false,
             supports_thinking: true,
+            thinking_budget_large: false,
             supports_reasoning_effort: true,
             effort_allowlist: None,
             tool_call_content_null: false,

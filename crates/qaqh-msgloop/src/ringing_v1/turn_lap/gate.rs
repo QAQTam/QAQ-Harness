@@ -650,6 +650,7 @@ pub(crate) fn provider_for(ctx: &RingContext, request_tag: &str) -> qaqh_gate::P
             p.supports_thinking = endpoint.supports_thinking;
             p.supports_reasoning_effort = endpoint.supports_reasoning_effort;
             p.supports_reasoning_content = endpoint.supports_reasoning_content;
+            p.thinking_budget_large = endpoint.thinking_budget_large;
         }
         return p.with_opencode_headers(&ctx.agent.session.seed, request_tag);
     }

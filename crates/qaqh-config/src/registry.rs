@@ -157,6 +157,7 @@ fn zcode() -> ProviderSpec {
             // `output_config:{effort:low|high|max}+thinking:{budget_tokens}`，harness 已有一整套
             // low/medium/high/xhigh/max ↔ 1024/2048/4096/8192/16384 预算，透传后 GLM 按强度回 thinking_delta
             supports_thinking: true,
+            thinking_budget_large: true,
             supports_reasoning_effort: true,
             effort_allowlist: Some(vec!["low".into(), "medium".into(), "high".into(), "xhigh".into(), "max".into()]),
             supports_reasoning_content: true,

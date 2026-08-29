@@ -78,6 +78,9 @@ pub struct EndpointSpec {
     /// Responses API path override (appended to `base_url`).
     /// `None` = default `/responses`.
     pub responses_path: Option<String>,
+    /// Anthropic Messages API path override (appended to `base_url`).
+    /// `None` = default `/v1/messages` (`/api/anthropic/v1/messages` for ZCode).
+    pub anthropic_path: Option<String>,
     /// Balance query path override (appended to `base_url`).
     /// `None` = default `/user/balance`.
     pub balance_path: Option<String>,
@@ -186,6 +189,7 @@ impl Default for EndpointSpec {
             user_id_mode: None,
             chat_path: None,
             responses_path: None,
+            anthropic_path: None,
             balance_path: None,
             thinking_mode: ThinkingParamMode::default(),
             cache_field: CacheTokenField::default(),

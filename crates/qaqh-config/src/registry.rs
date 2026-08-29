@@ -130,6 +130,42 @@ fn glm() -> ProviderSpec {
     }
 }
 
+/// ZCode — 智谱编码套餐（走 Anthropic 原生协议）
+///
+/// 对接 `https://open.bigmodel.cn/api/anthropic/v1/messages` 的标准
+/// Anthropic Messages 规范（`proxybun/src/index.ts:292 openAIToAnthropic`
+/// 已验证：system 顶层、messages/shadow、tools input_schema 直通，
+/// `glm-5.3-flash` 直通 200）。
+/// 反代网关 `zcode2harness` 之前因 harness 缺少 anthropic 支持而临时做
+/// OpenAI→Anthropic 转换；此原生端点让 harness 直连上游或直连反代，原
+/// 转换器可退役，仅保留鉴权与 `X-ZCode-*` 头透传。
+fn zcode() -> ProviderSpec {
+    ProviderSpec {
+        id: "zcode".into(),
+        display: "ZCode (智谱)".into(),
+        endpoints: vec![EndpointSpec {
+            id: "anthropic".into(),
+            display: "Anthropic Messages".into(),
+            protocol: "anthropic".into(),
+            base_url: "https://open.bigmodel.cn".into(),
+            default_model: "glm-5.3-flash".into(),
+            models: vec![],
+            models_url: Some("https://open.bigmodel.cn/api/paas/v4".into()),
+            anthropic_path: Some("/api/anthropic/v1/messages".into()),
+            cache_field: CacheTokenField::PromptDetailsCached,
+            // ZCode GLM 系列经 Anthropic 协议透传时，不使用 Anthropic 的
+            // `thinking` 预算（GLM 推理走自有字段）；误发 `thinking`
+            // 在 GLM 上会 400，故默认关闭，有需要再按 model 覆写。
+            supports_thinking: false,
+            supports_reasoning_effort: false,
+            supports_reasoning_content: false,
+            supports_image_tool: true,
+            has_balance: false,
+            ..Default::default()
+        }],
+    }
+}
+
 fn kimi() -> ProviderSpec {
     ProviderSpec {
         id: "kimi".into(),
@@ -455,6 +491,7 @@ fn providers() -> Vec<ProviderSpec> {
         doubao(),
         openai(),
         openrouter(),
+        zcode(),
         deepseek_web(),
         opencode_go(),
     ]

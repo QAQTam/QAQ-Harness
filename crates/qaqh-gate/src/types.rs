@@ -71,12 +71,14 @@ pub fn clamp_effort_to_allowlist(effort: &str, allowlist: &[String]) -> String {
 pub enum ProviderKind {
     OpenAi,
     Responses,
+    Anthropic,
 }
 
 impl ProviderKind {
     pub fn from_str(s: &str) -> Self {
         match s {
             "responses" => Self::Responses,
+            "anthropic" => Self::Anthropic,
             _ => Self::OpenAi,
         }
     }
@@ -171,6 +173,7 @@ pub struct ProviderConfig {
     // ── Multi-provider adaptation fields ──
     pub chat_path: Option<String>,
     pub responses_path: Option<String>,
+    pub anthropic_path: Option<String>,
     pub thinking_mode: ThinkingParamMode,
     pub cache_field: CacheTokenField,
     pub include_stream_usage: bool,
@@ -284,6 +287,7 @@ impl ProviderConfig {
             user_id_mode,
             chat_path,
             responses_path: None,
+            anthropic_path: None,
             thinking_mode,
             cache_field,
             include_stream_usage: false,
@@ -317,6 +321,7 @@ impl ProviderConfig {
             user_id_mode: None,
             chat_path: None,
             responses_path,
+            anthropic_path: None,
             thinking_mode: ThinkingParamMode::OpenAi,
             cache_field: CacheTokenField::default(),
             include_stream_usage: false,
@@ -325,6 +330,45 @@ impl ProviderConfig {
             effort_allowlist: None,
             tool_call_content_null: false,
             supports_reasoning_content: false,
+            require_provider_parameters: false,
+            do_sample: None,
+            stateful: false,
+            supports_tail_system: true,
+            responses_compat: ResponsesCompat::default(),
+            prompt_cache_key: None,
+            opencode_headers: None,
+        }
+    }
+
+    /// Build an Anthropic Messages API provider config.
+    ///
+    /// System messages are sent in the top-level `system` field (not as a
+    /// `messages` entry), per the Anthropic spec verified via
+    /// `proxybun/src/index.ts:292 openAIToAnthropic` and
+    /// `https://open.bigmodel.cn/api/anthropic/v1/messages`.
+    pub fn anthropic(
+        base_url: &str,
+        api_key: &str,
+        model: &str,
+        anthropic_path: Option<String>,
+    ) -> Self {
+        Self {
+            kind: ProviderKind::Anthropic,
+            base_url: base_url.to_string(),
+            api_key: api_key.to_string(),
+            model: model.to_string(),
+            user_id_mode: None,
+            chat_path: None,
+            responses_path: None,
+            anthropic_path,
+            thinking_mode: ThinkingParamMode::OpenAi,
+            cache_field: CacheTokenField::default(),
+            include_stream_usage: false,
+            supports_thinking: true,
+            supports_reasoning_effort: true,
+            effort_allowlist: None,
+            tool_call_content_null: false,
+            supports_reasoning_content: true,
             require_provider_parameters: false,
             do_sample: None,
             stateful: false,

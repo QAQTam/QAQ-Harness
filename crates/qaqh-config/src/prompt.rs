@@ -53,10 +53,8 @@ pub fn full_system_prompt_with_env(os_info: &str) -> String {
     format!("{}\n\n{}", DEFAULT_PROMPT, env_block)
 }
 
-/// 极简模式（minimal:dsh）的系统提示——逐字对齐 deepseek-harness minimal
-/// preset（source of truth：minimal-mode-extraction README §2）。只有这一句，
-/// 不含 OS 环境 / skills / runtime context；配合逐字精确的工具 schema
-/// （bash + str_replace_editor）才能触发模型的“最大化思考”模式。
+/// 极简模式已下线（原 minimal:dsh 的 bash_v2/str_replace_editor 已移除）。
+/// 当前仅保留常量供旧测试兼容，实际不再触发最大化思考。
 pub const MINIMAL_DSH_PROMPT: &str = "You are a helpful software engineer assistant.";
 
 /// 按工具模式选择系统提示。`minimal:dsh` 用极简那一句，其余用完整 prompt。

@@ -145,9 +145,18 @@ impl Shell {
     }
 
     /// Build the argv that runs `command` through this shell.
+    /// PowerShell 默认走 `-EncodedCommand`（Base64 UTF-16LE），彻底避免引号/中文/特殊字符在
+    /// Win32 命令行解析中的转义地狱；stdout/stderr 仍通过管道捕获，编码不影响输出。
+    /// 当 `args` 非空且为 PowerShell 时，自动走 `-CommandWithArgs`（7.6 LTS 主流），
+    /// 把 `args` 原样作为 CommandParameters 填入 `$args`，避免在脚本内拼接引号。
     fn derive_exec_args(&self, command: &str) -> Vec<String> {
+        self.derive_exec_args_with(command, None)
+    }
+
+    fn derive_exec_args_with(&self, command: &str, args: Option<&[String]>) -> Vec<String> {
         match self {
             Shell::Bash | Shell::Zsh | Shell::Sh => {
+                // bash 暂不消费 args（POSIX 侧可用 `bash -c '... ' _ arg1` 但 Harness 未暴露）
                 vec![
                     self.path().to_string(),
                     "-c".to_string(),
@@ -155,12 +164,43 @@ impl Shell {
                 ]
             }
             Shell::PowerShell => {
-                vec![
-                    self.path().to_string(),
-                    "-NoProfile".to_string(),
-                    "-Command".to_string(),
-                    command.to_string(),
-                ]
+                if let Some(a) = args.filter(|a| !a.is_empty()) {
+                    // -CommandWithArgs：首参是脚本，后续空格分隔的 CommandParameters 原样进 $args
+                    let mut v = vec![
+                        self.path().to_string(),
+                        "-NoLogo".to_string(),
+                        "-NoProfile".to_string(),
+                        "-NonInteractive".to_string(),
+                        "-ExecutionPolicy".to_string(),
+                        "Bypass".to_string(),
+                        "-InputFormat".to_string(),
+                        "Text".to_string(),
+                        "-OutputFormat".to_string(),
+                        "Text".to_string(),
+                        "-CommandWithArgs".to_string(),
+                        command.to_string(),
+                    ];
+                    v.extend(a.iter().cloned());
+                    v
+                } else {
+                    let encoded = ps_encode(command);
+                    vec![
+                        self.path().to_string(),
+                        "-NoLogo".to_string(),
+                        "-NoProfile".to_string(),
+                        "-NonInteractive".to_string(),
+                        "-ExecutionPolicy".to_string(),
+                        "Bypass".to_string(),
+                        // 强制 Text 格式：-EncodedCommand 默认在管道重定向时会以 CLIXML 序列化 ErrorRecord，
+                        // 导致 Harness 捕获的 stderr 变成 XML。显式 Text 保证与 -Command 行为一致。
+                        "-InputFormat".to_string(),
+                        "Text".to_string(),
+                        "-OutputFormat".to_string(),
+                        "Text".to_string(),
+                        "-EncodedCommand".to_string(),
+                        encoded,
+                    ]
+                }
             }
             Shell::Cmd => {
                 vec![
@@ -171,6 +211,70 @@ impl Shell {
             }
         }
     }
+}
+
+/// PowerShell `-EncodedCommand` 要求的编码：UTF-16LE → Base64（RFC 4648）。
+/// 与 `pwsh -EncodedCommand` 文档一致：`[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))`
+fn ps_encode(command: &str) -> String {
+    let utf16le: Vec<u8> = command
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    base64_encode(&utf16le)
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+#[cfg(test)]
+fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    let mut buf: u32 = 0;
+    let mut bits: u32 = 0;
+    for ch in input.chars() {
+        if ch == '=' {
+            break;
+        }
+        if ch.is_whitespace() {
+            continue;
+        }
+        let val = match ch {
+            'A'..='Z' => ch as u32 - 'A' as u32,
+            'a'..='z' => ch as u32 - 'a' as u32 + 26,
+            '0'..='9' => ch as u32 - '0' as u32 + 52,
+            '+' => 62,
+            '/' => 63,
+            _ => return Err(format!("invalid base64 char: {ch}")),
+        };
+        buf = (buf << 6) | val;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buf >> bits) & 0xFF) as u8);
+        }
+    }
+    Ok(out)
 }
 
 fn executable_on_path(name: &str) -> bool {
@@ -986,7 +1090,26 @@ fn handle_run_with_shell(ctx: ToolCallCtx, fixed: Option<Shell>) -> ToolResult {
                 _ => Shell::detect(),
             },
         };
-        shell.derive_exec_args(&command)
+        // PowerShell 7.6 LTS 新用法：-CommandWithArgs 支持把额外参数原样填入 $args，
+        // 避免在脚本字符串内拼接引号。Harness 侧用 `args: string[]` 透传。
+        let pwsh_args: Option<Vec<String>> = ctx
+            .args
+            .get("args")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .filter(|v: &Vec<String>| !v.is_empty());
+        if pwsh_args.is_some() && shell != Shell::PowerShell {
+            return ToolResult::error(crate::json_err(
+                "ARGS_NOT_SUPPORTED",
+                "args is only supported for pwsh -CommandWithArgs",
+                "Use pwsh tool or exec with shell:\"pwsh\" and provide args as string array.",
+            ));
+        }
+        shell.derive_exec_args_with(&command, pwsh_args.as_deref())
     } else {
         match ctx.args.get("argv").and_then(|v| v.as_array()) {
             Some(arr) => {
@@ -1147,7 +1270,11 @@ fn exec_schema(with_shell: bool) -> serde_json::Value {
     );
     props.insert(
         "command".into(),
-        serde_json::json!({ "type": "string", "description": "shell 命令字符串（bash -c / pwsh -Command / cmd /c 包装），用于管道/重定向/一行脚本" }),
+        serde_json::json!({ "type": "string", "description": "shell 命令字符串（bash -c / pwsh -EncodedCommand / cmd /c 包装），用于管道/重定向/一行脚本；pwsh 下可配合 args 走 -CommandWithArgs" }),
+    );
+    props.insert(
+        "args".into(),
+        serde_json::json!({ "type": "array", "items": {"type": "string"}, "description": "pwsh -CommandWithArgs 专用：传给 $args 的参数列表（仅 pwsh 且 command 模式有效；提供则走 -CommandWithArgs，否则走 -EncodedCommand）" }),
     );
     if with_shell {
         props.insert(
@@ -1199,9 +1326,11 @@ fn register_shell_tool(
     let _ = Shell::detect();
     let _ = Shell::from_name("bash");
     let resolved = shell.path();
-    let description = format!(
-        "执行命令，固定使用 {key}（{resolved}；本机探测结果，可能随环境变化）。两种模式：(1) argv=[程序, 参数…] 直接执行（无 shell）；(2) command={key} 命令字符串（管道/重定向/一行脚本）。返回 {{status, exit_code, output, wall_time_seconds, timed_out}}；超时移交时返回 backgrounded + process_id。该 shell 不可用时调用报错并列出可用 shell。",
-    );
+    let description = if key == "pwsh" {
+        format!("执行命令，固定使用 {key}（{resolved}；本机探测结果，可能随环境变化）。三种模式：(1) argv=[程序, 参数…] 直接执行（无 shell）；(2) command={key} 命令字符串（管道/重定向/一行脚本，走 -EncodedCommand Base64）；(3) command+args（走 -CommandWithArgs，args 原样进 $args，免引号拼接，7.6 LTS 主流）。返回 {{status, exit_code, output, wall_time_seconds, timed_out}}；超时移交时返回 backgrounded + process_id。该 shell 不可用时调用报错并列出可用 shell。")
+    } else {
+        format!("执行命令，固定使用 {key}（{resolved}；本机探测结果，可能随环境变化）。两种模式：(1) argv=[程序, 参数…] 直接执行（无 shell）；(2) command={key} 命令字符串（管道/重定向/一行脚本）。返回 {{status, exit_code, output, wall_time_seconds, timed_out}}；超时移交时返回 backgrounded + process_id。该 shell 不可用时调用报错并列出可用 shell。")
+    };
     // ToolHandler.description 是 &'static str：注册仅进程启动一次，leak 即静态。
     let description: &'static str = Box::leak(description.into_boxed_str());
     mgr.register_with_placement(
@@ -1219,10 +1348,20 @@ fn register_shell_tool(
 }
 
 pub fn register(mgr: &mut crate::ToolManager) {
+    // exec 已拆分至 bash/pwsh，不再暴露给模型（避免三者鼎立）。
+    // bash/pwsh 各自支持 argv 直调（无 shell）与 command(+args) 包装，语义清晰。
+    // 内部 handle_run 保留供单测/兼容，但不注册为模型工具。
+    register_shell_tool(mgr, "bash", Shell::Bash, handle_run_bash);
+    register_shell_tool(mgr, "pwsh", Shell::PowerShell, handle_run_pwsh);
+}
+
+/// 兼容保留：仅供单测/旧调用链直接使用，不向模型暴露。
+#[allow(dead_code)]
+pub fn register_exec_for_compat(mgr: &mut crate::ToolManager) {
     mgr.register_with_placement(
         ToolHandler {
             key: "exec".to_string(),
-            description: "执行命令。两种模式：(1) argv=[程序, 参数…] 直接执行（无 shell）；(2) command=shell 字符串（自动包装到平台 shell，支持管道/重定向/一行脚本）。返回 {status, exit_code, output, wall_time_seconds, timed_out}；超时移交时返回 backgrounded + process_id。",
+            description: "[compat] 执行命令。已拆分至 bash/pwsh，保留仅供内部调用。",
             input_schema: exec_schema(true),
             handler: handle_run,
             risk: ToolRisk::Destructive,
@@ -1231,9 +1370,6 @@ pub fn register(mgr: &mut crate::ToolManager) {
         },
         ToolPlacement::Workspace,
     );
-    // 独立 shell 工具（工具模式白名单可直接引用）。
-    register_shell_tool(mgr, "bash", Shell::Bash, handle_run_bash);
-    register_shell_tool(mgr, "pwsh", Shell::PowerShell, handle_run_pwsh);
 }
 
 #[cfg(test)]
@@ -1323,14 +1459,104 @@ mod tests {
         assert_eq!(bash[2], "ls -la");
 
         let pwsh = Shell::PowerShell.derive_exec_args("Get-ChildItem");
-        assert_eq!(&pwsh[..3], ["pwsh", "-NoProfile", "-Command"]);
-        assert_eq!(pwsh[3], "Get-ChildItem");
+        assert_eq!(
+            &pwsh[..11],
+            [
+                "pwsh",
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-InputFormat",
+                "Text",
+                "-OutputFormat",
+                "Text",
+                "-EncodedCommand"
+            ]
+        );
+        assert_eq!(pwsh.len(), 12);
+        // 验证 Base64(UTF-16LE) 可逆且与 ps_encode 一致
+        assert_eq!(pwsh[11], ps_encode("Get-ChildItem"));
+        let decoded = {
+            let bytes = base64_decode(&pwsh[11]).expect("valid base64");
+            let utf16: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            String::from_utf16(&utf16).expect("valid utf16le")
+        };
+        assert_eq!(decoded, "Get-ChildItem");
 
         let cmd = Shell::Cmd.derive_exec_args("dir");
         assert_eq!(&cmd[..2], ["cmd", "/c"]);
         assert_eq!(cmd[2], "dir");
+
     }
 
+    #[test]
+    fn pwsh_command_with_args_uses_command_with_args() {
+        let args = vec!["arg1".to_string(), "hello world".to_string(), "a\"b".to_string()];
+        let pwsh = Shell::PowerShell.derive_exec_args_with("Write-Output $args[0]; Write-Output $args[1]", Some(&args));
+        assert_eq!(
+            &pwsh[..12],
+            [
+                "pwsh",
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-InputFormat",
+                "Text",
+                "-OutputFormat",
+                "Text",
+                "-CommandWithArgs",
+                "Write-Output $args[0]; Write-Output $args[1]"
+            ]
+        );
+        assert_eq!(&pwsh[12..], &args);
+        assert_eq!(pwsh.len(), 15);
+        // 空 args 应回退到 EncodedCommand
+        let pwsh2 = Shell::PowerShell.derive_exec_args_with("Get-ChildItem", Some(&[]));
+        assert!(pwsh2.contains(&"-EncodedCommand".to_string()));
+        assert!(!pwsh2.contains(&"-CommandWithArgs".to_string()));
+    }
+
+
+    #[test]
+    fn pwsh_tool_with_args_executes_via_command_with_args() {
+        if !shell_available(Shell::PowerShell) {
+            eprintln!("skipping: powershell not available on this machine");
+            return;
+        }
+        let ctx = make_ctx(
+            "pwsh",
+            serde_json::json!({ "command": "$args | % { \"arg: $_\" }", "args": ["hello world", "a\"b"], "cwd": std::env::current_dir().unwrap() }),
+        );
+        let r = handle_run_pwsh(ctx);
+        assert!(r.is_success(), "model text: {}", r.model_text());
+        // model_text 是 ExecOutput 的 JSON，output 字段内才是原始 stdout；需解析后检查
+        let v: serde_json::Value = serde_json::from_str(r.model_text()).expect("valid json");
+        let output = v.get("output").and_then(|x| x.as_str()).unwrap_or("");
+        assert!(output.contains("hello world"), "output: {output}");
+        assert!(output.contains("a\"b"), "output: {output}");
+    }
+
+    #[test]
+    fn pwsh_tool_with_chinese_args_via_command_with_args() {
+        if !shell_available(Shell::PowerShell) {
+            eprintln!("skipping: powershell not available on this machine");
+            return;
+        }
+        let ctx = make_ctx(
+            "pwsh",
+            serde_json::json!({ "command": "Write-Output $args[0]", "args": ["中文测试"], "cwd": std::env::current_dir().unwrap() }),
+        );
+        let r = handle_run_pwsh(ctx);
+        assert!(r.is_success(), "model text: {}", r.model_text());
+        assert!(r.model_text().contains("中文测试"), "output: {}", r.model_text());
+    }
     #[test]
     fn test_git_status_returns_output() {
         let argv = vec!["git".to_string(), "status".to_string()];

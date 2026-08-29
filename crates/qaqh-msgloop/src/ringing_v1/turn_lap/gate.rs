@@ -638,6 +638,21 @@ pub(crate) fn provider_for(ctx: &RingContext, request_tag: &str) -> qaqh_gate::P
         &ctx.agent.config.endpoint,
     );
     let is_responses = ep.as_ref().map(|e| e.protocol.as_str()) == Some("responses");
+    let is_anthropic = ep.as_ref().map(|e| e.protocol.as_str()) == Some("anthropic");
+    if is_anthropic {
+        let mut p = qaqh_gate::ProviderConfig::anthropic(
+            &ctx.agent.config.base_url,
+            &ctx.agent.config.api_key,
+            &ctx.agent.config.model,
+            ep.as_ref().and_then(|e| e.anthropic_path.clone()),
+        );
+        if let Some(endpoint) = ep.as_ref() {
+            p.supports_thinking = endpoint.supports_thinking;
+            p.supports_reasoning_effort = endpoint.supports_reasoning_effort;
+            p.supports_reasoning_content = endpoint.supports_reasoning_content;
+        }
+        return p.with_opencode_headers(&ctx.agent.session.seed, request_tag);
+    }
     if is_responses {
         let mut p = qaqh_gate::ProviderConfig::responses(
             &ctx.agent.config.base_url,

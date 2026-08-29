@@ -414,7 +414,7 @@ impl ToolEngine {
         let pending_todo_activation = None;
 
         for tool in tools {
-            // 极简模式：模型面 `bash` → 内部 `bash_v2`（持久化 PTY）。
+            // 已移除 minimal:dsh PTY（bash_v2 下线），当前恒等。
             // 让权限准入 / prepare_req / handler 全部走内部 key，原生 bash 不参与。
             let effective_name = crate::state::agent::AgentState::normalize_tool_name_for_mode(
                 &ctx.agent.session.tool_mode,

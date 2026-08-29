@@ -12,7 +12,6 @@ qaqh-message = { path = "../qaqh-message" }
 qaqh-skills = { path = "../qaqh-skills" }
 qaqh-workspace = { path = "../qaqh-workspace" }
 qaqh-subagent = { path = "../qaqh-subagent" }
-dsh-minimal-mode = { path = "../../dsh-minimal-mode" }
 qaqh-proto = { path = "../qaqh-proto" }
 qaqh-domain = { path = "../qaqh-domain" }
 qaqh-ringing = { path = "../qaqh-ringing" }

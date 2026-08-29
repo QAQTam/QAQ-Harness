@@ -37,9 +37,9 @@ pub use session::{SessionMeta, SkillSessionEntry, SkillSessionEntryState, SkillS
 pub use state::DebugLevel;
 pub use tool_def::{ToolDef, ToolFunction};
 pub use tool_mode::{
-    CUSTOM, KNOWN_MODES, MINIMAL, MINIMAL_B, MINIMAL_C, MINIMAL_DSH, MINIMAL_DSH_MODEL_TOOLS,
-    MINIMAL_DSH_TOOLS, MINIMAL_PREFIX, MINIMAL_TOOLS, MINIMAL_TOOLS_B, MINIMAL_TOOLS_C, STANDARD,
-    internal_tool_name, is_known, is_minimal_dsh, is_minimal_family, model_tool_name, preset_tools,
+    CUSTOM, KNOWN_MODES, MINIMAL, MINIMAL_B, MINIMAL_C, MINIMAL_PREFIX, MINIMAL_TOOLS,
+    MINIMAL_TOOLS_B, MINIMAL_TOOLS_C, STANDARD, internal_tool_name, is_known, is_minimal_dsh,
+    is_minimal_family, model_tool_name, preset_tools,
 };
 pub use tool_result::{
     ContentRef, TOOL_MODEL_MAX_CHARS, TOOL_SUMMARY_MAX_CHARS, ToolContinuation, ToolError,

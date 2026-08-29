@@ -13,16 +13,14 @@ use std::path::Path;
 // 工具模式档位、白名单、模型面投影的唯一契约已收敛到 qaqh-types。
 // 这里的 re-export 仅为保持旧调用点（尤其是本模块测试）可读；新增档位
 // 只允许改 `qaqh_types::tool_mode`，不再维护本文件里的硬编码表。
-pub use qaqh_types::tool_mode::{
-    MINIMAL_DSH_MODEL_TOOLS, MINIMAL_DSH_TOOLS, MINIMAL_TOOLS, MINIMAL_TOOLS_B, MINIMAL_TOOLS_C,
-};
+pub use qaqh_types::tool_mode::{MINIMAL_TOOLS, MINIMAL_TOOLS_B, MINIMAL_TOOLS_C};
 
 /// Agent 工具包注册器聚合点（REFACTOR-ROADMAP 刀 6B-①）。
 ///
 /// 新增工具包只需在这里登记一次；`init` / `init_subagent` / 测试都从这
 /// 一个数组取注册器，不再各自手写列表。
-pub fn agent_tool_registrars() -> [ToolRegistrar; 2] {
-    [qaqh_subagent::register, dsh_minimal_mode::register]
+pub fn agent_tool_registrars() -> [ToolRegistrar; 1] {
+    [qaqh_subagent::register]
 }
 
 /// Hash snapshot of the cache-key-relevant prefix components.
@@ -369,8 +367,7 @@ impl AgentState {
         };
         runtime::set_allowed_tools(allowed);
         self.tool_defs = runtime::all_tools();
-        // 极简模式：模型面工具名投影 bash_v2 → bash（minimal 的规范工具名）。
-        // 执行面由 internal_tool_name 把 bash 路由回 bash_v2。投影规则同样
+        // 已移除 minimal:dsh 投影（bash_v2 已下线），当前为恒等。
         // 只存在于 qaqh-types 契约，新增档位无需再改此循环。
         for def in &mut self.tool_defs {
             let model_name = qaqh_types::model_tool_name(tool_mode, &def.function.name);
@@ -408,7 +405,7 @@ impl AgentState {
 
     /// 极简模式（minimal:dsh）：模型面工具名 → 内部注册 key。
     /// 模型在极简模式看到的是 `bash`（minimal 规范名），但实际执行要路由回
-    /// 持久化 PTY 的 `bash_v2` handler；非极简模式原样返回。
+    /// 恒等投影（已移除 bash_v2 PTY，下线 minimal:dsh）。
     pub fn normalize_tool_name_for_mode(tool_mode: &str, name: &str) -> String {
         qaqh_types::internal_tool_name(tool_mode, name).to_string()
     }
@@ -953,10 +950,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         // TOOL_MANAGER 是进程级 OnceLock：重复 init 会被忽略，manager 始终可用。
-        // 注册表必须与 AgentState::init 一致（subagent + dsh_minimal_mode）：
-        // 本测试若先于 tool_schema 测试运行，缺 dsh registrar 会固化注册表，
-        // 使 minimal:dsh 的 bash_v2/str_replace_editor 被当作未知名剔除并回退
-        // 全量（flaky）。统一注册器后无论测试顺序如何断言都稳定。
+        // 注册表已收敛至单一注册器（subagent），不再包含 dsh_minimal_mode PTY。
         qaqh_workspace::runtime::init_tools("tool-mode-test", &agent_tool_registrars(), vec![]);
         let mut agent = AgentState::new(qaqh_config::Config::default());
 
@@ -1106,54 +1100,8 @@ mod tests {
             }
         }
 
-        // minimal:dsh → 极简 preset：bash（bash_v2 投影）+ str_replace_editor。
-        agent.apply_tool_mode("minimal:dsh", &[]);
-        let names_dsh: Vec<&str> = agent
-            .tool_defs
-            .iter()
-            .map(|d| d.function.name.as_str())
-            .collect();
-        eprintln!(
-            "[tool_schema:minimal:dsh] {} tools -> {:?}",
-            names_dsh.len(),
-            names_dsh
-        );
-        let dsh_expected: std::collections::BTreeSet<&str> =
-            ["bash", "str_replace_editor"].into_iter().collect();
-        let dsh_got: std::collections::BTreeSet<&str> = names_dsh.iter().copied().collect();
-        assert_eq!(
-            dsh_got, dsh_expected,
-            "minimal:dsh must project bash_v2->bash, got {names_dsh:?}"
-        );
-        // 内部 bash_v2 绝不能泄漏到模型面。
-        assert!(
-            !names_dsh.contains(&"bash_v2"),
-            "minimal:dsh leaked internal bash_v2: {names_dsh:?}"
-        );
     }
 
-    /// 极简模式的执行面别名：模型面 `bash` → 内部 `bash_v2`。
-    #[test]
-    fn minimal_dsh_normalizes_bash_to_bash_v2() {
-        assert_eq!(
-            AgentState::normalize_tool_name_for_mode("minimal:dsh", "bash"),
-            "bash_v2"
-        );
-        assert_eq!(
-            AgentState::normalize_tool_name_for_mode("minimal:dsh", "str_replace_editor"),
-            "str_replace_editor"
-        );
-        // 非极简模式不转换。
-        assert_eq!(
-            AgentState::normalize_tool_name_for_mode("minimal", "bash"),
-            "bash"
-        );
-        assert_eq!(
-            AgentState::normalize_tool_name_for_mode("standard", "bash"),
-            "bash"
-        );
-        assert_eq!(AgentState::normalize_tool_name_for_mode("", "bash"), "bash");
-    }
 }
 
 // ═══════════════════════════════════════════════════════

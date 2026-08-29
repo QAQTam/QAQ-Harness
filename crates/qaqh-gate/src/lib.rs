@@ -1,6 +1,6 @@
 //! qaqh-gate: LLM API gateway — HTTP streaming + message format conversion.
 //!
-//! Supports OpenAI Chat Completions and Responses API protocols.
+//! Supports OpenAI Chat Completions, Responses API, and Anthropic Messages protocols.
 //!
 //! # Note: string slices
 //!
@@ -10,6 +10,7 @@
 //! level (see Cargo.toml).
 
 pub mod guard;
+mod anthropic;
 mod openai;
 mod responses;
 #[cfg(test)]
@@ -53,6 +54,17 @@ pub fn chat_stream(
             cancel,
             on_event,
         ),
+        ProviderKind::Anthropic => anthropic::chat_stream_anthropic(
+            provider,
+            &provider.model,
+            messages,
+            tools,
+            max_tokens,
+            effort,
+            user_id,
+            cancel,
+            on_event,
+        ),
         ProviderKind::OpenAi => openai::chat_stream_openai(
             provider,
             &provider.model,
@@ -76,6 +88,9 @@ pub fn chat_sync(
     match provider.kind {
         ProviderKind::Responses => {
             responses::chat_sync_responses(provider, &provider.model, messages, max_tokens)
+        }
+        ProviderKind::Anthropic => {
+            anthropic::chat_sync_anthropic(provider, &provider.model, messages, max_tokens)
         }
         ProviderKind::OpenAi => {
             openai::chat_sync_openai(provider, &provider.model, messages, max_tokens)

@@ -21,14 +21,12 @@ pub const MINIMAL_B: &str = "minimal:b";
 /// Minimal tier C: smallest stress-test set.
 pub const MINIMAL_C: &str = "minimal:c";
 
-/// deepseek-harness minimal preset. The model sees `bash` (not `bash_v2`).
-pub const MINIMAL_DSH: &str = "minimal:dsh";
 
 /// User-selected allowlist supplied through `custom_tools`.
 pub const CUSTOM: &str = "custom";
 
 /// Every mode accepted by `session.new` and `session.set_tool_mode`.
-pub const KNOWN_MODES: &[&str] = &[STANDARD, MINIMAL, MINIMAL_B, MINIMAL_C, MINIMAL_DSH, CUSTOM];
+pub const KNOWN_MODES: &[&str] = &[STANDARD, MINIMAL, MINIMAL_B, MINIMAL_C, CUSTOM];
 
 /// Minimal-family modes share no-fold policy and the minimal system prompt
 /// treatment is reserved for the dsh preset.
@@ -52,18 +50,13 @@ pub const MINIMAL_TOOLS_B: &[&str] = &["bash", "edit", "glob", "grep", "read", "
 /// Minimal tier C (internal registration keys).
 pub const MINIMAL_TOOLS_C: &[&str] = &["bash", "edit", "glob", "confirm_apply"];
 
-/// Minimal dsh internal allowlist. `bash_v2` is the persistent-PTY handler.
-pub const MINIMAL_DSH_TOOLS: &[&str] = &["bash_v2", "str_replace_editor"];
 
-/// Minimal dsh model-facing schema: the internal `bash_v2` is projected to
-/// the canonical minimal name `bash` and never leaked to the model.
-pub const MINIMAL_DSH_MODEL_TOOLS: &[&str] = &["bash", "str_replace_editor"];
 
 /// Returns `true` for every mode accepted by the daemon action whitelist.
 pub fn is_known(mode: &str) -> bool {
     matches!(
         mode,
-        STANDARD | MINIMAL | MINIMAL_B | MINIMAL_C | MINIMAL_DSH | CUSTOM
+        STANDARD | MINIMAL | MINIMAL_B | MINIMAL_C | CUSTOM
     )
 }
 
@@ -73,10 +66,10 @@ pub fn is_minimal_family(mode: &str) -> bool {
     mode.starts_with(MINIMAL_PREFIX)
 }
 
-/// Returns `true` when the session uses the verbatim deepseek-harness prompt
-/// and the `bash_v2 -> bash` projection.
-pub fn is_minimal_dsh(mode: &str) -> bool {
-    mode == MINIMAL_DSH
+/// Deprecated: minimal:dsh 已移除（PTY bash_v2 + str_replace_editor 已下线）。
+/// 保留函数签名仅为兼容旧调用，恒返回 false。
+pub fn is_minimal_dsh(_mode: &str) -> bool {
+    false
 }
 
 /// The internal tool allowlist for a fixed preset.
@@ -88,33 +81,22 @@ pub fn preset_tools(mode: &str) -> Option<&'static [&'static str]> {
         MINIMAL => Some(MINIMAL_TOOLS),
         MINIMAL_B => Some(MINIMAL_TOOLS_B),
         MINIMAL_C => Some(MINIMAL_TOOLS_C),
-        MINIMAL_DSH => Some(MINIMAL_DSH_TOOLS),
         _ => None,
     }
 }
 
 /// Project an internal tool key to its model-facing name.
 ///
-/// Only `minimal:dsh` currently projects `bash_v2 -> bash`; every other
-/// tool/mode combination is the identity function.
-pub fn model_tool_name<'a>(mode: &str, internal_name: &'a str) -> &'a str {
-    if is_minimal_dsh(mode) && internal_name == "bash_v2" {
-        "bash"
-    } else {
-        internal_name
-    }
+/// 已移除 minimal:dsh 的 bash_v2->bash 投影，当前为恒等映射。
+pub fn model_tool_name<'a>(_mode: &str, internal_name: &'a str) -> &'a str {
+    internal_name
 }
 
 /// Resolve a model-facing tool name back to the internal registration key.
 ///
-/// This is the inverse projection used by permission admission and handler
-/// dispatch, so the model never needs to know that `bash` is `bash_v2`.
-pub fn internal_tool_name<'a>(mode: &str, model_name: &'a str) -> &'a str {
-    if is_minimal_dsh(mode) && model_name == "bash" {
-        "bash_v2"
-    } else {
-        model_name
-    }
+/// 已移除投影，当前为恒等映射。
+pub fn internal_tool_name<'a>(_mode: &str, model_name: &'a str) -> &'a str {
+    model_name
 }
 
 #[cfg(test)]
@@ -135,31 +117,10 @@ mod tests {
         assert_eq!(preset_tools(MINIMAL), Some(MINIMAL_TOOLS));
         assert_eq!(preset_tools(MINIMAL_B), Some(MINIMAL_TOOLS_B));
         assert_eq!(preset_tools(MINIMAL_C), Some(MINIMAL_TOOLS_C));
-        assert_eq!(preset_tools(MINIMAL_DSH), Some(MINIMAL_DSH_TOOLS));
         assert_eq!(preset_tools(STANDARD), None);
         assert_eq!(preset_tools(CUSTOM), None);
         assert_eq!(preset_tools(""), None);
     }
 
-    #[test]
-    fn minimal_dsh_never_leaks_bash_v2_to_the_model() {
-        assert_eq!(model_tool_name(MINIMAL_DSH, "bash_v2"), "bash");
-        assert_eq!(
-            model_tool_name(MINIMAL_DSH, "str_replace_editor"),
-            "str_replace_editor"
-        );
-        assert_eq!(model_tool_name(MINIMAL, "bash_v2"), "bash_v2");
-    }
 
-    #[test]
-    fn minimal_dsh_execution_routes_bash_back_to_bash_v2() {
-        assert_eq!(internal_tool_name(MINIMAL_DSH, "bash"), "bash_v2");
-        assert_eq!(
-            internal_tool_name(MINIMAL_DSH, "str_replace_editor"),
-            "str_replace_editor"
-        );
-        assert_eq!(internal_tool_name(MINIMAL, "bash"), "bash");
-        assert_eq!(internal_tool_name(STANDARD, "bash"), "bash");
-        assert_eq!(internal_tool_name("", "bash"), "bash");
-    }
 }

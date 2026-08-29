@@ -18,10 +18,12 @@
 
 ## 2. 演进规则
 
-- **加法兼容**：新增 capability 名称、新增只读 query/action 方法、envelope 新增
-  带 `#[serde(default)]` 的可选字段——允许单向合入，前端按需跟进。
+- **加法兼容**：envelope 新增带 `#[serde(default)]` 的可选字段、新增只读
+  query/action 方法——允许单向合入，前端按需跟进。（能力矩阵已于 2026-08
+  移除：同链路发布的客户端与 daemon 之间无部分能力组合，版本代差由
+  `RINGING_VERSION` 承担。）
 - **破坏性变更**：必须 bump `RINGING_VERSION` 或 `CONTROL_PROTOCOL_VERSION`
-  并保持旧版本可解析（或经能力协商分流），双侧 PR 同步合入后才可发版。
+  并保持旧版本可解析，双侧 PR 同步合入后才可发版。
 - **SSE 传输约束（对浏览器前端至关重要）**：事件端点要求
   `Authorization: Bearer <token>` + `X-QAQH-Client-Session-Id` 自定义头，
   **且禁止 query string 传 token**。浏览器原生 `EventSource` 无法设置自定义
@@ -29,8 +31,8 @@
 
 ## 3. 变更流程
 
-1. 后端侧在本仓库开 RFC issue，注明影响的契约面与新 capability 名；
-2. 实现合入本仓库（capability 协商保证旧客户端不受影响）；
+1. 后端侧在本仓库开 RFC issue，注明影响的契约面与兼容性级别；
+2. 实现合入本仓库；
 3. 前端仓库对着 RFC issue 开 PR，全部条目勾完后关闭；
 4. 双侧 tag 同步发版。
 

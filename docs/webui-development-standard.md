@@ -32,8 +32,8 @@
                             └→ 全量重建：重新 OPEN → bootstrap → 重放 timeline
 ```
 
-1. **OPENING**：`POST /ringing/v1/clients/open`，四能力缺一不可
-   （服务端硬校验，缺失返回 426 `missing_capability`）。
+1. **OPENING**：`POST /ringing/v1/clients/open`，`schema`/`version`
+   必须与服务端一致（代差返回 426 `unsupported_version`）。
 2. **READY**：保存 `client_session_id / server_epoch / lease_ttl_ms /
    renew_interval_ms`；启动续租循环（间隔用 `renew_interval_ms`）。
 3. **ATTACH**：`SessionCreate` 后新 seed 自动归属本 lease；恢复已有会话
@@ -73,14 +73,13 @@ timeline 面 `RINGING_TIMELINE_BASE_PATH = /ringing/v1`（与业务面同前缀�
 ```
 POST /ringing/v1/clients/open
 { "schema": "qaqh.Ringing", "version": 1,
-  "client_instance_id": "<uuid-v4>",
-  "capabilities": ["Ringing_v1","Ringing_batch_v1",
-                   "Ringing_bootstrap_v1","Ringing_command_status_v1"] }
-→ 200 { accepted:true, client_session_id, capabilities[],
+  "client_instance_id": "<uuid-v4>" }
+→ 200 { accepted:true, client_session_id,
         server_epoch, lease_ttl_ms, renew_interval_ms }
-→ 426 { code:"missing_capability" | "unsupported_version" }
+→ 426 { code:"unsupported_version" }
 ```
-四能力是当前服务端最小集，MUST 全部申报。
+版本协商由 `schema`/`version` 承担（能力矩阵已于 2026-08 移除：客户端与
+daemon 同链路发布，无部分能力客户端存在）。
 
 ### 3.2 命令（唯一会话命令通道）
 ```
@@ -174,7 +173,7 @@ subagent.` 及单条 `session.set_tool_mode`。缺 `action_id` → 400。
 | 400 | `invalid_envelope` / `channel_mismatch` / `missing_seed` | 我方 bug | 上报，不得原样重发 |
 | 409 | `duplicate_command_mismatch` | 同 id 不同载荷 | 必然是实现 bug，上报 |
 | 422 | `unsupported_command` | 如 load_more | 删掉调用方代码，走 bootstrap |
-| 426 | `unsupported_version` / `missing_capability` | 版本代差 | 展示"需更新"，停重试 |
+| 426 | `unsupported_version` | 版本代差 | 展示"需更新"，停重试 |
 | 502 | `dispatch_failed`(ack) | worker 转发失败 | 可换 id 重试一次，再败上抛 |
 | 403 | `content_forbidden` | 跨 seed | UI 提示，勿重试 |
 
@@ -231,7 +230,7 @@ renderer/src/sdk/
   transport/sse.ts          # §5 参考实现 + 重连状态机
   protocol/types.ts         # envelope/ack/batch/event 类型——手工镜像
                             # qaqh-ringing，文件头注明"改动须对照后端 PR"
-  protocol/capabilities.ts  # 四能力常量 + RINGING_SCHEMA/VERSION
+  protocol/version.ts       # RINGING_SCHEMA/VERSION 常量
   state/projection.ts       # timeline/event → 视图模型（唯一写入口）
   commands/*.ts             # 按频道封装的命令构造器（含幂等 id 管理）
 ```
@@ -244,8 +243,7 @@ renderer/src/sdk/
 TOKEN=…; BASE=http://127.0.0.1:<port>
 # ① open 协商
 curl -s -X POST $BASE/ringing/v1/clients/open -H "Authorization: Bearer $TOKEN" \
-  -d '{"schema":"qaqh.Ringing","version":1,"client_instance_id":"t1",
-       "capabilities":["Ringing_v1","Ringing_batch_v1","Ringing_bootstrap_v1","Ringing_command_status_v1"]}'
+  -d '{"schema":"qaqh.Ringing","version":1,"client_instance_id":"t1"}'
 # 期望 accepted:true 且拿到 client_session_id
 # ② 无 lease 发命令 → 必须 401 {"code":"lease_required"}
 # ③ SessionCreate → ConversationSendMessage → conversation SSE 上出现 turn_started

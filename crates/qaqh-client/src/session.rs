@@ -5,7 +5,6 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, watch};
 
 use crate::error::{ClientError, Result};
-use qaqh_ringing::CapabilityName;
 
 use crate::types::{OpenRequest, OpenResponse};
 
@@ -39,12 +38,6 @@ const MAX_RENEW_FAILURES: u32 = 2;
 /// open 请求超时（秒）：daemon 冷启动/重启窗口内 TCP 可达但 HTTP 未 accept
 /// 时，请求会排队不响应——无超时则 open 永久挂起，卡死桥的 rebuild 循环。
 const OPEN_TIMEOUT_SECS: u64 = 10;
-const CAPABILITIES: [CapabilityName; 4] = [
-    CapabilityName::RingingV1,
-    CapabilityName::RingingBatchV1,
-    CapabilityName::RingingBootstrapV1,
-    CapabilityName::RingingCommandStatusV1,
-];
 
 impl RingingSession {
     pub fn new(base_url: String, token: String, http: reqwest::Client) -> Self {
@@ -75,10 +68,7 @@ impl RingingSession {
             // 排队）而响应迟迟不来——无超时会让 open 永久挂起，进而卡死桥的
             // rebuild 循环（rebuilding 永不复位，所有请求被拒）。
             .timeout(std::time::Duration::from_secs(OPEN_TIMEOUT_SECS))
-            .json(&OpenRequest::new(
-                client_instance_id.clone(),
-                CAPABILITIES.to_vec(),
-            ))
+            .json(&OpenRequest::new(client_instance_id.clone()))
             .send()
             .await?;
         if !response.status().is_success() {

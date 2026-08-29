@@ -232,25 +232,6 @@ mod axum_impl {
             )
                 .into_response();
         }
-        let supported: &[&str] = &[
-            "Ringing_v1",
-            "Ringing_batch_v1",
-            "Ringing_bootstrap_v1",
-            "Ringing_command_status_v1",
-        ];
-        let capabilities: Vec<String> = supported
-            .iter()
-            .filter(|c| req.capabilities.iter().any(|x| x == *c))
-            .map(|c| (*c).to_string())
-            .collect();
-        if capabilities.len() != supported.len() {
-            return (
-                StatusCode::UPGRADE_REQUIRED,
-                [(header::CONTENT_TYPE, "application/json")],
-                br#"{"code":"missing_capability","message":"Ringing v1 capabilities are incomplete"}"#.to_vec(),
-            )
-                .into_response();
-        }
         let client_session_id = random_hex();
         state
             .leases
@@ -262,7 +243,6 @@ mod axum_impl {
             version: RINGING_VERSION,
             accepted: true,
             client_session_id,
-            capabilities,
             server_epoch: state.hub.epoch().to_string(),
             lease_ttl_ms: lease_ttl_ms(),
             renew_interval_ms: RENEW_INTERVAL_MS,
@@ -1646,28 +1626,10 @@ mod axum_tests {
     }
 
     #[tokio::test]
-    async fn open_rejects_missing_capabilities() {
-        let app = build_router(test_state());
-        let body = serde_json::json!({
-            "schema":"qaqh.Ringing","version":1,"client_instance_id":"ci-1","capabilities":["Ringing_v1"]
-        });
-        let req = Request::builder()
-            .method("POST")
-            .uri("/ringing/v1/clients/open")
-            .header("content-type", "application/json")
-            .header("authorization", "Bearer test-token")
-            .body(Body::from(serde_json::to_vec(&body).unwrap()))
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UPGRADE_REQUIRED);
-    }
-
-    #[tokio::test]
     async fn open_success() {
         let app = build_router(test_state());
         let body = serde_json::json!({
-            "schema":"qaqh.Ringing","version":1,"client_instance_id":"ci-1",
-            "capabilities":["Ringing_v1","Ringing_batch_v1","Ringing_bootstrap_v1","Ringing_command_status_v1"]
+            "schema":"qaqh.Ringing","version":1,"client_instance_id":"ci-1"
         });
         let req = Request::builder()
             .method("POST")

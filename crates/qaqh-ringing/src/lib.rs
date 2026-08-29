@@ -26,7 +26,7 @@ pub mod reset;
 pub mod snapshot;
 pub mod worker;
 
-pub use capability::{CapabilityName, ClientOpenRequest, ClientOpenResponse};
+pub use capability::{ClientOpenRequest, ClientOpenResponse};
 pub use command::{
     RingingCommand, RingingControlCommand, RingingConversationCommand, RingingToolCommand,
 };
@@ -44,6 +44,4 @@ pub use reset::RingingResetRequired;
 pub use snapshot::{RingingChannelSnapshot, RingingSessionBootstrap};
 pub use worker::{
     RingingTimelineIntentEnvelope, RingingWorkerCommandEnvelope, RingingWorkerEventEnvelope,
-    WIRE_RINGING_DOMAIN_V1, WIRE_RINGING_TIMELINE_INTENT_V1, WORKER_FRAME_MAX_BYTES,
-    WorkerDirection,
 };

@@ -106,26 +106,6 @@ pub struct SseFrame {
     pub data: String,
 }
 
-pub fn parse_sse_frame(frame: &str) -> SseFrame {
-    let mut parsed = SseFrame::default();
-    for line in frame.split('\n') {
-        if line.starts_with(':') {
-            continue;
-        }
-        if let Some(id) = line.strip_prefix("id:") {
-            parsed.id = id.trim().to_string();
-        } else if let Some(event) = line.strip_prefix("event:") {
-            parsed.event_type = event.trim().to_string();
-        } else if let Some(data) = line.strip_prefix("data:") {
-            if !parsed.data.is_empty() {
-                parsed.data.push('\n');
-            }
-            parsed.data.push_str(data.trim());
-        }
-    }
-    parsed
-}
-
 /// Extract the stream sequence from `id: <epoch>:<channel>:<seq>`.
 pub fn cursor_from_sse_id(id: &str, channel: Channel) -> Option<u64> {
     let mut parts = id.split(':');

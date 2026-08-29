@@ -790,13 +790,25 @@ pub fn chat_stream_anthropic(
     // ZCode GLM endpoint sets supports_thinking=false, so we omit for ZCode.
     if provider.supports_thinking {
         if let Some(e) = effort_norm.as_deref() {
-            let budget: u32 = match e {
-                "low" => 1024,
-                "medium" => 2048,
-                "high" => 4096,
-                "xhigh" => 8192,
-                "max" => 16384,
-                _ => 4096,
+            // zcode GLM-5.3 1M 上下文，budget 已 96k 起步，跟随后端传入不截断（原 1k-16k 对新模型过小）
+            let budget: u32 = if provider.id == "zcode" {
+                match e {
+                    "low" => 16384,
+                    "medium" => 32768,
+                    "high" => 65536,
+                    "xhigh" => 81920,
+                    "max" => 96000,
+                    _ => 32768,
+                }
+            } else {
+                match e {
+                    "low" => 1024,
+                    "medium" => 2048,
+                    "high" => 4096,
+                    "xhigh" => 8192,
+                    "max" => 16384,
+                    _ => 4096,
+                }
             };
             max_toks = max_toks.max(budget + 1024);
             body_map.insert("max_tokens".into(), serde_json::json!(max_toks));

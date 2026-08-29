@@ -1,5 +1,5 @@
 use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use qaqh_proto::{CONTROL_PROTOCOL_VERSION, DaemonDiscovery};
@@ -302,65 +302,22 @@ fn stringify(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
+/// OS 级咨询锁（std `File::try_lock`：Windows `LockFileEx` / Unix `flock`）
+/// 保证单实例：持有者是打开的 File 句柄，进程退出（含崩溃）时由内核释放。
+/// 因此无需 pid 判活与 stale 锁接管——`WouldBlock` 即代表存在活实例。
 fn acquire_single_instance() -> Result<File, String> {
     let path = qaqh_types::platform::daemon_lock_path();
-    match OpenOptions::new().create_new(true).write(true).open(&path) {
-        Ok(mut file) => {
-            writeln!(file, "{}", std::process::id()).map_err(stringify)?;
-            Ok(file)
-        }
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            // 判活以 lock 文件里的 pid 为权威：pid 进程活着即视为已有实例，
-            // 无论其 HTTP 是否已就绪（daemon 启动窗口内端口可达但尚未
-            // accept —— 此时若按 TCP 判活会把正在初始化的实例误判为 stale
-            // 并删锁接管，导致多个 daemon 并存、discovery 端口漂移）。
-            // 仅当 lock 持有者确实已退出（pid 失效）才清理并接管。
-            //
-            // 空/坏锁窗口：`create_new` 与 `writeln(pid)` 之间有空窗，并发
-            // 启动的另一个实例可能已创建锁文件但尚未写入 pid。读到空锁时
-            // 短等重试（上限 300ms）而非立即接管——否则会把正在初始化的
-            // 实例误判为 stale 删锁接管，双 daemon 并存（根因，见
-            // acquire_single_instance 竞态分析）。重试后仍读不到 pid 才视为
-            // stale（持有者已退出或从未写完）。
-            let mut lock_pid = read_lock_pid(&path);
-            for _ in 0..10 {
-                if lock_pid.is_some() {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(30));
-                lock_pid = read_lock_pid(&path);
-            }
-            #[cfg(windows)]
-            let holder_alive = match lock_pid {
-                Some(pid) => qaqh_types::platform::process_is_running(pid),
-                None => false,
-            };
-            // 非 Windows 无 pid 判活实现（stub 恒 true），回退旧行为：
-            // 视为 stale 并接管，保证 daemon 可重新启动（桌面端仅 Windows）。
-            #[cfg(not(windows))]
-            let holder_alive = false;
-            if holder_alive {
-                return Err("another daemon instance is already running".into());
-            }
-            std::fs::remove_file(&path).map_err(|e| format!("remove stale daemon lock: {e}"))?;
-            let _ = std::fs::remove_file(qaqh_types::platform::daemon_discovery_path());
-            let mut file = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&path)
-                .map_err(stringify)?;
-            writeln!(file, "{}", std::process::id()).map_err(stringify)?;
-            Ok(file)
-        }
-        Err(error) => Err(error.to_string()),
-    }
-}
-
-/// 读锁文件中的持有者 pid（文件缺失/内容非数字 → None）。
-fn read_lock_pid(path: &std::path::Path) -> Option<u32> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|value| value.trim().parse::<u32>().ok())
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|e| format!("open daemon lock {path:?}: {e}"))?;
+    file.try_lock()
+        .map_err(|_| "another daemon instance is already running".to_string())?;
+    // pid 仅作诊断记录，不参与判活。
+    writeln!(&file, "{}", std::process::id()).map_err(stringify)?;
+    Ok(file)
 }
 fn write_discovery(discovery: &DaemonDiscovery) -> Result<(), String> {
     let target = qaqh_types::platform::daemon_discovery_path();

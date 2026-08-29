@@ -48,7 +48,7 @@ fn embed_windows_icon() {
 fn embed_windows_icon() {}
 
 fn ensure_webui_embed() {
-    // 优先使用主仓库内已提交的 webui-dist（单仓库构建），缺失时自动从 sibling qaqh-webui/out 同步，
+    // webui-dist 不入库（.gitignore）：缺失时自动从 sibling qaqh-webui/out 同步，
     // 仍缺失则生成占位，保证 rust-embed 编译不失败。
     let embedded = std::path::Path::new("webui-dist");
     let sibling = std::path::Path::new("../../../qaqh-webui/out/renderer");

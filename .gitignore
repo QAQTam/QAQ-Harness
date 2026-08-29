@@ -9,6 +9,10 @@ target/
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
 
+# webUI 构建产物已迁至 sibling 仓库 qaqh-webui；本地 webui-dist 由 build.rs
+# 自动生成（占位）或从 ../qaqh-webui/out/renderer 同步，不入库
+crates/qaqh-daemon/webui-dist/
+
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore

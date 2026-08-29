@@ -1,6 +1,6 @@
 # QAQ-Harness
 
-AI 编码代理的跨平台 **Rust 后端核心**(monorepo,16 个 workspace 成员)。单个常驻 daemon 承载多会话对话循环、LLM 网关、22 个内置工具、Agent Skills 与子代理隔离执行;Windows 桌面壳(WinUI3)/ TUI / Web 壳位于独立仓库,通过统一的 **Ringing V1** HTTP/SSE 协议接入。
+AI 编码代理的跨平台 **Rust 后端核心**(monorepo,16 个 workspace 成员)。单个常驻 daemon 承载多会话对话循环、LLM 网关、20 个内置工具、Agent Skills 与子代理隔离执行;Windows 桌面壳(WinUI3)/ TUI / Web 壳位于独立仓库,通过统一的 **Ringing V1** HTTP/SSE 协议接入。
 
 - Edition 2024 · License MIT · 状态:alpha
 - HTTP 栈: `axum 0.8 + hyper 1.1 + tower 0.5 + tower-http 0.6 + tokio 1.44`，`SSE KeepAlive 15s`，release 静态 CRT 单文件 exe(`opt-level=z` + LTO + strip)
@@ -19,8 +19,8 @@ AI 编码代理的跨平台 **Rust 后端核心**(monorepo,16 个 workspace 成�
  │   RingingHub:事件双投(fanout 给所有订阅者,带 causation)                 │
  │        │                                                                 │
  │   qaqh-msgloop TurnEngine:用户输入 → gate → 工具环 → 回合完成 → compact  │
- │        ├─ qaqh-gate      LLM 网关(OpenAI Chat / Responses,SSE 流式+重试) │
- │        ├─ qaqh-workspace 22 个工具执行 + 四级权限准入 + 审计              │
+ │        ├─ qaqh-gate      LLM 网关(Chat/Responses/Anthropic,SSE 流式+重试)│
+ │        ├─ qaqh-workspace 19 个工具执行 + 四级权限准入 + 审计              │
  │        │      └─ serve 子进程(local 原生 或 WSL,HTTP 工具后端,可回退)    │
  │        └─ qaqh-skills / qaqh-subagent                                     │
  └──────────────────────────────────────────────────────────────────────────┘
@@ -47,12 +47,12 @@ AI 编码代理的跨平台 **Rust 后端核心**(monorepo,16 个 workspace 成�
 | 会话/配置 | `qaqh-session` | SessionManager 单例:index/meta/消息 JSONL 持久化、归档、临时会话、WorkspaceStore |
 | | `qaqh-types` | 共享类型、平台路径(data_dir/marker)、tool_mode 定义 |
 | | `qaqh-config` | Config 加载/保存事务、provider 注册表、system prompt、secrets |
-| LLM | `qaqh-gate` | LLM API 网关:OpenAI Chat Completions 与 Responses 双协议、自研 SSE 解码器(~143MB/s)、429/5xx 指数退避重试、reasoning/tool-call 流提取 |
+| | `qaqh-config-api` | 配置契约层(wire DTO):ConfigDto 读模型 / ConfigPatch 写模型,多前端共享唯一真相 |
+| LLM | `qaqh-gate` | LLM API 网关:OpenAI Chat Completions / Responses / Anthropic Messages 三协议、自研 SSE 解码器(~143MB/s)、429/5xx 指数退避重试、reasoning/tool-call 流提取 |
 | 工具 | `qaqh-workspace` | 工具执行框架 + 19 个内置工具 + 权限/审计 + `serve` HTTP 工具后端二进制 |
 | | `qaqh-subagent` | `spawn_subagent`:派生隔离 Ringing 子会话(in-process 守护线程,ephemeral,结果异步注入父会话) |
 | | `qaqh-skills` | Agent Skills 发现/解析/激活(SKILL.md + YAML frontmatter,catalog 渐进披露) |
 | 客户端/周边 | `qaqh-client` | daemon HTTP/SSE 传输层:discovery → open 协商 → 三频道 SSE + timeline 流 + lease 自愈;供外部壳复用 |
-| 极简模式 | `dsh-minimal-mode` | deepseek-harness minimal-mode 复刻:`bash_v2`(持久 PTY)+ `str_replace_editor`,输出逐字对齐 |
 
 ## 核心概念
 
@@ -68,7 +68,7 @@ daemon 是唯一协议面:WinUI3 桌面壳 / Tauri / Electron / TUI / 浏览器�
 - 上下文超过 `auto_compact_threshold`(默认 context_limit × 0.75)自动摘要压缩;原始 JSONL 不可变归档,resume 走 compact-context 检查点链(fail-closed)
 
 ### 工具与权限
-22 个工具分四类权限类别(Read/Write/Exec/Net),四级权限档位:
+20 个工具分四类权限类别(Read/Write/Exec/Net),四级权限档位:
 
 | Level | 名称 | 行为 |
 |---|---|---|
@@ -80,7 +80,7 @@ daemon 是唯一协议面:WinUI3 桌面壳 / Tauri / Electron / TUI / 浏览器�
 - 审批闭环:`PermissionChallenge`(一次性,TTL)→ UI 确认 → 不可伪造的授权凭证执行;支持 trust folder
 - 写入防漂移:read/edit/write 维护文件 hash 账本,失配报 `STALE_FILE`;dry-run 暂存 pending_id 后 `confirm_apply` 直提
 - 子代理沙箱:读写自动批准,exec/net 自动拒绝,无弹窗通道
-- 工具模式档位:`standard` / `minimal` / `minimal:dsh` / `custom`(白名单 + 模型面投影双层闸门)
+- 工具模式档位:`standard` / `minimal` / `minimal:b` / `minimal:c` / `custom`(白名单 + 模型面投影)
 
 ### Provider 与配置
 内置 11 家 provider 注册表(deepseek/qwen/glm/kimi/mimo/minimax/doubao/openai/openrouter/deepseek-web/opencode-go),endpoint 级声明协议(openai/responses)、thinking 字段、缓存字段等能力,新 provider 只加配置不改网关代码。`config.toml` 支持命名 profiles;API key 存 `secrets.toml`(Windows DPAPI 加密,其余平台 0600 明文),config 中只留 `"set"` 标记。

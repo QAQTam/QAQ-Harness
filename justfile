@@ -2,8 +2,7 @@
 # 用法: just [recipe]
 #
 # 项目结构:
-#   crates/          Rust 后端 (15 crates)
-#   dsh-minimal-mode/ 极简模式工具（bash_v2 + str_replace_editor）
+#   crates/          Rust 后端 (16 crates)
 #
 # 说明：Windows 桌面层（WinUI3 壳 / installer / updater）已拆分为独立仓库
 # F:\qaqh-winui-app；本仓库只保留跨平台后端核心与公共 SDK。

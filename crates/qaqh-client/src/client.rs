@@ -1,5 +1,5 @@
 //! High-level Ringing V1 client: discovery + open + three SSE channels + lease
-//! renewal + commands/queries/bootstrap/stop.
+//! renewal + commands/service-rpc/bootstrap/stop.
 //!
 //! The client owns a global tokio runtime and runs all transport tasks in the
 //! background; the shell receives events through callbacks (which must marshal
@@ -328,11 +328,11 @@ impl Client {
         Ok(response.json().await?)
     }
 
-    /// `POST /ringing/v1/queries/{name}` — typed query.
+    /// `POST /ringing/v1/service/{name}` — typed read-only query.
     pub async fn query(&self, request: QueryRequest) -> Result<Value> {
         let (name, params) = request.into_parts();
         let session_id = self.session_id_header().await?;
-        let path = format!("/ringing/v1/queries/{name}");
+        let path = format!("/ringing/v1/service/{name}");
         let response = self
             .inner
             .http
@@ -372,9 +372,9 @@ impl Client {
         Ok(response.json().await?)
     }
 
-    /// Execute a closed, typed auxiliary action. Method names and wire params
-    /// are centralized in `ActionRequest`; native shells cannot route a
-    /// mutation through the read-only query endpoint.
+    /// Execute a closed, typed auxiliary action (Write 类服务方法)。Method
+    /// names and wire params are centralized in `ActionRequest`; native shells
+    /// cannot route a mutation through the read-only query surface.
     pub async fn action(&self, request: ActionRequest) -> Result<Value> {
         let (name, mut params) = request.into_parts();
         let session_id = self.session_id_header().await?;
@@ -401,7 +401,7 @@ impl Client {
                 "fingerprint": fingerprint,
             });
         }
-        let path = format!("/ringing/v1/actions/{name}");
+        let path = format!("/ringing/v1/service/{name}");
         let response = self
             .inner
             .http

@@ -1,9 +1,10 @@
-//! Typed auxiliary HTTP endpoints used beside the Ringing event/command plane.
+//! Typed service RPC requests (`POST /ringing/v1/service/{method}`，唯一服务面)。
 //!
-//! These enums keep legacy service method names and JSON assembly inside the
+//! These enums keep service method names and JSON assembly inside the
 //! transport crate. Native shells choose a closed Rust variant; they cannot
-//! mistype a method name, send a mutation through the query route, or invent a
-//! second renderer-facing protocol.
+//! mistype a method name, send a mutation through the read-only query surface,
+//! or invent a second renderer-facing protocol. (`QueryRequest` → Read 类，
+//! `ActionRequest` → Write 类；会话生命周期命令不在此面，见开发标准 N5。)
 
 use serde_json::{Value, json};
 

@@ -35,7 +35,7 @@ mod axum_impl {
         RINGING_SCHEMA, RINGING_VERSION,
     };
     use qaqh_runtime::{QaqhService, RingingHub};
-    use qaqh_runtime::ringing::{query, PendingCommandStore, RingingLeaseStore};
+    use qaqh_runtime::ringing::{service_methods, PendingCommandStore, RingingLeaseStore};
 
     use crate::server::random_hex;
 
@@ -121,44 +121,6 @@ mod axum_impl {
     }
 
     use qaqh_runtime::ringing::hydrate_attachment_previews;
-
-    fn query_method(name: &str) -> Option<&'static str> {
-        match name.trim_matches('/') {
-            "session/list" | "session.list" => Some("session.list"),
-            "session/meta" | "session.meta" => Some("session.meta"),
-            "session/activity" | "session.activity" => Some("session.activity"),
-            "session/dashboard" | "session.dashboard" => Some("session.dashboard"),
-            "session/get_activity" | "session.get_activity" => Some("session.get_activity"),
-            "workspace/get" | "workspace.get" => Some("workspace.get"),
-            "workspace/status" | "workspace.status" => Some("workspace.status"),
-            "fs/list" | "fs.list" => Some("fs.list"),
-            "fs/read" | "fs.read" => Some("fs.read"),
-            "config/load" | "config.load" => Some("config.load"),
-            "skills/list_tools" | "skills.list_tools" => Some("skills.list_tools"),
-            "todo/status" | "todo.status" => Some("todo.status"),
-            "plan/read" | "plan.read" => Some("plan.read"),
-            "plan/context_stats" | "plan.context_stats" => Some("plan.context_stats"),
-            "stats/token_usage" | "stats.token_usage" => Some("stats.token_usage"),
-            "git/diff" | "git.diff" => Some("git.diff"),
-            "git/branch" | "git.branch" => Some("git.branch"),
-            "git/branches" | "git.branches" => Some("git.branches"),
-            "git/file_diff" | "git.file_diff" => Some("git.file_diff"),
-            "daemon/version" | "daemon.version" => Some("daemon.version"),
-            _ => None,
-        }
-    }
-
-    fn is_allowed_action(method: &str) -> bool {
-        method.starts_with("git.")
-            || method.starts_with("workspace.")
-            || method.starts_with("config.")
-            || method.starts_with("session.set_tool_mode")
-            || method.starts_with("subagent.")
-            || matches!(
-                method,
-                "session.set_tool_mode" | "config.save" | "subagent.spawn" | "subagent.stop"
-            )
-    }
 
     #[derive(Deserialize)]
     pub struct TimelineQuery {
@@ -957,7 +919,10 @@ mod axum_impl {
             .into_response()
     }
 
-    async fn handle_query(
+    /// `POST /ringing/v1/service/{method}` — 服务面 RPC（Read/Write 两类，
+    /// 方法表见 `qaqh_runtime::ringing::service_methods`）。旧
+    /// `/queries/{name}` 与 `/actions/{name}` 双端点已并入此处。
+    async fn handle_service(
         State(state): State<AppState>,
         headers: HeaderMap,
         Path(name): Path<String>,
@@ -969,11 +934,12 @@ mod axum_impl {
         let Some(session_id) = get_session_id(&headers) else {
             return lease_required_json();
         };
-        let Some(method) = query_method(&name) else {
+        // 单一规范形态 `module.method`：slash 别名已拆除，查不到即 404。
+        let Some(info) = service_methods::lookup(name.trim_matches('/')) else {
             return (
                 StatusCode::NOT_FOUND,
                 [(header::CONTENT_TYPE, "application/json")],
-                br#"{"code":"unknown_query","message":"unknown typed query"}"#.to_vec(),
+                br#"{"code":"unknown_method","message":"unknown service method"}"#.to_vec(),
             )
                 .into_response();
         };
@@ -992,7 +958,7 @@ mod axum_impl {
                 }
             }
         };
-        if query::requires_seed(method) && params.get("seed").and_then(|v| v.as_str()).is_none() {
+        if info.requires_seed && params.get("seed").and_then(|v| v.as_str()).is_none() {
             return (
                 StatusCode::BAD_REQUEST,
                 [(header::CONTENT_TYPE, "application/json")],
@@ -1000,75 +966,7 @@ mod axum_impl {
             )
                 .into_response();
         }
-        if query::requires_seed(method) {
-            let seed = params.get("seed").and_then(|v| v.as_str()).unwrap_or_default();
-            let owns = state
-                .leases
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .owns_seed(&session_id, seed);
-            if !owns {
-                return (
-                    StatusCode::UNAUTHORIZED,
-                    [(header::CONTENT_TYPE, "application/json")],
-                    br#"{"code":"lease_required","message":"attach the session seed before querying"}"#.to_vec(),
-                )
-                    .into_response();
-            }
-        }
-        match query::query(&state.service, method, &params) {
-            Ok(value) => (
-                StatusCode::OK,
-                [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_vec(&value).unwrap_or_default(),
-            )
-                .into_response(),
-            Err(e) => (
-                StatusCode::BAD_REQUEST,
-                [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_vec(&query::error_response(&e)).unwrap_or_default(),
-            )
-                .into_response(),
-        }
-    }
-
-    async fn handle_action(
-        State(state): State<AppState>,
-        headers: HeaderMap,
-        Path(name): Path<String>,
-        body: Bytes,
-    ) -> Response {
-        if !is_authorized(&headers, &state.token) {
-            return unauthorized();
-        }
-        let Some(session_id) = get_session_id(&headers) else {
-            return lease_required_json();
-        };
-        let method = name.trim_matches('/').replace('/', ".");
-        if !is_allowed_action(&method) {
-            return (
-                StatusCode::NOT_FOUND,
-                [(header::CONTENT_TYPE, "application/json")],
-                br#"{"code":"unknown_action"}"#.to_vec(),
-            )
-                .into_response();
-        }
-        let params: serde_json::Value = if body.is_empty() {
-            serde_json::json!({})
-        } else {
-            match serde_json::from_slice(&body) {
-                Ok(v) => v,
-                Err(e) => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        [(header::CONTENT_TYPE, "application/json")],
-                        serde_json::to_vec(&serde_json::json!({"code":"invalid_body","message":format!("{e}")})).unwrap_or_default(),
-                    )
-                        .into_response();
-                }
-            }
-        };
-        // seed ownership check if params contains seed
+        // 任何带 seed 的请求：seed 必须归属本 lease。
         if let Some(seed) = params.get("seed").and_then(|v| v.as_str()) {
             let owns = state
                 .leases
@@ -1079,13 +977,13 @@ mod axum_impl {
                 return (
                     StatusCode::UNAUTHORIZED,
                     [(header::CONTENT_TYPE, "application/json")],
-                    br#"{"code":"lease_required"}"#.to_vec(),
+                    br#"{"code":"lease_required","message":"attach the session seed before calling"}"#.to_vec(),
                 )
                     .into_response();
             }
         }
-        // handle via service
-        match state.service.handle(&method, &params) {
+        let method = name.trim_matches('/');
+        match service_methods::dispatch(&state.service, method, &params) {
             Ok(value) => (
                 StatusCode::OK,
                 [(header::CONTENT_TYPE, "application/json")],
@@ -1095,7 +993,7 @@ mod axum_impl {
             Err(e) => (
                 StatusCode::BAD_REQUEST,
                 [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_vec(&serde_json::json!({"code":"action_failed","message":e.to_string()}))
+                serde_json::to_vec(&service_methods::error_response(info.kind, &e))
                     .unwrap_or_default(),
             )
                 .into_response(),
@@ -1167,13 +1065,6 @@ mod axum_impl {
     mod pure_tests {
         use super::*;
         use qaqh_ringing::RingingResetRequired;
-        #[test] fn action_whitelist_allows_session_set_tool_mode() {
-            assert!(is_allowed_action("session.set_tool_mode"));
-            assert!(is_allowed_action("config.save"));
-            assert!(is_allowed_action("subagent.spawn"));
-            assert!(!is_allowed_action("session.new"));
-            assert!(!is_allowed_action("conversation.send_message"));
-        }
         #[test] fn channel_parsing() {
             assert_eq!(parse_channel("control"), Some(RingingChannel::Control));
             assert_eq!(parse_channel("conversation"), Some(RingingChannel::Conversation));
@@ -1537,8 +1428,7 @@ mod axum_impl {
             .route("/ringing/v1/sessions/{seed}/timeline", get(handle_timeline_snapshot))
             .route("/ringing/v1/content/{content_id}", get(handle_content_get))
             .route("/ringing/v1/content", post(handle_content_upload))
-            .route("/ringing/v1/queries/{name}", post(handle_query))
-            .route("/ringing/v1/actions/{name}", post(handle_action))
+            .route("/ringing/v1/service/{method}", post(handle_service))
             .route("/ringing/v1/events/{channel}", get(handle_events))
             .route("/ringing/v1/sessions/{seed}/timeline/events", get(handle_timeline_events))
             .route("/control/v1/stop", post(handle_stop))

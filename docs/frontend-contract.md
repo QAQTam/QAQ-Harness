@@ -8,7 +8,7 @@
 
 | 契约项 | 定义位置 | 说明 |
 |---|---|---|
-| Ringing V1 端点集 | `qaqh-daemon/src/ringing_http.rs` | open/leases/renew、commands/{control,conversation,tool}、events/{channel} SSE、timeline、content 上传下载、queries、actions |
+| Ringing V1 端点集 | `qaqh-daemon/src/axum_server.rs` | open/leases/renew、commands/{control,conversation,tool}、events/{channel} SSE、timeline、content 上传下载、service RPC（Read/Write 统一面，方法表见 `qaqh-runtime::ringing::service_methods`） |
 | envelope / ack 载荷形状 | `qaqh-ringing`（`RingingCommandEnvelope` 等） | 字段名、判别式、错误 code 集合 |
 | 能力协商 | `POST /ringing/v1/clients/open` | schema=`"qaqh.Ringing"`, version=1；现有四能力：`Ringing_v1 / Ringing_batch_v1 / Ringing_bootstrap_v1 / Ringing_command_status_v1` |
 | 会话头 | `X-QAQH-Client-Session-Id` | 所有 lease 校验端点依赖；名称冻结 |
@@ -18,10 +18,12 @@
 
 ## 2. 演进规则
 
-- **加法兼容**：envelope 新增带 `#[serde(default)]` 的可选字段、新增只读
-  query/action 方法——允许单向合入，前端按需跟进。（能力矩阵已于 2026-08
+- **加法兼容**：envelope 新增带 `#[serde(default)]` 的可选字段、新增 service
+  方法（Read/Write）——允许单向合入，前端按需跟进。（能力矩阵已于 2026-08
   移除：同链路发布的客户端与 daemon 之间无部分能力组合，版本代差由
-  `RINGING_VERSION` 承担。）
+  `RINGING_VERSION` 承担。原 `/queries` `/actions` 双端点已于 2026-08 合并为
+  `/ringing/v1/service/{method}`；SDK 公开 API（`QueryRequest`/`ActionRequest`）
+  不变。）
 - **破坏性变更**：必须 bump `RINGING_VERSION` 或 `CONTROL_PROTOCOL_VERSION`
   并保持旧版本可解析，双侧 PR 同步合入后才可发版。
 - **SSE 传输约束（对浏览器前端至关重要）**：事件端点要求

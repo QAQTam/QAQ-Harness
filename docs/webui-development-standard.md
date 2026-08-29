@@ -17,7 +17,7 @@
 | N2 | **NEVER** 使用浏览器原生 `EventSource`：它无法设置自定义头（daemon 要求 `Authorization` + `X-QAQH-Client-Session-Id`），且 daemon 禁止 query string 传 token。必须 fetch + ReadableStream |
 | N3 | **NEVER** 将 token 写入 URL、query、日志或 localStorage/sessionStorage。token 仅内存持有，来源见 §2 连接提供者 |
 | N4 | **NEVER** 在未 open 协商前发送命令；所有命令必须携带 open 签发的 `client_session_id` |
-| N5 | **NEVER** 用 queries/actions 发送会话生命周期命令——daemon 会以 `invalid_envelope` 拒绝。会话命令只走三频道 command envelope |
+| N5 | **NEVER** 将会话生命周期操作走 service 服务面（`session.new`/`session.resume` 等不在方法表，404 拒绝）。会话命令只走三频道 command envelope |
 | N6 | **NEVER** 实现前端侧"历史权威"：bootstrap/timeline 是唯一真源，前端只做视图缓存；禁止 `ConversationLoadMore`（daemon 设计性拒绝 422） |
 | N7 | **NEVER** 假设可访问文件系统/子进程/跨域 API——一切经 Ringing 面；跨 seed 访问会被所有权校验拒绝（403） |
 
@@ -134,26 +134,29 @@ GET /ringing/v1/sessions/{seed}/bootstrap
 返回该会话完整持久化历史。**替代**已废弃的 load_more（发它得 422
 `unsupported_command`，这是设计而非缺陷）。
 
-### 3.7 只读查询 queries
+### 3.7 服务面 service（Read/Write 统一 RPC）
 ```
-POST /ringing/v1/queries/{name}     body: { seed?, … }
+POST /ringing/v1/service/{method}   body: { seed?, … }
 ```
-白名单内方法（其余 404）：`daemon.version session.list session.meta
-session.activity session.dashboard session.get_activity workspace.get
-workspace.status workspace.list fs.list fs.read config.load
-skills.list_tools todo.status plan.read plan.context_stats
-stats.token_usage git.diff git.branch git.branches git.file_diff`
-其中 `session.meta/dashboard/get_activity workspace.get todo.status
-plan.* git.*` 必须带 `seed`（否则 400）。错误统一
-`{"code":"query_failed","message":…}`。
+单一权威方法表见后端 `qaqh_runtime::ringing::service_methods`（旧
+`/queries` `/actions` 双端点已于 2026-08 并入此处，slash 别名拆除）。
 
-### 3.8 辅助动作 actions
-```
-POST /ringing/v1/actions/{name}     body: { action_id:"<uuid-v4>", seed?, … }
-```
-允许前缀：`git. workspace. config. profile. skills. stats. plan. todo.
-subagent.` 及单条 `session.set_tool_mode`。缺 `action_id` → 400。
-**会话/交互命令出现在这里会被显式拒绝**（见 N5）。
+- **Read**（无副作用查询）：`daemon.version session.list session.meta
+  session.activity session.dashboard session.get_activity workspace.get
+  workspace.status workspace.list workspace.diagnose fs.list fs.read
+  config.load skills.list_tools todo.status plan.read plan.context_stats
+  stats.token_usage git.diff git.branch git.branches git.file_diff`
+- **Write**（变更）：`config.save config.set_permission_level profile.*
+  skills.operation skills.reload workspace.set/set_mode/install_wsl/
+  create/rename/delete/move_session/detach session.set_tool_mode
+  subagent.spawn git.switch_branch git.commit`
+- Read 中 `session.meta/dashboard/get_activity workspace.get todo.status
+  plan.read/plan.context_stats git.*` 必须带 `seed`（否则 400）；任何带
+  `seed` 的请求都做 lease 归属校验。
+- 错误码按类别：Read → `{"code":"query_failed",…}`，Write →
+  `{"code":"action_failed",…}`；未知方法 404 `unknown_method`。
+- **会话/交互命令出现在这里会被 404 拒绝**（见 N5）；TS 侧方法名必须
+  从 typed 常量引用，禁止散落字面量。
 
 ### 3.9 内容引用 content（附件）
 ```
@@ -259,9 +262,9 @@ curl -s -X POST $BASE/ringing/v1/clients/open -H "Authorization: Bearer $TOKEN" 
 |---|---|
 | "加个 WebSocket 更实时" | 违反 N1；WS 数据协议已被 M3 拆除，SSE + batch 信封即权威通道 |
 | "EventSource 简单" | 违反 N2；带不了头，daemon 直接 401 |
-| "轮询 queries 代替 SSE" | 违反 N1；浪费且丢因果链（causation_id 无法还原） |
+| "轮询 service 查询代替 SSE" | 违反 N1；浪费且丢因果链（causation_id 无法还原） |
 | "token 放 localStorage 方便热载" | 违反 N3；桥脚本每次注入新值，持久化只会放大泄漏面 |
 | "load_more 翻旧消息" | 违反 N6；422 是设计，翻页用 timeline `before_turn` |
-| "actions 里发 session.send_message" | 违反 N5；400 拒绝，命令只走 envelope |
+| "service 面发 session.send_message" | 违反 N5；404 拒绝，命令只走 envelope |
 | "前端存一份 messages.jsonl 缓存到磁盘" | 违反 N6；bootstrap 永远可得，磁盘副本必然漂移 |
 | "直接 fetch file:// 或 localhost 其他端口" | 违反 N7/N1；同源之外的一切都是架构外 |

@@ -153,12 +153,13 @@ fn zcode() -> ProviderSpec {
             models_url: Some("https://open.bigmodel.cn/api/paas/v4".into()),
             anthropic_path: Some("/api/anthropic/v1/messages".into()),
             cache_field: CacheTokenField::PromptDetailsCached,
-            // ZCode GLM 系列经 Anthropic 协议透传时，不使用 Anthropic 的
-            // `thinking` 预算（GLM 推理走自有字段）；误发 `thinking`
-            // 在 GLM 上会 400，故默认关闭，有需要再按 model 覆写。
-            supports_thinking: false,
-            supports_reasoning_effort: false,
-            supports_reasoning_content: false,
+            // ZCode GLM-5.3 系列经 Anthropic 透传：复刻 out/host/index.js:1601332 Ase
+            // `output_config:{effort:low|high|max}+thinking:{budget_tokens}`，harness 已有一整套
+            // low/medium/high/xhigh/max ↔ 1024/2048/4096/8192/16384 预算，透传后 GLM 按强度回 thinking_delta
+            supports_thinking: true,
+            supports_reasoning_effort: true,
+            effort_allowlist: Some(vec!["low".into(), "medium".into(), "high".into(), "xhigh".into(), "max".into()]),
+            supports_reasoning_content: true,
             supports_image_tool: true,
             has_balance: false,
             ..Default::default()

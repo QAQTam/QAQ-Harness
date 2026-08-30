@@ -125,6 +125,18 @@ fn glm() -> ProviderSpec {
             cache_field: CacheTokenField::PromptDetailsCached,
             do_sample: Some(false),
             has_balance: false,
+            // 端点异构：glm-5.3/5.2/4.7 等文本模型不收图，仅 glm-5.3-flash
+            // 与 4.x V 系列是视觉模型 → 端点开图 + 模型白名单（openrouter 同款）。
+            // 注意不用 `glm-4v*` 通配：GLM-4V-Flash 官方明确不支持 Base64
+            // 编码，而 harness 只发 base64（无图床 URL），放行必然 400。
+            supports_image_tool: true,
+            image_models: Some(vec![
+                "glm-5.3-flash".into(),
+                "glm-5v*".into(),
+                "glm-4.6v*".into(),
+                "glm-4.5v*".into(),
+                "glm-4v-plus*".into(),
+            ]),
             ..Default::default()
         }],
     }
@@ -735,6 +747,23 @@ mod tests {
             "openai",
             "meta-llama/llama-3.3-70b"
         ));
+    }
+
+    #[test]
+    fn glm_vision_allowlist_matches_bigmodel_support_matrix() {
+        // glm-5.3-flash 是 VLM → 放行（大小写不敏感）。
+        assert!(image_model_supported("glm", "openai", "glm-5.3-flash"));
+        assert!(image_model_supported("glm", "openai", "GLM-5.3-Flash"));
+        // 5V / 4.5V / 4.6V / 4V-Plus 系列前缀放行。
+        assert!(image_model_supported("glm", "openai", "glm-5v-turbo"));
+        assert!(image_model_supported("glm", "openai", "glm-4.6v"));
+        assert!(image_model_supported("glm", "openai", "glm-4v-plus-0111"));
+        // 文本模型必须拒绝：glm-5.3 官方仅支持文本模态。
+        assert!(!image_model_supported("glm", "openai", "glm-5.3"));
+        assert!(!image_model_supported("glm", "openai", "glm-5.2"));
+        assert!(!image_model_supported("glm", "openai", "glm-4.7"));
+        // glm-4v-flash 官方不支持 Base64 编码（harness 只发 base64）→ 拒绝。
+        assert!(!image_model_supported("glm", "openai", "glm-4v-flash"));
     }
 
     #[test]

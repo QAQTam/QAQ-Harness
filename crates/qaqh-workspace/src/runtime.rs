@@ -246,20 +246,47 @@ pub fn all_tools() -> Vec<ToolDef> {
 }
 
 /// 当前配置的 provider endpoint 是否接受图片输入（read_image 工具开关）。
+///
+/// PR-1-10 / D2：能力快照由宿主注入（[`set_image_capability`]：daemon
+/// 装配 / config reload / serve 启动），工具调用路径零磁盘读。
+/// 未注入时（单元测试 / 未装配进程）默认放行——工具可见性交给注册方，
+/// 执行路径的自然错误兜底真实不支持的场景。
 pub fn image_tool_enabled() -> bool {
-    qaqh_config::Config::load()
-        .is_ok_and(|cfg| qaqh_config::registry::image_tool_enabled(&cfg.provider_id, &cfg.endpoint))
+    image_caps().map(|c| c.endpoint).unwrap_or(true)
 }
 
 /// 当前 (provider, endpoint, model) 组合是否接受图片输入。
 ///
 /// 比端点级 [`image_tool_enabled`] 更精确：路由器端点（如 OpenRouter）的
 /// 模型异构，文本-only 模型需要在此处被拒绝，而不是让带图请求打到上游
-/// 换回一个不透明的 400。
+/// 换回一个不透明的 400。快照语义同上（PR-1-10）。
 pub fn image_model_supported() -> bool {
-    qaqh_config::Config::load().is_ok_and(|cfg| {
-        qaqh_config::registry::image_model_supported(&cfg.provider_id, &cfg.endpoint, &cfg.model)
-    })
+    image_caps().map(|c| c.model).unwrap_or(true)
+}
+
+#[derive(Clone, Copy)]
+struct ImageCaps {
+    endpoint: bool,
+    model: bool,
+}
+
+static IMAGE_CAPS: Mutex<Option<ImageCaps>> = Mutex::new(None);
+
+/// 注入图片能力快照（PR-1-10 / D2）。宿主在装配 / reload / serve 启动时
+/// 以当前配置计算后调用；快照存活期内工具调用路径不再触碰磁盘。
+pub fn set_image_capability(endpoint_enabled: bool, model_supported: bool) {
+    *IMAGE_CAPS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(ImageCaps {
+    endpoint: endpoint_enabled,
+    model: model_supported,
+});
+}
+
+fn image_caps() -> Option<ImageCaps> {
+    *IMAGE_CAPS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// 查询 handler 声明的能力类别（权限决策单一事实源）。

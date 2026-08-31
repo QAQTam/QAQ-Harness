@@ -160,9 +160,11 @@ pub(crate) fn run_actor(
             qaqh_workspace::authorization::set_subagent_sandbox(true);
         }
 
-        let mut agent = qaqh_msgloop::state::agent::AgentState::new(
-            qaqh_config::Config::load().unwrap_or_default(),
-        );
+        // 权威配置读收敛 config 单入口（PR-1-8 同向）；图片能力快照
+        // 就地注入（PR-1-10：actor 进程的工具调用路径零磁盘读）。
+        let agent_config = qaqh_config::watch::authoritative().unwrap_or_default();
+        let mut agent = qaqh_msgloop::state::agent::AgentState::new(agent_config);
+        agent.refresh_image_capability();
 
         // Both session actors and subagent actors use an actor-private
         // ToolManager so daemon-side `skills.list_tools` stays stable while a

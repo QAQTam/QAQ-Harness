@@ -241,6 +241,20 @@ impl AgentState {
         self.endpoint_spec = qaqh_config::registry::resolve_for_config(&self.config);
     }
 
+    /// Push the image capability snapshot for the current config into the
+    /// workspace runtime (PR-1-10 / D2): tool-call paths read the snapshot,
+    /// never the disk. Call at assembly and after every config reload.
+    pub fn refresh_image_capability(&self) {
+        qaqh_workspace::runtime::set_image_capability(
+            qaqh_config::registry::image_tool_enabled(&self.config.provider_id, &self.config.endpoint),
+            qaqh_config::registry::image_model_supported(
+                &self.config.provider_id,
+                &self.config.endpoint,
+                &self.config.model,
+            ),
+        );
+    }
+
     /// Queue a loop-bookkeeping write for the host flush service (PR-1-5).
     pub fn enqueue_meta_op(&mut self, op: MetaOp) {
         self.pending_meta_ops.push(op);
@@ -401,6 +415,7 @@ impl AgentState {
         runtime::init_tools(caller, &agent_tool_registrars(), vec![]);
         let mut agent = Self::new(config);
         agent.tool_defs = runtime::all_tools(); // all tools, no allowlist
+        agent.refresh_image_capability();
         agent
     }
 

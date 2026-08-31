@@ -11,6 +11,9 @@ use std::env;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+    // PR-1-10 / D2：能力快照在进程装配点注入（CLI/serve 唯一的磁盘读，
+    // §10.3 白名单）；worker/actor 进程由各自装配路径注入。
+    inject_image_capability();
     if args.get(1).map(String::as_str) == Some("serve") {
         serve_main(&args[2..]);
         return;
@@ -61,6 +64,19 @@ fn main() {
     if !r.result.is_success() {
         std::process::exit(1);
     }
+}
+
+/// 读当前配置并把图片能力快照注入 runtime（PR-1-10）。
+/// 配置缺失时注入 (true, true)——CLI/serve 面交由执行路径自然报错。
+fn inject_image_capability() {
+    let (endpoint, model) = match qaqh_config::Config::load() {
+        Ok(cfg) => (
+            qaqh_config::registry::image_tool_enabled(&cfg.provider_id, &cfg.endpoint),
+            qaqh_config::registry::image_model_supported(&cfg.provider_id, &cfg.endpoint, &cfg.model),
+        ),
+        Err(_) => (true, true),
+    };
+    qaqh_workspace::runtime::set_image_capability(endpoint, model);
 }
 
 /// `serve` subcommand: run the HTTP tool service.

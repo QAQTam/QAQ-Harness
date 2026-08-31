@@ -196,18 +196,25 @@ re-export 面删除。
 不扩大 message 域），与 PersistOp 同一 drain 服务；`set_context_stats` 两处
 （`&AgentState` 不可变借用 + 覆盖式快照写）与后台标题线程走注入句柄直调。
 
-### PR-1-1（B1）授权审批门面入 workspace
-**现状**：`engine_tool.rs`（1,018 行）内联完整审批管线——`:61,68` `TrustedFolderSet::load("")`
-读磁盘、`:156` 构造 `ToolInvocation`、`:167` `authorization::admit`、`:179-212`
-`ToolCategory`×`PermissionRisk`→信任级别映射、`:344+` `ApprovalError` 三分类。
-**步骤**：
-1. `qaqh-workspace` 新增 `authorize(ToolInvocation) -> Decision` 单一门面（策略 + 审批流程 +
-   风险映射全部内聚；`Decision` 携带 Authorized / ApprovalRequired{challenge} / Denied{reason}）。
-2. `TrustedFolderSet::load` 移入 workspace 初始化（serve 启动 / daemon 注入两路径），
-   loop 工具调用路径零磁盘读。
-3. loop 侧 `engine_tool.rs` 收缩为"调门面 + 按 Decision 分发"，目标 <400 行。
-**验收**：`grep -rn "authorization::\|permission::" crates/qaqh-msgloop/src` → 0；
-`grep -rn "TrustedFolderSet" crates/qaqh-msgloop/src` → 0。
+### PR-1-1（B1）授权审批门面入 workspace（执行方案已定，待实施）
+**现状复验（2026-08-31）**：审批**决策**已在 workspace（`authorization::admit`），engine_tool
+的"内联管线"实为：ToolInvocation 构造 + lookup_category 回退、`TrustedFolderSet::load("")`
+磁盘读（ToolEngine::new，:61,68）、challenge→域事件映射（category/risk match、
+`category_str`、PermissionLevel from_u8().to_u8() 无效往返 :212,262）、审批后信任写
+（:327 `self.trusted.trust`）。类型引用另见 agent.rs:1255 / types.rs:228。
+**执行方案**：
+1. workspace `authorization` 增 `static GLOBAL_TRUSTED`（惰性 `load("")`，语义不变）+
+   `trust_folder(path)`（锁内 trust 落盘）。
+2. 单门面 `pub fn authorize_call(session_id, call_id, tool_name, args) -> Admission`：
+   内聚 lookup_category（回退 Write）+ CURRENT_WORKSPACE 解析（含空/"."→cwd 的
+   resolve_workspace 逻辑搬入）+ permission_level 取自 RuntimeContext + 全局 trusted。
+3. workspace lib.rs 根 re-export authorization/permission 公共类型，msgloop 引用改根
+   路径（消除 `authorization::`/`permission::` 字样）；`category_str` 移 workspace；
+   :212/:262 的 PermissionLevel 往返直接用 u8。
+4. engine_tool 两处 admit 调用点 + ApprovalError 三分类改走门面与根路径；
+   ToolEngine.trusted 字段删除；init_tools 无需显式 init（惰性单例）。
+**验收**：`grep -rn "authorization::\|permission::\|TrustedFolderSet" crates/qaqh-msgloop/src` → 0；
+engine_tool <400 行；全量出口门 + Z6/Z8 无 diff。
 
 ### PR-1-2（B2）技能状态机入 skills ✅（6dfbefa 类型归位 + 5b8a5c7 状态机搬家）
 **现状**：`state/skill_context.rs` 实测 **830 行**（提案记 ~600）：catalog 快照、激活/去激活、
@@ -237,7 +244,7 @@ skills 单测随迁并全绿。
 `services/dashboard.rs`（68 行）组装 `qaqh_proto::DocInfo` 读 `workspace::runtime::files_read()`。
 **步骤**：project_turns 三函数移入 `runtime/src/ringing/projection.rs`；dashboard 移入
 runtime（与 projection 同居）；`services/` 目录清空删除；`lib.rs` 模块表更新。
-**验收**：`grep -rn "project_turns\|DocInfo\|dashboard" crates/qaqh-msgloop/src` → 0。
+**执行落地验收**：`grep 'services::|project_turns|DocInfo' qaqh-msgloop` → 0（英文注释中 dashboard 一词不回收）。
 
 ### PR-1-8（B5）reload 收敛 config 单写口 ✅（authoritative 单入口 + init 注入 + init_subagent 死码删除）
 **现状**（勘误后，3 处而非提案的 1 处）：`ringing_v1/engine_session.rs:80`、
@@ -248,7 +255,7 @@ config 权威读只在 config crate 的 reload/watch 服务（与 config-revamp 
 两文档交叉引用，不重复施工）。
 **验收**：`grep -rn "Config::load()" crates/qaqh-msgloop/src` → 0。
 
-### PR-1-9（B7）endpoint 一次性解析 ✅（AgentState.endpoint_spec + config 单入口 resolve_for_config） ✅（AgentState.endpoint_spec + config 单入口 resolve_for_config）
+### PR-1-9（B7）endpoint 一次性解析 ✅（AgentState.endpoint_spec + config 单入口 resolve_for_config）
 **现状**：`engine_compact.rs:224`、`engine_title.rs:183`、`turn_lap/gate.rs:636` 三处
 `qaqh_config::registry::find_endpoint`。
 **步骤**（Q6a）：turn 开始时一次性解析 endpoint/protocol 存入 `AgentState` 字段

@@ -446,10 +446,12 @@ impl AgentRegistry {
                 AgentTransport::InProcess { cmd_tx, cancel } => {
                     // Mirror the pipe reader: interrupt frames set the cancel
                     // token before they enter the command queue so long-running
-                    // gate/tool work observes the abort immediately.
+                    // gate/tool work observes the abort immediately. PR-3-4：
+                    // 会话级取消写会话键控表（该会话在途工具即时中止），不再
+                    // 置进程级 flag——那会误伤其它会话的在途工具。
                     if crate::agent::loop_core::ringing_command_is_interrupt(env) {
                         cancel.set();
-                        qaqh_workspace::set_cancel(true);
+                        qaqh_workspace::set_session_cancel(seed, true);
                     }
                     let cmd = crate::agent::types::WorkerCommand {
                         frame: env.clone(),
@@ -624,6 +626,8 @@ impl AgentInstance {
         );
         match &self.transport {
             AgentTransport::InProcess { cmd_tx, cancel } => {
+                // daemon-shutdown 是进程级语义：置全局 CANCEL（PR-3-4 保留的
+                // 唯一无会话写入路径），所有会话的在途工具一并中止。
                 cancel.set();
                 qaqh_workspace::set_cancel(true);
                 let cmd = crate::agent::types::WorkerCommand {

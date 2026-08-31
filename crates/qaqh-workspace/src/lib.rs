@@ -182,8 +182,9 @@ impl JsonArgs for serde_json::Value {
 }
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Mutex, RwLock};
+use std::sync::{LazyLock, Mutex, RwLock};
 use std::time::Duration;
 
 use qaqh_types::ToolDef;
@@ -264,32 +265,71 @@ pub fn current_workspace() -> String {
 }
 
 /// Set the actor-local or process-wide cancel flag.
+///
+/// PR-3-4 解析顺序：actor 线程（有 actor session）写本地 Cell；工具线程
+/// （execute 路径已绑定 runtime ctx 会话）写会话键控表；两者皆无（进程级
+/// 路径，如 daemon shutdown）写全局 flag。
 pub fn set_cancel(value: bool) {
     if ACTOR_SESSION.with(|slot| slot.borrow().is_some()) {
         ACTOR_CANCEL.with(|slot| slot.set(value));
+    } else if let Some(session) = bound_cancel_session() {
+        set_session_cancel(&session, value);
     } else {
         CANCEL.store(value, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
-/// Read the effective cancel flag (actor-local if present).
-pub fn is_cancel() -> bool {
-    let local = ACTOR_CANCEL.with(|slot| slot.get());
-    if ACTOR_SESSION.with(|slot| slot.borrow().is_some()) {
-        local
-    } else {
-        CANCEL.load(std::sync::atomic::Ordering::SeqCst)
-    }
+/// 会话键控取消表（PR-3-4）：工具 worker 线程没有 actor context，旧的进程级
+/// CANCEL 使一个会话的 interrupt 会误伤其它会话在途工具。按会话键控后互不
+/// 干扰；全局 CANCEL 仅保留给无会话路径（daemon shutdown）。
+static SESSION_CANCELS: LazyLock<Mutex<HashMap<String, bool>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Set the session-scoped cancel flag（会话级 interrupt 的规范入口；
+/// registry interrupt / 权限挑战取消经此写入，不影响其它会话）。
+pub fn set_session_cancel(session: &str, value: bool) {
+    let mut guard = SESSION_CANCELS.lock().unwrap_or_else(|e| e.into_inner());
+    guard.insert(session.to_string(), value);
 }
 
-/// 清除两层取消标记（actor 本地 + 进程全局）。
+fn session_cancelled(session: &str) -> bool {
+    let guard = SESSION_CANCELS.lock().unwrap_or_else(|e| e.into_inner());
+    guard.get(session).copied().unwrap_or(false)
+}
+
+/// Resolve the session whose cancel state this thread is operating under:
+/// actor session first（actor 线程），then the runtime ctx bound by the
+/// execute path（工具 worker 线程），else None（进程级路径）。
+fn bound_cancel_session() -> Option<String> {
+    if let Some(local) = ACTOR_SESSION.with(|slot| slot.borrow().clone()) {
+        return Some(local);
+    }
+    crate::runtime::context().map(|ctx| ctx.active_session)
+}
+
+/// Read the effective cancel flag: actor-local → session-keyed → process-wide.
+pub fn is_cancel() -> bool {
+    if ACTOR_SESSION.with(|slot| slot.borrow().is_some()) {
+        return ACTOR_CANCEL.with(|slot| slot.get());
+    }
+    if let Some(session) = bound_cancel_session() {
+        return session_cancelled(&session);
+    }
+    CANCEL.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// 清除本线程所属会话的两层取消标记（actor 本地 + 进程全局 + 会话表项）。
 /// C2：全局 CANCEL 曾被 daemon 非 actor 线程（registry interrupt 预置、
 /// manager.cancel_tool(None)）置位，而清零点都在 actor 线程只写本地，
 /// 导致全局 flag 一旦置位永无人复位、所有工具秒拒 Cancelled。
-/// 所有清零路径必须走这里，保证两层同步归零。
+/// 所有清零路径必须走这里，保证各层同步归零；会话表项只清本线程所属
+/// 会话，其它会话的取消状态不受影响（PR-3-4 隔离语义）。
 pub fn clear_cancel() {
     ACTOR_CANCEL.with(|slot| slot.set(false));
     CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
+    if let Some(session) = bound_cancel_session() {
+        set_session_cancel(&session, false);
+    }
 }
 
 /// Unit tests mutate process-wide runtime state. Keep those mutations

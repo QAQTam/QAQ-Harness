@@ -464,10 +464,26 @@ workspace lib + serve 集成全绿（含 PR-0-3 修复的那批）。
 - 出口：验收 grep → 0（src + tests）；依赖移除；53 targets / 794 passed /
   0 failed；clippy 0 error。
 
-### PR-3-4 cancel 残留复查
+### PR-3-4 cancel 残留复查 ✅（2026-08-31 完成登记见节末）
 - 第一轮 PR-6 已修主路径；本项为结构性复查：全仓 grep 进程级 cancel flag，确保全部走
   per-session `CancelToken`。
 - **验收**：`session_inprocess` 扩展用例"跨会话 cancel 不互相影响"落地并全绿。
+**完成登记（2026-08-31）**：
+- **复查结论（结构缺陷确认并修复）**：工具 worker 线程无 actor context，
+  `is_cancel()` 回退进程级全局 CANCEL——一个会话的 registry interrupt 置全局
+  flag 会误伤**其它会话**的在途工具（跨会话取消泄漏）。
+- **修复**：workspace 新增会话键控取消表 `SESSION_CANCELS` + 规范入口
+  `set_session_cancel(session, value)`；`set_cancel`/`is_cancel`/`clear_cancel`
+  解析顺序统一为 actor 本地 Cell → runtime ctx 绑定会话的表项 → 全局 CANCEL
+  （无会话路径）；`clear_cancel` 只清本线程所属会话的表项，其它会话不受影响。
+  registry interrupt 改写会话表（`set_session_cancel(seed, true)`）；进程级
+  全局仅保留 daemon-shutdown 一处（进程级语义，注释登记）；loop_core interrupt
+  命中 actor 本地 Cell（不变）。
+- **验收落地**：`session_inprocess::cross_session_cancel_does_not_leak`——
+  经 registry 真实 interrupt 路径取消会话 A，断言 (1) 全局 flag 未被置位、
+  (2) 会话 B 上下文的 execute 路径 cancel 检查通过（进入工具参数校验而非
+  Cancelled）。全绿。
+- 出口：53 targets / **795** passed / 0 failed（+1 新用例）；clippy 0 error。
 
 ---
 

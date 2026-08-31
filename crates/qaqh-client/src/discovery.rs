@@ -241,3 +241,30 @@ pub fn process_is_running(pid: u32) -> bool {
 pub fn process_is_running(_pid: u32) -> bool {
     true // discovery presence is the check on non-Windows for now
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // frontend-contract.md §1 冻结面锚点：discovery endpoint 的兼容解析。
+    // 旧形态 ws://host:port/control/v1 必须无损转 http://，新形态原样通过；
+    // 破坏任一分支即破坏已发布客户端的 discovery 兼容。
+    #[test]
+    fn base_url_accepts_legacy_ws_and_new_http_forms() {
+        let legacy = DaemonDiscovery {
+            endpoint: "ws://127.0.0.1:9101/control/v1".into(),
+            token: String::new(),
+            pid: 0,
+            server_epoch: String::new(),
+            protocol_version: 1,
+            daemon_version: String::new(),
+        };
+        assert_eq!(legacy.base_url().unwrap(), "http://127.0.0.1:9101");
+
+        let modern = DaemonDiscovery {
+            endpoint: "http://127.0.0.1:9101".into(),
+            ..legacy
+        };
+        assert_eq!(modern.base_url().unwrap(), "http://127.0.0.1:9101");
+    }
+}

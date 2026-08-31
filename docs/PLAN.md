@@ -38,6 +38,23 @@
 **Phase 0 出口硬条件：`cargo test --workspace --no-fail-fast` 0 failed（或失败项全部带
 `#[ignore]` + 书面理由登记于本节），clippy 0 error 0 warning（新增）。**
 
+### 0.2 Phase 0 完成登记（2026-08-31 复验与闭环）
+
+- **V1–V5 全部闭环**，根因统一为提交 `0946afe`（feat: Anthropic Messages 网关接入与
+  bash/pwsh 工具拆分，minimal:dsh 下线）**改了生产代码但漏同步测试**，并非环境/回归：
+  - V1/V2：`is_minimal_dsh` 桩化后断言未同步 → 改为"废弃模式守卫"断言（PR-0-2）。
+  - V3/V4：exec 已拆分至 bash/pwsh 且不再注册（`exec.rs:1350` 注释为刻意设计），测试载体
+    仍是 exec → 词表守卫去 exec（19→18 追认）、execution 路由测试与 permission_lifecycle
+    审批载体 exec → bash。**V3 的"serve /execute 404 回归"初判不成立**（勘误见 §9）。
+  - V5：clippy error 0；axum_server.rs 同文件 warnings（unused import / useless format /
+    lazy eval / collapsible if ×3 / redundant closure / items_after_test_module）全部清零。
+- **基线漂移**：PLAN 制定日（86625a7）实测 4 target / 7 test 失败；执行日（0d6cb12 起点）
+  复验为 3 target / 5 test 失败——`backend::process_kill_preempts_long_running_task_in_serve`
+  已自行回绿，其余漂移原因即上述测试同步状态差异。
+- **本轮修复后基线（新 HEAD c725499）：54 targets，789 passed / 0 failed，
+  clippy 0 error**。Phase 0 出口硬条件达成，Phase 1 解锁。
+- commit 映射：PR-0-1 = `a67bf35`；PR-0-2 = `0f09737`；PR-0-3 = `c725499`；PR-0-4 = 本文档提交。
+
 ---
 
 ## 1. 总览：阶段与 PR 切分
@@ -400,6 +417,8 @@ workspace lib + serve 集成全绿（含 PR-0-3 修复的那批）。
 | B2：skill_context ~600 行 | **830 行** | 工作量微调 |
 | R-6：基线"706/706 全绿" | **4 target / 7 test 失败 + clippy 1 error**（§0.1） | Phase 0 扩容 +1d |
 | flush 调用面（提案未量化） | flush_meta 17 处 / snapshot_full 3 处调用（+ message 内部各 1 处） | 决定 PersistOp 队列而非逐点改签名 |
+| V3 初判"serve `/execute` 404 回归"（9c946e7/86625a7 嫌疑） | **不成立**：实为 `0946afe` exec 拆分后测试未同步（词表含 exec + 测试载体 exec）；`process_kill_preempts` 已自行回绿 | PR-0-3 处置从"修回归"改为"测试追认" |
+| Z8 词表（登记时 19 工具含 exec） | **18 工具**（exec 拆分退役，`register_exec_for_compat` 不注册） | `default_registry_exposes_the_formal_tool_vocabulary` 期望 vec 已按 18 追认 |
 
 实证复核通过（无修正）：A1 五处行号逐字命中；A2（store.rs:126,809,972 + agent.rs:628 注入）；
 C1（actor.rs 全部行号 + registry.rs 七处散点）；C2 唯一消费方；D1（supervisor Child 拉起 local/WSL 双模式）；
@@ -426,12 +445,12 @@ cargo clippy --workspace --all-targets 2>&1 | grep -c "^error"   # → 0
 |---|---|---|
 | Z1 | `qaqh-ringing` 单测 + `msgloop/tests/inprocess_loop.rs`（合并后随迁 runtime） | 常量 `RINGING_SCHEMA/VERSION` 在 `qaqh-ringing/src/protocol.rs` |
 | Z2 | `qaqh-daemon/tests/daemon_ws.rs` + `qaqh-proto` control 单测 | `CONTROL_PROTOCOL_VERSION` 于 `proto/control.rs` |
-| Z3 | `frontend-contract.md` 冻结面 ↔ client envelope 测试 | PR-0-4 核对覆盖，缺则补 |
+| Z3 | `frontend-contract.md` 冻结面 ↔ client envelope 测试 | PR-0-4 已核对：sse_decoder ×8 / endpoint ×3 / types ×2 + **discovery 兼容解析锚点（PR-0-4 新补，ws://→http:// 冻结面）** |
 | Z4 | `config_api` dto 单测（apply_patch_*）+ `base_url_preset_guard` + `theme_notifications` | 当日全绿 |
 | Z5 | `qaqh-session` 单测 + `migrate.rs`；**PR-1-6 新增旧会话回放集成** | R-3 影子验证同 PR |
-| Z6 | workspace serve 单测（backend/execution/serve::tests）+ supervisor 装置 | **当前 3 失败，PR-0-3 前提** |
+| Z6 | workspace serve 单测（backend/execution/serve::tests）+ supervisor 装置 | **PR-0-3 已回绿**（载体 exec→bash）；WSL 走查清单 §10.4 |
 | Z7 | `qaqh-client` 单测 + `lease_renegotiation` | 当日绿 |
-| Z8 | `registration::default_registry_exposes_the_formal_tool_vocabulary` + `schema_spot_check` | **当前失败，PR-0-3 前提** |
+| Z8 | `registration::default_registry_exposes_the_formal_tool_vocabulary` + `schema_spot_check` | **PR-0-3 已回绿**；词表按 bash/pwsh 拆分追认为 18 工具（见 §9） |
 
 ### 10.3 grep 白名单（允许残留的位置）
 - 各 crate `tests/` 目录（集成测试自带装配，如 `SessionManager::init`）。

@@ -1,5 +1,4 @@
-use crate::effect::{Effect, PendingTool, ToolExecRequest, ToolExecutorFn};
-use qaqh_session::SessionManager;
+use crate::effect::{Effect, PendingTool, PersistOp, ToolExecRequest, ToolExecutorFn};
 use qaqh_types::{Message, ToolDef};
 
 /// Tool results are finalized exactly once, at storage time — but the shaping
@@ -141,6 +140,11 @@ pub struct MessageStore {
     replaying: bool,
     /// Messages assigned msg_id but not yet flushed to disk.
     pending_save: Vec<Message>,
+    /// Queued disk writes awaiting host-side execution (PR-1-6). The host
+    /// drains via [`Self::take_persist_ops`] after each command dispatch and
+    /// replays the ops against the injected session manager, preserving the
+    /// old synchronous write order byte-for-byte (Z5).
+    pending_persist: Vec<PersistOp>,
     /// If true, skip all disk persistence. Used by subagents (disposable workers).
     ephemeral: bool,
 }
@@ -176,6 +180,7 @@ impl Clone for MessageStore {
             context_revision: self.context_revision,
             replaying: false,
             pending_save: Vec::new(),
+            pending_persist: Vec::new(),
             ephemeral: self.ephemeral,
         }
     }
@@ -199,6 +204,7 @@ impl MessageStore {
             context_revision: 0,
             replaying: false,
             pending_save: Vec::new(),
+            pending_persist: Vec::new(),
             ephemeral: false,
         }
     }
@@ -251,33 +257,49 @@ impl MessageStore {
     /// Write buffered messages to JSONL, then update meta.json + index.
     /// No-op if the session seed has not been initialized yet (empty seed),
     /// or if ephemeral mode is enabled.
+    ///
+    /// PR-1-6: the disk writes are enqueued as [`PersistOp`]s instead of
+    /// being executed here; the host drains and replays them through the
+    /// injected session manager in enqueue order (byte-identical to the old
+    /// synchronous write order).
     pub fn flush_meta(&mut self, model: &str, effort: &str) {
         if self.seed.is_empty() || self.ephemeral {
             return;
         }
         let turn_count = self.turns.len();
         if !self.pending_save.is_empty() {
-            SessionManager::global().save_append(
-                &self.seed,
-                &self.pending_save,
-                model,
-                Some(effort),
-                self.compact_skip,
+            let batch = std::mem::take(&mut self.pending_save);
+            self.pending_persist.push(PersistOp::Append {
+                seed: self.seed.clone(),
+                messages: batch,
+                model: model.to_string(),
+                effort: Some(effort.to_string()),
+                compact_skip: self.compact_skip,
                 turn_count,
-            );
-            self.pending_save.clear();
+            });
             if self.has_compact_context {
-                SessionManager::global().update_compact_context(&self.seed, &self.to_vec());
+                self.pending_persist.push(PersistOp::UpdateCompactContext {
+                    seed: self.seed.clone(),
+                    messages: self.to_vec(),
+                });
             }
         } else {
-            SessionManager::global().update_meta(
-                &self.seed,
-                model,
-                Some(effort),
-                self.compact_skip,
+            self.pending_persist.push(PersistOp::UpdateMeta {
+                seed: self.seed.clone(),
+                model: model.to_string(),
+                effort: Some(effort.to_string()),
+                compact_skip: self.compact_skip,
                 turn_count,
-            );
+            });
         }
+    }
+
+    /// Take the queued persistence ops for host-side execution. The queue is
+    /// this store's host-facing Effect surface (PR-1-6): drain it after each
+    /// command dispatch and replay the ops in order against the injected
+    /// session manager.
+    pub fn take_persist_ops(&mut self) -> Vec<PersistOp> {
+        std::mem::take(&mut self.pending_persist)
     }
 
     pub fn push_system(&mut self, msg: Message) -> Effect {
@@ -975,6 +997,7 @@ impl MessageStore {
 
     /// Save all messages (full rewrite). Used for undo or compact.
     /// No-op if the session seed has not been initialized yet.
+    /// Enqueues a [`PersistOp`] for host-side execution (see [`Self::flush_meta`]).
     pub fn snapshot_full(&mut self, model: &str, effort: &str) {
         if self.seed.is_empty() || self.ephemeral {
             return;
@@ -982,16 +1005,19 @@ impl MessageStore {
         let msgs = self.to_vec();
         let turn_count = self.turns.len();
         if self.has_compact_context {
-            SessionManager::global().save_compact_context(&self.seed, &msgs);
+            self.pending_persist.push(PersistOp::SaveCompactContext {
+                seed: self.seed.clone(),
+                messages: msgs,
+            });
         } else {
-            SessionManager::global().save_full(
-                &self.seed,
-                &msgs,
-                model,
-                Some(effort),
-                self.compact_skip,
+            self.pending_persist.push(PersistOp::SaveFull {
+                seed: self.seed.clone(),
+                messages: msgs,
+                model: model.to_string(),
+                effort: Some(effort.to_string()),
+                compact_skip: self.compact_skip,
                 turn_count,
-            );
+            });
         }
         self.pending_save.clear();
     }

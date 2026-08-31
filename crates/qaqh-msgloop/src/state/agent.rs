@@ -1,5 +1,5 @@
 use qaqh_config::Config;
-use qaqh_session::SessionMeta;
+use qaqh_session::{SessionManager, SessionMeta};
 
 use super::skill_context::SkillContextManager;
 use super::token_calibration::{
@@ -156,6 +156,11 @@ pub struct AgentState {
     /// system message. The envelope is injected once per change (Codex-style
     /// world-state diff), not on every request build.
     last_injected_epoch: u64,
+    /// Persistence handle for draining `MessageStore`'s `PersistOp` queue
+    /// (PR-1-6). Transitional shape (PLAN PR-1-5/Phase 3): anchored to the
+    /// process-level singleton at construction; `None` only in unit tests
+    /// that never init the session store (their ops simply never flush).
+    pub session_manager: Option<&'static SessionManager>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -188,6 +193,26 @@ impl AgentState {
             manual_compact_running: false,
             auto_compact_blocked_revision: None,
             last_injected_epoch: 0,
+            session_manager: SessionManager::try_global(),
+        }
+    }
+
+    /// Drain the MessageStore's queued persistence ops and replay them
+    /// against the SessionManager in enqueue order (PR-1-6). Called by the
+    /// loop after each command dispatch — single-threaded replay keeps the
+    /// on-disk write order identical to the old synchronous flushes (Z5).
+    pub fn drain_persist_ops(&mut self) {
+        let ops = self.msg.take_persist_ops();
+        if ops.is_empty() {
+            return;
+        }
+        let Some(sm) = self.session_manager else {
+            // No session store in this process (unit-test shapes): ops stay
+            // queued in memory; nothing on disk to keep byte-identical.
+            return;
+        };
+        for op in &ops {
+            execute_persist_op(op, sm);
         }
     }
 
@@ -647,6 +672,63 @@ impl AgentState {
         }
         self.msg
             .flush_meta(&self.config.model, &self.config.reasoning_effort);
+    }
+}
+
+/// The single op→SessionManager mapping (PR-1-6). Every variant must replay
+/// the exact call the store used to make inline; the shadow test in
+/// qaqh-message locks the mapping byte-for-byte (Z5).
+fn execute_persist_op(op: &qaqh_message::PersistOp, sm: &SessionManager) {
+    match op {
+        qaqh_message::PersistOp::Append {
+            seed,
+            messages,
+            model,
+            effort,
+            compact_skip,
+            turn_count,
+        } => {
+            sm.save_append(
+                seed,
+                messages,
+                model,
+                effort.as_deref(),
+                *compact_skip,
+                *turn_count,
+            );
+        }
+        qaqh_message::PersistOp::UpdateMeta {
+            seed,
+            model,
+            effort,
+            compact_skip,
+            turn_count,
+        } => {
+            sm.update_meta(seed, model, effort.as_deref(), *compact_skip, *turn_count);
+        }
+        qaqh_message::PersistOp::UpdateCompactContext { seed, messages } => {
+            sm.update_compact_context(seed, messages);
+        }
+        qaqh_message::PersistOp::SaveCompactContext { seed, messages } => {
+            sm.save_compact_context(seed, messages);
+        }
+        qaqh_message::PersistOp::SaveFull {
+            seed,
+            messages,
+            model,
+            effort,
+            compact_skip,
+            turn_count,
+        } => {
+            sm.save_full(
+                seed,
+                messages,
+                model,
+                effort.as_deref(),
+                *compact_skip,
+                *turn_count,
+            );
+        }
     }
 }
 

@@ -772,7 +772,12 @@ impl Loop {
                     );
                     f
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // Compact polling path can also enqueue persist ops
+                    // (finish_manual_compact → flush_meta); drain before idling.
+                    self.session.agent.drain_persist_ops();
+                    continue;
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     self.finish_pending_compact(qaqh_domain::CompactStatus::Cancelled);
                     log::error!("[AGENT] cmd_rx closed — stdin pipe broken. Exiting.");
@@ -787,12 +792,18 @@ impl Loop {
                 let _scope = this.paced_emitter.enter_causation(causation.as_deref());
                 let env = cmd.frame;
                 this.dispatch_ringing_one(env);
+                // PR-1-6: flush queued persistence ops after the command's
+                // dispatch completes (write order = enqueue order, Z5).
+                this.session.agent.drain_persist_ops();
             });
         }
 
         // ── Cleanup ──
         qaqh_workspace::runtime::shutdown_tools();
         self.session.flush();
+        // Final drain: SessionBundle::flush enqueues a flush_meta op; the old
+        // synchronous path wrote it before exiting (PR-1-6).
+        self.session.agent.drain_persist_ops();
     }
 
     /// Initialize session state from pre-set seed (CLI args --seed / --resume-seed).
@@ -895,6 +906,8 @@ impl Loop {
             let env = cmd.frame;
             let _scope = self.paced_emitter.enter_causation(cmd.causation.as_deref());
             self.dispatch_ringing_one(env);
+            // PR-1-6: per-command drain, same as the safe_dispatch path.
+            self.session.agent.drain_persist_ops();
         }
     }
 

@@ -539,8 +539,8 @@ mod tests {
         }
     }
 
-    /// exec 与 process 必须路由到 workspace 后端（与 exec 共享 serve 进程的
-    /// ProcessRegistry）。若 process 仍为 HostOnly，则 LLM 拿到的 exec
+    /// bash 与 process 必须路由到 workspace 后端（与 pwsh 共享 serve 进程的
+    /// ProcessRegistry）。若 process 仍为 HostOnly，则 LLM 拿到的 bash
     /// process_id 在 worker 本地注册表查不到（跨进程注册表隔离 bug）。
     #[test]
     fn process_tools_route_to_workspace_backend() {
@@ -554,7 +554,7 @@ mod tests {
         let ws = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let trusted = HashSet::new();
 
-        for tool in ["exec", "process"] {
+        for tool in ["bash", "process"] {
             backend_calls.store(0, Ordering::SeqCst);
             let call = match admit(
                 make_invocation(tool, &format!("proc-route-{tool}")),

@@ -142,7 +142,7 @@ fn final_round(text: &str) -> Vec<String> {
     ]
 }
 
-fn marker_exec_args(path: &std::path::Path) -> serde_json::Value {
+fn marker_bash_args(path: &std::path::Path) -> serde_json::Value {
     #[cfg(windows)]
     {
         let path = path.to_string_lossy().replace('\'', "''");
@@ -581,33 +581,33 @@ fn llm_multiple_pending_waits_for_every_response() {
 }
 
 #[test]
-fn llm_four_pending_execs_defer_execution_until_all_resolved() {
+fn llm_four_pending_bash_calls_defer_execution_until_all_resolved() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let markers = (1..=4)
-        .map(|index| temp.path().join(format!("exec-{index}.txt")))
+        .map(|index| temp.path().join(format!("bash-{index}.txt")))
         .collect::<Vec<_>>();
     let calls = markers
         .iter()
         .enumerate()
-        .map(|(index, path)| (format!("exec-{}", index + 1), marker_exec_args(path)))
+        .map(|(index, path)| (format!("bash-{}", index + 1), marker_bash_args(path)))
         .collect::<Vec<_>>();
     let call_refs = calls
         .iter()
-        .map(|(id, args)| (id.as_str(), "exec", args.clone()))
+        .map(|(id, args)| (id.as_str(), "bash", args.clone()))
         .collect::<Vec<_>>();
     let expected_markers = markers.clone();
 
     run_case(
         1,
         temp.path(),
-        vec![tool_round(&call_refs), final_round("all execs finished")],
+        vec![tool_round(&call_refs), final_round("all bash calls finished")],
         2,
         move |writer, receiver| {
             send_cmd(writer, "", cmd_user_input("run four commands"));
             let mut ids = (0..4).map(|_| permission_id(receiver)).collect::<Vec<_>>();
             ids.sort();
-            assert_eq!(ids, vec!["exec-1", "exec-2", "exec-3", "exec-4"]);
+            assert_eq!(ids, vec!["bash-1", "bash-2", "bash-3", "bash-4"]);
 
             for id in &ids[..3] {
                 send_cmd(writer, "", cmd_permission_respond(id, true));
@@ -621,7 +621,7 @@ fn llm_four_pending_execs_defer_execution_until_all_resolved() {
             }
             assert!(
                 expected_markers.iter().all(|path| !path.exists()),
-                "approved execs must remain deferred until every decision is recorded",
+                "approved bash calls must remain deferred until every decision is recorded",
             );
 
             send_cmd(writer, "", cmd_permission_respond(&ids[3], true));
@@ -633,7 +633,7 @@ fn llm_four_pending_execs_defer_execution_until_all_resolved() {
             }
             assert!(
                 expected_markers.iter().all(|path| path.exists()),
-                "approved exec batch did not finish: {:?}",
+                "approved bash batch did not finish: {:?}",
                 expected_markers
                     .iter()
                     .map(|path| path.exists())
@@ -731,16 +731,16 @@ fn llm_session_switch_invalidates_suspended_turn() {
 }
 
 #[test]
-fn llm_approval_forwards_exec_via_http_backend() {
+fn llm_approval_forwards_bash_via_http_backend() {
     // 验证 WSL 模式（Http backend）下的审批链路：worker 进程内 admit 产生
     // ToolPermissionRequested → 放行 → 工具经 Http backend 发到真实 serve 执行。
     // serve 位置（本地/ WSL）不影响本断言（审批在 worker 进程内，Http backend 只转发）；
     // WSL 的路径桥接由 PLAN-WSL2-PATH-BRIDGE 的端到端单独验证。
     let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
-    let marker = temp.path().join("http-exec.txt");
+    let marker = temp.path().join("http-bash.txt");
     let expected_marker = marker.clone();
-    let calls = tool_round(&[("http-exec", "exec", marker_exec_args(&marker))]);
+    let calls = tool_round(&[("http-bash", "bash", marker_bash_args(&marker))]);
 
     // 起真实 serve 进程（本地，模拟 WSL 模式的 Http backend 执行路径）。
     // 平台适配：Windows 产物带 .exe；CARGO_TARGET_DIR 覆盖时跟随覆盖目录。
@@ -807,10 +807,10 @@ fn llm_approval_forwards_exec_via_http_backend() {
             vec![calls, final_round("done")],
             2,
             move |writer, receiver| {
-                send_cmd(writer, "", cmd_user_input("run exec"));
+                send_cmd(writer, "", cmd_user_input("run bash"));
                 // ① 审批事件产生（worker 进程内 admit）
                 let id = permission_id(receiver);
-                assert_eq!(id, "http-exec");
+                assert_eq!(id, "http-bash");
                 // ② 放行 → 工具经 Http backend 发到 serve 执行
                 send_cmd(writer, "", cmd_permission_respond(&id, true));
                 let deadline = Instant::now() + Duration::from_secs(10);
@@ -819,7 +819,7 @@ fn llm_approval_forwards_exec_via_http_backend() {
                 }
                 assert!(
                     expected_marker.exists(),
-                    "approved exec did not run via Http backend / serve"
+                    "approved bash did not run via Http backend / serve"
                 );
                 let events = collect_through_terminal(receiver);
                 assert_single_completion(&events, 1);

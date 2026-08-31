@@ -93,7 +93,6 @@ mod tests {
                 "copy_range",
                 "delete",
                 "edit",
-                "exec",
                 "glob",
                 "grep",
                 "journal",

@@ -189,7 +189,7 @@ pub fn init_session(agent: &mut AgentState, restore_seed: Option<&str>) -> bool 
         .read()
         .unwrap_or_else(|error| error.into_inner())
         .clone();
-    agent.skills = super::skill_context::SkillContextManager::new(
+    agent.skills = qaqh_skills::SkillContextManager::new(
         std::path::Path::new(&workspace),
         agent.config.context_limit as usize,
     );
@@ -220,7 +220,7 @@ pub fn create_session(agent: &mut AgentState) {
         .read()
         .unwrap_or_else(|error| error.into_inner())
         .clone();
-    agent.skills = super::skill_context::SkillContextManager::new(
+    agent.skills = qaqh_skills::SkillContextManager::new(
         std::path::Path::new(&workspace),
         agent.config.context_limit as usize,
     );
@@ -249,7 +249,7 @@ pub fn create_session_with_seed(agent: &mut AgentState) {
         .read()
         .unwrap_or_else(|error| error.into_inner())
         .clone();
-    agent.skills = super::skill_context::SkillContextManager::new(
+    agent.skills = qaqh_skills::SkillContextManager::new(
         std::path::Path::new(&workspace),
         agent.config.context_limit as usize,
     );

@@ -1,7 +1,7 @@
 use qaqh_config::Config;
 use qaqh_session::{SessionManager, SessionMeta};
 
-use super::skill_context::SkillContextManager;
+use qaqh_skills::SkillContextManager;
 use super::token_calibration::{
     RequestTokenEstimate, SessionTokenCalibrator, prepared_request_metrics,
 };
@@ -33,7 +33,7 @@ pub enum MetaOp {
         cache_reported_requests: u32,
     },
     /// Skills session state (TurnComplete / session switch).
-    PersistSkills { seed: String, skills: qaqh_types::SkillSessionStateV2 },
+    PersistSkills { seed: String, skills: qaqh_skills::SkillSessionStateV2 },
 }
 
 // 工具模式档位、白名单、模型面投影的唯一契约已收敛到 qaqh-types。
@@ -666,10 +666,10 @@ impl AgentState {
                 name: item.name,
                 description: item.description,
                 state: match item.state {
-                    super::skill_context::SkillRuntimeState::Catalog => "catalog",
-                    super::skill_context::SkillRuntimeState::Requested => "requested",
-                    super::skill_context::SkillRuntimeState::Active => "active",
-                    super::skill_context::SkillRuntimeState::Unavailable => "unavailable",
+                    qaqh_skills::SkillRuntimeState::Catalog => "catalog",
+                    qaqh_skills::SkillRuntimeState::Requested => "requested",
+                    qaqh_skills::SkillRuntimeState::Active => "active",
+                    qaqh_skills::SkillRuntimeState::Unavailable => "unavailable",
                 }
                 .to_string(),
                 source: item.source,

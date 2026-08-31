@@ -15,7 +15,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+pub mod runtime;
 pub mod session_state;
+pub use runtime::{SkillContextManager, SkillRuntimeInfo, SkillRuntimeState, SkillTurnSnapshot};
 pub use session_state::{
     SkillSessionEntry, SkillSessionEntryState, SkillSessionStateV2,
 };

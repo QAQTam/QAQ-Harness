@@ -1,5 +1,5 @@
-use qaqh_skills::{SkillActivation, SkillBodyChange, SkillCatalogSnapshot, SkillEffect};
-use qaqh_types::{SkillSessionEntry, SkillSessionEntryState, SkillSessionStateV2};
+use crate::{SkillActivation, SkillBodyChange, SkillCatalogSnapshot, SkillEffect};
+use crate::session_state::{SkillSessionEntry, SkillSessionEntryState, SkillSessionStateV2};
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 
@@ -86,7 +86,7 @@ impl SkillContextManager {
         self.refresh_catalog();
         self.apply_boundary_transitions();
 
-        let mentions = qaqh_skills::explicit_mentions(user_text, &self.catalog.catalog);
+        let mentions = crate::explicit_mentions(user_text, &self.catalog.catalog);
         for metadata in mentions {
             let _ = self.request_now(&metadata.name, "user");
         }
@@ -268,7 +268,7 @@ impl SkillContextManager {
             });
         }
         for diagnostic in &self.catalog.catalog.diagnostics {
-            if diagnostic.severity != qaqh_skills::DiagnosticSeverity::Error {
+            if diagnostic.severity != crate::DiagnosticSeverity::Error {
                 continue;
             }
             let name = diagnostic
@@ -514,7 +514,7 @@ impl SkillContextManager {
                     {
                         self.changes.push((
                             name.clone(),
-                            qaqh_skills::describe_body_change(&old.body, &new.body, 200),
+                            crate::describe_body_change(&old.body, &new.body, 200),
                         ));
                         if let Some(entry) = self.entries.get_mut(&name) {
                             entry.activation = Some(new);
@@ -589,8 +589,8 @@ impl SkillContextManager {
                 output.push_str(&format!(
                     "<skill name=\"{}\" hash=\"{}\">\n{}\n</skill>\n",
                     name,
-                    qaqh_skills::content_hash(&activation.body),
-                    qaqh_skills::render_activation(activation)
+                    crate::content_hash(&activation.body),
+                    crate::render_activation(activation)
                 ));
             }
             output.push_str("</active_skills>\n");
@@ -631,7 +631,7 @@ impl SkillContextManager {
             .iter()
             .find(|skill| skill.name == name)
             .ok_or_else(|| format!("SKILL_NOT_FOUND: '{name}'"))?;
-        qaqh_skills::load(metadata)
+        crate::load(metadata)
     }
 
     fn ensure_known(&self, name: &str) -> Result<(), String> {
@@ -648,7 +648,7 @@ impl SkillContextManager {
 fn activation_tokens(activation: &SkillActivation) -> usize {
     // Deterministic conservative estimate. Provider tokenizers may refine this
     // later, but budgeting never truncates the body.
-    qaqh_skills::token_count(&qaqh_skills::render_activation(activation))
+    crate::token_count(&crate::render_activation(activation))
 }
 
 #[cfg(test)]

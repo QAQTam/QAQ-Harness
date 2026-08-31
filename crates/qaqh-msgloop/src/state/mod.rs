@@ -11,9 +11,7 @@
 //! |-------------------|-----------------------------------|
 //! | `agent.rs`        | `AgentState`: central agent state |
 //! | `lifecycle.rs`    | Session create / init / restore   |
-//! | `skill_context.rs`| `SkillContextManager`             |
 
 pub mod agent;
 pub mod lifecycle;
-pub mod skill_context;
 pub(crate) mod token_calibration;

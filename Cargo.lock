@@ -1917,6 +1917,7 @@ dependencies = [
  "qaqh-config",
  "qaqh-config-api",
  "qaqh-domain",
+ "qaqh-message",
  "qaqh-msgloop",
  "qaqh-proto",
  "qaqh-ringing",

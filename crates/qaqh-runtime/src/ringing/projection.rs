@@ -371,3 +371,210 @@ mod tests {
         assert_eq!(snap.state["agent_lifecycle"], "ready");
     }
 }
+
+// ── Persisted-history UI projection (moved verbatim from msgloop util, PR-1-4) ──
+
+/// Build the same UI turn projection directly from persisted messages.
+///
+/// The daemon uses this before an Agent worker exists, so a cold attach can
+/// return a canonical transcript without depending on a later live event.
+pub fn build_turns_from_messages(
+    seed: &str,
+    messages: &[qaqh_types::Message],
+    start: Option<usize>,
+    max_count: Option<usize>,
+) -> Vec<qaqh_proto::TurnData> {
+    project_turns_from_messages(seed, messages, start, max_count).1
+}
+
+/// Return both the total persisted turn count and the requested UI window.
+pub fn project_turns_from_messages(
+    seed: &str,
+    messages: &[qaqh_types::Message],
+    start: Option<usize>,
+    max_count: Option<usize>,
+) -> (usize, Vec<qaqh_proto::TurnData>) {
+    let (store, _) = qaqh_message::MessageStore::from_messages(seed, messages, 0);
+    let total = store.turns().len();
+    (total, build_turns(store.turns(), start, max_count))
+}
+
+/// Build only the tail window used by a cold daemon Snapshot.
+pub fn project_recent_turns_from_messages(
+    seed: &str,
+    messages: &[qaqh_types::Message],
+    max_count: usize,
+) -> (usize, Vec<qaqh_proto::TurnData>) {
+    let (store, _) = qaqh_message::MessageStore::from_messages(seed, messages, 0);
+    let total = store.turns().len();
+    let start = total.saturating_sub(max_count);
+    (
+        total,
+        build_turns(store.turns(), Some(start), Some(max_count)),
+    )
+}
+
+fn build_turns(
+    all_turns: &[qaqh_message::Turn],
+    start: Option<usize>,
+    max_count: Option<usize>,
+) -> Vec<qaqh_proto::TurnData> {
+    use qaqh_types::ContentBlock;
+    let range_start = start.unwrap_or(0).min(all_turns.len());
+    let range_end = match max_count {
+        Some(n) => (range_start + n).min(all_turns.len()),
+        None => all_turns.len(),
+    };
+
+    let mut turns = Vec::new();
+    for (ti, turn) in all_turns
+        .iter()
+        .enumerate()
+        .skip(range_start)
+        .take(range_end - range_start)
+    {
+        let mut rounds = Vec::new();
+        for (ri, step) in turn.steps.iter().enumerate() {
+            let thinking = step.assistant.content.iter().find_map(|b| {
+                if let ContentBlock::Reasoning { reasoning } = b {
+                    Some(reasoning.clone())
+                } else {
+                    None
+                }
+            });
+            let answer = step.assistant.content.iter().find_map(|b| {
+                if let ContentBlock::Text { text } = b {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            });
+            let tcs: Vec<qaqh_proto::ToolCallDef> = step
+                .assistant
+                .content
+                .iter()
+                .filter_map(|b| {
+                    if let ContentBlock::ToolUse { id, name, input } = b {
+                        Some(qaqh_proto::ToolCallDef {
+                            id: id.clone(),
+                            name: name.clone(),
+                            args_display: name.clone(),
+                            args_json: input.to_string(),
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let blocks: Vec<qaqh_proto::RoundBlock> = step
+                .assistant
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Reasoning { reasoning } if !reasoning.is_empty() => {
+                        Some(qaqh_proto::RoundBlock::Reasoning {
+                            content: reasoning.clone(),
+                        })
+                    }
+                    ContentBlock::Text { text } if !text.is_empty() => {
+                        Some(qaqh_proto::RoundBlock::Text {
+                            content: text.clone(),
+                        })
+                    }
+                    ContentBlock::ToolUse { id, name, input } => {
+                        Some(qaqh_proto::RoundBlock::Tool {
+                            card: qaqh_proto::ToolCallDef {
+                                id: id.clone(),
+                                name: name.clone(),
+                                args_display: name.clone(),
+                                args_json: input.to_string(),
+                            },
+                        })
+                    }
+                    _ => None,
+                })
+                .collect();
+            let trs: Vec<qaqh_proto::ToolResultDef> = step
+                .tool_results
+                .iter()
+                .flat_map(|msg| {
+                    msg.content.iter().filter_map(|b| {
+                        if let ContentBlock::ToolResult {
+                            tool_use_id,
+                            result,
+                        } = b
+                        {
+                            Some(qaqh_proto::ToolResultDef {
+                                tool_call_id: tool_use_id.clone(),
+                                output: result.model.text.clone(),
+                                success: result.is_success(),
+                                file: None,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect();
+            rounds.push(qaqh_proto::RoundData {
+                round_num: ri as u32,
+                is_final: ri + 1 == turn.steps.len(),
+                thinking,
+                answer,
+                tool_calls: tcs,
+                tool_results: trs,
+                blocks,
+            });
+        }
+        let user_text = turn
+            .user
+            .content
+            .iter()
+            .find_map(|b| {
+                if let ContentBlock::Text { text } = b {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+        turns.push(qaqh_proto::TurnData {
+            turn_id: format!("t{}", ti + 1),
+            user_text,
+            rounds,
+        });
+    }
+    turns
+}
+
+#[cfg(test)]
+mod persisted_projection_tests {
+    use super::project_recent_turns_from_messages;
+    use qaqh_types::{ContentBlock, Message};
+
+    fn assistant(text: &str) -> Message {
+        Message {
+            msg_id: None,
+            role: "assistant".into(),
+            name: None,
+            content: vec![ContentBlock::text(text)],
+        }
+    }
+
+    #[test]
+    fn cold_snapshot_projects_the_recent_persisted_turns() {
+        let messages = vec![
+            Message::system("system"),
+            Message::user("first"),
+            assistant("answer one"),
+            Message::user("second"),
+            assistant("answer two"),
+        ];
+        let (total, turns) = project_recent_turns_from_messages("seed", &messages, 1);
+        assert_eq!(total, 2);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].turn_id, "t2");
+        assert_eq!(turns[0].user_text, "second");
+        assert_eq!(turns[0].rounds[0].answer.as_deref(), Some("answer two"));
+    }
+}

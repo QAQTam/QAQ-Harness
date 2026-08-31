@@ -290,7 +290,8 @@ serve 存活期间随 config watch 重启策略维持一致（与 workspace_supe
 > feature/memory 接管 + `cargo tree -e features` 验证 0（PR-2-2 随 2-1 落地）；
 > prompt/guard 归位 agent（a4813cd，config/gate 回归纯职责）。
 > 出口：53 targets / 794 passed / 0 failed，clippy 0 error，
-> `grep 'qaqh-msgloop|qaqh_msgloop'` → 0。**余项：PR-2-3（spawn_agent 入口收敛）。**
+> `grep 'qaqh-msgloop|qaqh_msgloop'` → 0。**余项：PR-2-3（spawn_agent 入口收敛，
+> 复验与勘误已登记于该节）。**
 
 ### PR-2-1 机械搬家（两段 commit） ✅ f615367 + c29689a（wire 勘误见 §9）
 - `git mv crates/qaqh-msgloop/src crates/qaqh-runtime/src/agent`，模块映射：
@@ -316,7 +317,17 @@ serve 存活期间随 config watch 重启策略维持一致（与 workspace_supe
   `qaqh-daemon` 的 `memory = ["qaqh-runtime/memory"]` 不变。
 - **验收**：`cargo tree -e features -p qaqh-daemon | grep -c msgloop` → 0。
 
-### PR-2-3 构造逻辑并入 agent 入口 + 模块纪律
+### PR-2-3 构造逻辑并入 agent 入口 + 模块纪律（复验 2026-08-31，待实施）
+**复验结论**：
+1. 装配段集中在 actor.rs `run_actor`（config 权威读 + AgentState::new + 图片能力注入 +
+   `agent_tool_registrars` + `build_tool_manager` + `apply_init` + `install_actor_tool_manager`
+   + tool_defs），收敛为 agent 入口的落点是 `crate::agent::spawn_agent`；
+2. **勘误**：`WorkerCommand/WriterEvent/CancelToken` 降 `pub(crate)` 不可行——
+   `tests/common/mod.rs:10` 以 `qaqh_runtime::agent::types::{WorkerCommand, WriterEvent}`
+   消费（集成测试链接公开面），保持 `pub`；
+3. 模块规则现状：`grep 'crate::ringing::' agent/` 已为 0（规则 2 天然满足），
+   规则 1/3 的白名单检查单在实施时一并落地。
+**验收**：上述 grep 合规 + 全绿。
 - `WorkerCommand` / `WriterEvent` / `CancelToken`（现 `agent/types.rs`）降级 `pub(crate)`。
 - `actor.rs:40-284` 与 `registry.rs:107-108,229,263-264,349-350,447-451,626` 的构造散点
   （`AgentState::new` / `agent_tool_registrars()` / `Loop::from_channels` / `LoopChannels::new`）

@@ -178,7 +178,7 @@ save_compact_context / save_full）；`Effect` 枚举仅 `None | CallGate | Turn
 re-export 面删除。
 **验收**：`grep -rn "ToolExecutorFn\|execute_tools_batch\|set_tool_executor" crates/qaqh-message/src` → 0。
 
-### PR-1-5（B6）loop 簿记走 Effect —— 依赖 PR-1-6
+### PR-1-5（B6）loop 簿记走 Effect —— 依赖 PR-1-6 ✅ `3eebad0`（验收口径勘误见 §9）
 **现状**（勘误后，比提案范围大）：global() 直写 **7 处**——`engine_title.rs:51,86`、
 `engine_misc.rs:70,100`、`engine_compact.rs:397`、`turn_lap/gate.rs:447`、`types.rs:453`
 （提案漏计 types.rs）；另有 `state/lifecycle.rs:20,28,261` 三处 global() **读**
@@ -192,6 +192,9 @@ re-export 面删除。
 3. 静态助手 → 在 `qaqh-session` 顶层新增自由函数 `generate_seed()` / `now_epoch()`
    re-export，msgloop 改引自由函数（`SessionManager::generate_seed` 内部转调，API 不删）。
 **验收**：`grep -rn "SessionManager" crates/qaqh-msgloop/src` → 0。
+**执行落地**：写路径落为 msgloop 内 `MetaOp` 五变体（payload 全为 qaqh_types 类型，
+不扩大 message 域），与 PersistOp 同一 drain 服务；`set_context_stats` 两处
+（`&AgentState` 不可变借用 + 覆盖式快照写）与后台标题线程走注入句柄直调。
 
 ### PR-1-1（B1）授权审批门面入 workspace
 **现状**：`engine_tool.rs`（1,018 行）内联完整审批管线——`:61,68` `TrustedFolderSet::load("")`
@@ -420,6 +423,7 @@ workspace lib + serve 集成全绿（含 PR-0-3 修复的那批）。
 | V3 初判"serve `/execute` 404 回归"（9c946e7/86625a7 嫌疑） | **不成立**：实为 `0946afe` exec 拆分后测试未同步（词表含 exec + 测试载体 exec）；`process_kill_preempts` 已自行回绿 | PR-0-3 处置从"修回归"改为"测试追认" |
 | Z8 词表（登记时 19 工具含 exec） | **18 工具**（exec 拆分退役，`register_exec_for_compat` 不注册） | `default_registry_exposes_the_formal_tool_vocabulary` 期望 vec 已按 18 追认 |
 | PR-1-7 预想"execute_tools_batch 编排移至 loop 驱动" | **全仓零调用方**（真实路径 = engine_tool 的 push_tool_result_direct 面）；`rebind_store` 唯一职责是向死链注入执行器 | 处置改为删除死链（`ToolExecutorFn`/`ToolExecRequest`/`ToolExecReport`/`rebind_store` ×6 调用点）；store 保留 `pending_tools()` 视图 |
+| PR-1-5 验收 `grep "SessionManager" msgloop → 0` | 与自身步骤 2"注入 `&'static SessionManager`"矛盾（字段/参数必含类型名） | 执行口径 = `SessionManager::global()` 调用清零；注入句柄的类型引用保留至 Phase 3 收敛 |
 
 实证复核通过（无修正）：A1 五处行号逐字命中；A2（store.rs:126,809,972 + agent.rs:628 注入）；
 C1（actor.rs 全部行号 + registry.rs 七处散点）；C2 唯一消费方；D1（supervisor Child 拉起 local/WSL 双模式）；

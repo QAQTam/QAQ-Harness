@@ -15,7 +15,7 @@ use qaqh_types::{Message, SessionMeta};
 
 use crate::store;
 
-static INSTANCE: OnceLock<SessionManager> = OnceLock::new();
+static INSTANCE: OnceLock<Arc<SessionManager>> = OnceLock::new();
 
 /// The LLM-facing view after a compact operation.  Raw messages remain in the
 /// normal session archive; this is deliberately a separate, replaceable view.
@@ -90,22 +90,28 @@ impl SessionManager {
         // Workspace 注册表与 session 存储同根（组织语义，与运行环境 workspace 解耦）。
         crate::workspace::WorkspaceStore::init(data_dir);
         INSTANCE
-            .set(mgr)
+            .set(Arc::new(mgr))
             .expect("SessionManager already initialized");
     }
 
     /// Access the global instance.
-    pub fn global() -> &'static Self {
+    ///
+    /// PR-3-1 注入化：仅 daemon `main` 装配点与 §10.3 白名单测试可调用；
+    /// 其余代码一律经构造时注入的 `Arc<SessionManager>` 句柄访问会话存储。
+    #[doc(hidden)]
+    pub fn global() -> Arc<Self> {
         INSTANCE
             .get()
             .expect("SessionManager not initialized — call init() first")
+            .clone()
     }
 
     /// Non-panicking accessor for optional recovery paths (e.g. timeline
     /// rebuild in contexts where the daemon may not have initialized the
-    /// session store yet).
-    pub fn try_global() -> Option<&'static Self> {
-        INSTANCE.get()
+    /// session store yet). 同 [`global()`]：生产代码应经注入句柄访问。
+    #[doc(hidden)]
+    pub fn try_global() -> Option<Arc<Self>> {
+        INSTANCE.get().cloned()
     }
 
     // ── Session listing ──

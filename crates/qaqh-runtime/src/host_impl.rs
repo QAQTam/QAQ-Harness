@@ -29,7 +29,7 @@ impl SubagentHost for QaqhService {
         let seed = qaqh_session::SessionManager::generate_seed();
         if let Some(workspace) = workspace.filter(|w| !w.is_empty() && *w != ".") {
             // 子代理继承主代理工作区（写入 meta.cwd，与 daemon `subagent.spawn` action 一致）。
-            qaqh_session::SessionManager::global().set_cwd(&seed, workspace, false);
+            self.sessions.set_cwd(&seed, workspace, false);
             log::info!("[SUBAGENT-HOST] inherited workspace for seed={seed}: {workspace}");
         }
         self.registry()?

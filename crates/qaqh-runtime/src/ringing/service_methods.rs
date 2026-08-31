@@ -111,7 +111,10 @@ mod tests {
     static SERVICE: std::sync::OnceLock<QaqhService> = std::sync::OnceLock::new();
 
     fn service() -> &'static QaqhService {
-        SERVICE.get_or_init(QaqhService::init)
+        SERVICE.get_or_init(|| {
+            qaqh_session::SessionManager::init(qaqh_types::platform::data_dir());
+            QaqhService::init(qaqh_session::SessionManager::global())
+        })
     }
 
     #[test]

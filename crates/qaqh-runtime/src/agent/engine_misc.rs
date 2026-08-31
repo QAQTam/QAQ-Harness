@@ -69,7 +69,7 @@ impl MiscEngine {
         // 统一数据源：上下文统计并入 meta.json（原 context_stats.json 退役）。
         // Dashboard 刷新走注入句柄直写（&AgentState 不可变借用，且该写是
         // 覆盖式快照、无 dispatch 时序约束，不入 MetaOp 队列——PR-1-5）。
-        if let Some(sm) = agent.session_manager {
+        if let Some(sm) = agent.session_manager.as_ref() {
             sm.set_context_stats(&agent.session.seed, &stats);
         }
 

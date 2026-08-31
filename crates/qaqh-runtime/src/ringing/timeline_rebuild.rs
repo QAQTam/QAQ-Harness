@@ -13,9 +13,10 @@ use qaqh_session::SessionManager;
 
 /// 从持久化 session 消息重建 timeline 快照 + replay journal。
 pub fn rebuild_timeline_snapshot(
+    sessions: Option<&SessionManager>,
     seed: &str,
 ) -> Option<(TimelineSnapshot, Vec<qaqh_domain::TimelineEntry>)> {
-    let manager = SessionManager::try_global()?;
+    let manager = sessions?;
     let (_, archive_messages, compact_context) = manager.load_for_resume(seed)?;
     let messages = compact_context
         .as_ref()

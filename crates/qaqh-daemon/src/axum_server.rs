@@ -1481,7 +1481,12 @@ mod axum_tests {
         ));
         let leases = std::sync::Arc::new(std::sync::Mutex::new(qaqh_runtime::ringing::RingingLeaseStore::new()));
         let pending = std::sync::Arc::new(std::sync::Mutex::new(qaqh_runtime::ringing::PendingCommandStore::new()));
-        let service = TEST_SERVICE.get_or_init(qaqh_runtime::QaqhService::init).clone();
+        let service = TEST_SERVICE
+            .get_or_init(|| {
+                qaqh_session::SessionManager::init(qaqh_types::platform::data_dir());
+                qaqh_runtime::QaqhService::init(qaqh_session::SessionManager::global())
+            })
+            .clone();
         let (shutdown, _) = tokio::sync::watch::channel(false);
         AppState {
             hub,

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use qaqh_config::Config;
 use qaqh_session::{SessionManager, SessionMeta};
 
@@ -183,10 +185,10 @@ pub struct AgentState {
     /// world-state diff), not on every request build.
     last_injected_epoch: u64,
     /// Persistence handle for draining `MessageStore`'s `PersistOp` queue
-    /// (PR-1-6). Transitional shape (PLAN PR-1-5/Phase 3): anchored to the
-    /// process-level singleton at construction; `None` only in unit tests
-    /// that never init the session store (their ops simply never flush).
-    pub session_manager: Option<&'static SessionManager>,
+    /// (PR-1-6). Captured from the process-level singleton at construction
+    /// (PR-3-1: `Arc` handle; `None` only in unit tests that never init the
+    /// session store — their ops simply never flush).
+    pub session_manager: Option<Arc<SessionManager>>,
     /// Loop bookkeeping queue (PR-1-5 / B6): title / context-stats / mode /
     /// usage / skills writes, drained by [`Self::drain_persist_ops`].
     pub pending_meta_ops: Vec<MetaOp>,
@@ -263,8 +265,8 @@ impl AgentState {
     /// Injected session-manager handle for off-dispatch writers (e.g. the
     /// async title-summary thread). Same object the global accessor would
     /// return, but reached through the injection surface (PR-1-5).
-    pub fn session_manager_handle(&self) -> Option<&'static SessionManager> {
-        self.session_manager
+    pub fn session_manager_handle(&self) -> Option<Arc<SessionManager>> {
+        self.session_manager.clone()
     }
 
     /// Drain the MessageStore's queued persistence ops and the loop
@@ -278,16 +280,16 @@ impl AgentState {
         if ops.is_empty() && meta_ops.is_empty() {
             return;
         }
-        let Some(sm) = self.session_manager else {
+        let Some(sm) = self.session_manager.clone() else {
             // No session store in this process (unit-test shapes): ops stay
             // queued in memory; nothing on disk to keep byte-identical.
             return;
         };
         for op in &ops {
-            execute_persist_op(op, sm);
+            execute_persist_op(op, &sm);
         }
         for op in &meta_ops {
-            execute_meta_op(op, sm);
+            execute_meta_op(op, &sm);
         }
     }
 

@@ -16,7 +16,11 @@ pub fn init_session(agent: &mut AgentState, restore_seed: Option<&str>) -> bool 
             // Fast check: if the session directory doesn't exist at all, fail early
             // instead of silently creating a new session. This lets the caller
             // send a proper Error event rather than a confusing SessionCreated.
-            if !agent.session_manager.is_some_and(|sm| sm.exists(s)) {
+            if !agent
+                .session_manager
+                .as_ref()
+                .is_some_and(|sm| sm.exists(s))
+            {
                 log::error!(
                     "qaqh-agent: session {} not found — directory does not exist",
                     s
@@ -24,7 +28,10 @@ pub fn init_session(agent: &mut AgentState, restore_seed: Option<&str>) -> bool 
                 return false;
             }
             if let Some((meta, archive_messages, compact_context)) =
-                agent.session_manager.and_then(|sm| sm.load_for_resume(s))
+                agent
+                    .session_manager
+                    .as_ref()
+                    .and_then(|sm| sm.load_for_resume(s))
             {
                 let active_messages = compact_context
                     .as_ref()
@@ -259,6 +266,7 @@ pub fn create_session_with_seed(agent: &mut AgentState) {
     // 提前到 push_system 之前，让系统提示能读到 tool_mode（minimal:dsh → 极简 prompt）。
     if let Some(meta) = agent
         .session_manager
+        .as_ref()
         .and_then(|sm| sm.load_meta(&agent.session.seed))
     {
         if !meta.tool_mode.is_empty() {

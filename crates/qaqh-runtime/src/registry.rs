@@ -130,6 +130,8 @@ pub struct AgentInstance {
 pub struct AgentRegistry {
     instances: HashMap<String, AgentInstance>,
     activity: SessionActivityTracker,
+    /// 会话存储句柄（PR-3-1 注入化；spawn 诊断读 meta 用）。
+    sessions: Arc<qaqh_session::SessionManager>,
     /// Ringing 运行时；None = 未启用 legacy worker-only 模式。
     hub: Option<Arc<RingingHub>>,
     /// daemon 拉起的 workspace serve endpoint + token（注入每个 worker env）。
@@ -145,10 +147,11 @@ pub struct AgentRegistry {
 }
 
 impl AgentRegistry {
-    pub fn new() -> Self {
+    pub fn new(sessions: Arc<qaqh_session::SessionManager>) -> Self {
         Self {
             instances: HashMap::new(),
             activity: SessionActivityTracker::default(),
+            sessions,
             hub: None,
             workspace_env: None,
             workspace_mode: "local".to_string(),
@@ -188,7 +191,7 @@ impl AgentRegistry {
         // frontend now backfills them from the Ringing conversation store, so
         // this is informational but valuable for restart forensics.
         if let Some(hub) = self.hub.as_ref()
-            && let Some(meta) = qaqh_session::SessionManager::global().load_meta(seed)
+            && let Some(meta) = self.sessions.load_meta(seed)
             && let Some(snapshot) = hub.timeline_snapshot(seed)
         {
             let snapshot_turns = snapshot.turns.len();

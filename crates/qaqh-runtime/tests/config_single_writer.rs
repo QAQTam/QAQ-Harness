@@ -22,7 +22,8 @@ fn daemon_config_actions_share_one_write_port() {
     // ConfigStore::default_location during the test and reset by process exit.
     unsafe { std::env::set_var("QAQH_DATA_DIR", &root) };
 
-    let service = QaqhService::init();
+    qaqh_session::SessionManager::init(qaqh_types::platform::data_dir());
+    let service = QaqhService::init(qaqh_session::SessionManager::global());
 
     service
         .handle(

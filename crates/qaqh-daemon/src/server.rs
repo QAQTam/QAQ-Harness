@@ -111,6 +111,10 @@ fn resolve_run_port(configured: u16) -> u16 {
 
 pub async fn run_with(config: ServerNetworkConfig) -> Result<(), String> {
     let data_root = qaqh_types::platform::ensure_data_root().map_err(stringify)?;
+    // PR-3-1：SessionManager::init 收敛到 daemon main 装配点，全进程经注入
+    // 句柄访问会话存储（hub / service / registry 均在此注入）。
+    qaqh_session::SessionManager::init(qaqh_types::platform::data_dir());
+    let sessions = qaqh_session::SessionManager::global();
     let _lock = acquire_single_instance()?;
     let token = config.token.clone().unwrap_or_else(random_hex);
     if config.token.is_none() && !config.bind_ip.is_loopback() {
@@ -149,11 +153,11 @@ pub async fn run_with(config: ServerNetworkConfig) -> Result<(), String> {
             address.port()
         );
     }
-    let hub = Arc::new(RingingHub::with_persistence(
-        epoch.clone(),
-        data_root.join("ringing"),
-    ));
-    let service = QaqhService::init();
+    let hub = Arc::new(
+        RingingHub::with_persistence(epoch.clone(), data_root.join("ringing"))
+            .with_sessions(sessions.clone()),
+    );
+    let service = QaqhService::init(sessions);
     service.attach_ringing(hub.clone());
     // 宿主直连：`spawn_subagent` 工具此后经进程内宿主句柄运行，不再回连
     // daemon HTTP/SSE（Knife-1 step-2 收尾）。service 已含 registry 与 hub。

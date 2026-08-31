@@ -44,7 +44,7 @@ fn session_spawns_inprocess_and_receives_created_event() {
             }
         }
     });
-    let mut registry = AgentRegistry::new();
+    let mut registry = AgentRegistry::new(qaqh_session::SessionManager::global());
     registry.attach_ringing(hub);
 
     registry.spawn_new(&seed).expect("spawn in-process session");

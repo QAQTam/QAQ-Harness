@@ -390,7 +390,7 @@ impl CompactEngine {
         });
         // 统一数据源：上下文统计并入 meta.json（原 context_stats.json 退役）。
         // 覆盖式快照写，无 dispatch 时序约束，走注入句柄直写（PR-1-5）。
-        if let Some(sm) = ctx.agent.session_manager {
+        if let Some(sm) = ctx.agent.session_manager.as_ref() {
             sm.set_context_stats(&ctx.agent.session.seed, &stats);
         }
 

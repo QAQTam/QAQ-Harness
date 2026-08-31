@@ -74,7 +74,8 @@ fn missing_or_corrupt_timeline_is_rebuilt_from_persisted_messages() {
 
     // `ringing/` 的其它 seed 没有任何 timeline 记录，
     // 相当于用户删除了整个 timeline 目录。
-    let hub = RingingHub::with_persistence("epoch-rebuild", ringing_root);
+    let hub = RingingHub::with_persistence("epoch-rebuild", ringing_root)
+        .with_sessions(SessionManager::global());
     let snapshot = hub
         .timeline_snapshot(seed)
         .expect("timeline must be rebuilt from messages.jsonl");

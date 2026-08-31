@@ -8,9 +8,12 @@ use qaqh_session::SessionManager;
 use serde_json::json;
 
 /// 读取持久化消息并构建中立对话状态。无持久化会话时返回 `None`。
-pub fn persisted_conversation_state(seed: &str) -> Option<serde_json::Value> {
-    let (meta, archive_messages, compact_context) =
-        SessionManager::global().load_for_resume(seed)?;
+/// `sessions` 为 None（测试/未装配）等价于旧 `try_global()` 为空：返回 `None`。
+pub fn persisted_conversation_state(
+    sessions: Option<&SessionManager>,
+    seed: &str,
+) -> Option<serde_json::Value> {
+    let (meta, archive_messages, compact_context) = sessions?.load_for_resume(seed)?;
     // 与 legacy resume 投影保持一致：compact 上下文优先（否则 daemon 快照与
     // worker resume 的 transcript 基线不一致）。
     let messages = compact_context

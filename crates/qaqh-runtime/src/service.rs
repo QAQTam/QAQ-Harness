@@ -26,21 +26,24 @@ pub struct QaqhService {
     pub(crate) registry: Arc<Mutex<AgentRegistry>>,
     pub(crate) hub: std::sync::OnceLock<Arc<RingingHub>>,
     workspace_state: Arc<Mutex<WorkspaceRuntimeState>>,
+    /// 会话存储句柄（PR-3-1 注入化：daemon main 装配点 init 后注入，
+    /// service 内不再触达会话单例的全局访问器）。
+    pub(crate) sessions: Arc<qaqh_session::SessionManager>,
 }
 
 impl QaqhService {
-    pub fn init() -> Self {
+    pub fn init(sessions: Arc<qaqh_session::SessionManager>) -> Self {
         let _config = qaqh_config::Config::load().unwrap_or_default();
-        qaqh_session::SessionManager::init(qaqh_types::platform::data_dir());
         // daemon 进程的工具注册表（供 `skills.list_tools` 等查询；worker 各自
         // 独立 init_tools，本进程只提供注册表快照，不参与工具执行）。
         // 不带 subagent 注册器：设置页勾选的是子代理可用工具，spawn_subagent
         // 本身不属于子代理工具集。
         qaqh_workspace::runtime::init_tools("daemon", &[], vec![]);
         Self {
-            registry: Arc::new(Mutex::new(AgentRegistry::new())),
+            registry: Arc::new(Mutex::new(AgentRegistry::new(sessions.clone()))),
             hub: std::sync::OnceLock::new(),
             workspace_state: Arc::new(Mutex::new(WorkspaceRuntimeState::default())),
+            sessions,
         }
     }
 
@@ -72,8 +75,8 @@ impl QaqhService {
         self.registry()?.close(seed);
         // 临时会话（子代理）用完即走：关闭后删除会话目录，磁盘零残留。
         // 目录已不存在（重复 close / 已被清理）时静默跳过，保持幂等。
-        if qaqh_session::SessionManager::global().is_ephemeral(seed) {
-            match qaqh_session::SessionManager::global().delete(seed) {
+        if self.sessions.is_ephemeral(seed) {
+            match self.sessions.delete(seed) {
                 Ok(()) => log::info!("[session] ephemeral session {seed} cleaned up (auto-unload)"),
                 Err(e) if e.contains("Session not found") => {}
                 Err(e) => log::warn!("[session] ephemeral cleanup {seed} failed: {e}"),
@@ -97,14 +100,14 @@ impl QaqhService {
     /// 幂等成功（close 幂等 + set_archived 补写 meta）。
     pub fn archive_session(&self, seed: &str, causation_id: Option<&str>) -> Result<(), String> {
         self.close_session(seed, causation_id)?;
-        qaqh_session::SessionManager::global().set_archived(seed, true);
+        self.sessions.set_archived(seed, true);
         Ok(())
     }
 
     /// 恢复归档会话：meta `archived=false` + 重新拉起实例（resume 语义，
     /// 对齐 `session.resume` 查询——get_or_spawn + active seed 更新）。
     pub fn unarchive_session(&self, seed: &str) -> Result<(), String> {
-        qaqh_session::SessionManager::global().set_archived(seed, false);
+        self.sessions.set_archived(seed, false);
         self.registry()?.get_or_spawn(seed)
     }
 
@@ -112,7 +115,7 @@ impl QaqhService {
     /// 磁盘目录与索引。会话不存在返回 Err（由 daemon 拦截层按幂等处理）。
     pub fn delete_session(&self, seed: &str, causation_id: Option<&str>) -> Result<(), String> {
         let _ = self.close_session(seed, causation_id);
-        qaqh_session::SessionManager::global().delete(seed)
+        self.sessions.delete(seed)
     }
 
     pub fn handle(&self, method: &str, params: &Value) -> Result<Value, String> {
@@ -196,7 +199,7 @@ impl QaqhService {
             "workspace.create" => {
                 let path = pstr(params, "path")?;
                 let ws = qaqh_session::WorkspaceStore::global();
-                let existing = qaqh_session::SessionManager::global().list();
+                let existing = self.sessions.list();
                 let created = ws.create(&path, &existing)?;
                 Ok(serde_json::to_value(created).map_err(err)?)
             }
@@ -234,7 +237,7 @@ impl QaqhService {
             "session.list" => Ok(Value::Array(self.list_sessions())),
             "session.meta" => {
                 let seed = seed()?;
-                let manager = qaqh_session::SessionManager::global();
+                let manager = &self.sessions;
                 let Some(meta) = manager.load_meta(&seed) else {
                     return Ok(Value::Null);
                 };
@@ -250,18 +253,18 @@ impl QaqhService {
                 // 先于任何落盘校验：非法值必须整体拒绝，不得留下孤儿 meta。
                 let preset = optional_tool_mode(params)?;
                 let seed = qaqh_session::SessionManager::generate_seed();
-                qaqh_session::SessionManager::global().clear_active();
+                self.sessions.clear_active();
                 // 可选 cwd（前端在 workspace 上下文新建时传入）→ 记录 + 自动归属。
                 let cwd = params
                     .get("cwd")
                     .and_then(|v| v.as_str())
                     .map(str::to_string);
-                qaqh_session::SessionManager::global()
+                self.sessions
                     .persist_new_session_with_cwd(&seed, cwd.as_deref());
                 // 先于 spawn 落盘：worker 的 init_session 从 meta 恢复并应用，
                 // 保证 minimal:dsh 的极简 system prompt 首轮就生效。
                 if let Some((tool_mode, custom_tools)) = preset {
-                    qaqh_session::SessionManager::global()
+                    self.sessions
                         .persist_tool_mode(&seed, &tool_mode, &custom_tools)
                         .map_err(|error| format!("persist tool_mode failed: {error}"))?;
                 }
@@ -270,7 +273,7 @@ impl QaqhService {
             }
             "session.resume" => {
                 let seed = seed()?;
-                qaqh_session::SessionManager::global().set_active_seed(&seed);
+                self.sessions.set_active_seed(&seed);
                 self.registry()?.get_or_spawn(&seed)?;
                 Ok(Value::Null)
             }
@@ -288,7 +291,7 @@ impl QaqhService {
                 // （set_allowed_tools + tool_defs 刷新 = 模型侧源头过滤）。
                 // CK-PERSIST：持久化失败 → 400 返回前端，前端回滚乐观值；
                 // 不允许「应用成功但没落盘」的假切换（重启即丢）。
-                qaqh_session::SessionManager::global()
+                self.sessions
                     .persist_tool_mode(&seed, &tool_mode, &custom_tools)
                     .map_err(|error| format!("persist tool_mode failed: {error}"))?;
                 self.send_ringing_cmd(
@@ -300,7 +303,7 @@ impl QaqhService {
                 )
             }
             "session.dashboard" => dashboard(&seed()?),
-            "session.get_activity" => activity(&seed()?),
+            "session.get_activity" => activity(&self.sessions, &seed()?),
             "skills.operation" => self.send_ringing_cmd(
                 seed()?,
                 RingingCommand::Control(ControlCommand::SkillsOperation {
@@ -330,7 +333,7 @@ impl QaqhService {
                     return Err("workspace.set: empty path rejected".into());
                 }
                 // 统一数据源：运行环境工作目录存 meta.cwd（workspace.txt 退役）。
-                qaqh_session::SessionManager::global().set_cwd(&seed, &path, true);
+                self.sessions.set_cwd(&seed, &path, true);
                 self.send_ringing_cmd(
                     seed,
                     RingingCommand::Control(ControlCommand::AgentReloadConfig),
@@ -431,7 +434,7 @@ impl QaqhService {
                 &seed()?,
                 &pstr(params, "id")?,
             )?),
-            "plan.context_stats" => context_stats(&seed()?),
+            "plan.context_stats" => context_stats(&self.sessions, &seed()?),
             "stats.token_usage" => token_stats(pu64(params, "days") as u32),
             "plan.read" => read_plan(&seed()?),
             "plan.action" => {
@@ -491,7 +494,7 @@ impl QaqhService {
                     // 子代理继承主代理的 workspace：写入 meta.cwd（统一数据源），
                     // 子 worker 启动时 `load_session_workspace` 读到，从而正确解析
                     // 相对路径并以主代理工作区为权限边界。
-                    qaqh_session::SessionManager::global().set_cwd(&seed, workspace, false);
+                    self.sessions.set_cwd(&seed, workspace, false);
                     log::info!("[subagent] inherited workspace for seed={seed}: {workspace}");
                 }
                 self.registry()?.spawn_subagent(
@@ -575,7 +578,7 @@ impl QaqhService {
     }
 
     fn list_sessions(&self) -> Vec<Value> {
-        let manager = qaqh_session::SessionManager::global();
+        let manager = &self.sessions;
         let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
         let workspaces = qaqh_session::WorkspaceStore::global();
         manager
@@ -864,8 +867,11 @@ fn dashboard(seed: &str) -> Result<Value, String> {
     Ok(json!({"tasks":tasks,"recent_edits":edits}))
 }
 
-fn activity(seed: &str) -> Result<Value, String> {
-    let (_, messages) = qaqh_session::SessionManager::global()
+fn activity(
+    sessions: &qaqh_session::SessionManager,
+    seed: &str,
+) -> Result<Value, String> {
+    let (_, messages) = sessions
         .load(seed)
         .ok_or_else(|| "session not found".to_string())?;
     let mut tools = std::collections::HashMap::new();
@@ -903,10 +909,10 @@ fn load_config() -> Result<Value, String> {
     // qaqh-config::dto），service 层不再手拼 json。
     serde_json::to_value(qaqh_config::dto::to_dto(&cfg)).map_err(err)
 }
-fn context_stats(seed: &str) -> Result<Value, String> {
+fn context_stats(sessions: &qaqh_session::SessionManager, seed: &str) -> Result<Value, String> {
     // 统一数据源：meta.json 的 context_stats 字段（原独立文件退役）。
     // 旧 context_stats.json 为可再生缓存，忽略不迁移。
-    if let Some(meta) = qaqh_session::SessionManager::global().load_meta(seed) {
+    if let Some(meta) = sessions.load_meta(seed) {
         if let Some(stats) = meta.context_stats {
             return Ok(stats);
         }

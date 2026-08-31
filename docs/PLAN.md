@@ -373,10 +373,14 @@ serve 存活期间随 config watch 重启策略维持一致（与 workspace_supe
 
 ## 5. Phase 3 —— 拆全局单例（S4 根治）
 
-### PR-3-1（G1）SessionManager 注入化
+### PR-3-1（G1）SessionManager 注入化 ✅（2026-08-31 完成登记见节末）
 **现状**（实测分布）：Phase 1 后 `global()` 调用方仅剩 runtime 侧——`host_impl.rs:29,32`、
 `service.rs:34,75,76,100,107,115,199,237`（含 `init`）、`ringing/conversation_snapshot.rs:13`、
 `tests/timeline_rebuild.rs`；生产 `init` 在 `service.rs:34`（daemon main 目前不碰 SessionManager）。
+**实施时复验勘误**：PR-2-1 迁移后实测分布更宽——另有 `registry.rs:191`（spawn 诊断读
+meta）、`ringing/timeline_rebuild.rs:18`（`try_global`）、`agent/state/agent.rs:230`
+（`try_global` 构造捕获，PR-1-5 注入面）、`qaqh-session/src/workspace.rs:372`（session
+crate 内部惰性迁移读取）四处；一并按注入化处理或登记白名单/勘误。
 **步骤**：
 1. `SessionManager::init` 上移至 daemon `main` 装配点；`QaqhService::init` 改收
    `Arc<SessionManager>` 注入。
@@ -385,6 +389,23 @@ serve 存活期间随 config watch 重启策略维持一致（与 workspace_supe
    无调用后单独小 PR）。
 **验收**：`grep -rn "SessionManager::global()" crates --include=*.rs` → 仅 `qaqh-session`
 定义处、daemon main（若用）、以及 §10.3 白名单测试。
+**完成登记（2026-08-31）**：
+- 单例内部改持 `OnceLock<Arc<SessionManager>>`：`global()/try_global()` 返回 `Arc`
+  克隆并 `#[doc(hidden)]`（语义不变，句柄可 Clone 注入）。
+- 装配链：daemon `server.rs run_with` 开头 `init(data_dir)` → `hub.with_sessions()`
+  → `QaqhService::init(sessions)` → `AgentRegistry::new(sessions)`；`QaqhService`
+  增 `sessions` 字段，17 处调用点 + 自由函数 `activity/context_stats` 加参全部改经
+  句柄；`host_impl`、`registry.rs:191` 诊断同样改经句柄。
+- `RingingHub` 增 `sessions: Option<Arc<…>>` + `with_sessions` 构建器；
+  `conversation_snapshot::persisted_conversation_state` / `timeline_rebuild::
+  rebuild_timeline_snapshot` 改收 `Option<&SessionManager>`（None = 旧 try_global
+  空语义，测试零行为漂移）。
+- `AgentState.session_manager` 改 `Option<Arc<SessionManager>>`（构造时 `try_global`
+  捕获保留——PR-1-5 注入面；后续随 PR-3-2 ToolCtx 路径再收敛）。
+- 勘误执行：`qaqh-session` crate 内部 `workspace.rs:372` 白名单保留（§10.3 已记）。
+- 验收 grep 实测：生产代码命中仅 daemon main 装配点 1 处 + session crate 内部 1 处
+  （白名单）；其余为测试装配点（§10.3）与 doc 注释。
+- 出口：53 targets / 794 passed / 0 failed；clippy 0 error。
 
 ### PR-3-2（D5/G2）workspace 会话作用域 ToolCtx
 **现状**：`workspace/src/runtime.rs` 的 `set_context`/`set_mode`/`files_read`、
@@ -524,9 +545,11 @@ cargo clippy --workspace --all-targets 2>&1 | grep -c "^error"   # → 0
 
 ### 10.3 grep 白名单（允许残留的位置）
 - 各 crate `tests/` 目录（集成测试自带装配，如 `SessionManager::init`）。
-- `#[cfg(test)]` 模块。
+- `#[cfg(test)]` 模块（含测试内装配点取 `global()` 注入被测对象）。
 - `qaqh-workspace/src/main.rs`（CLI 入口的 `Config::load()`，P1-10 白名单）。
 - `qaqh-session` 自身定义处；daemon main（P3-1 后）。
+- `qaqh-session` crate 内部对单例的调用（P3-1 勘误：`workspace.rs`
+  `session_workspace_cwd` 的惰性迁移读取；PR-4-3 随 workspace 侧解耦再收）。
 
 ### 10.4 WSL 走查清单（R-2，PR-4-3 归档；CI 无 WSL 时每阶段出口手动过一遍）
 1. daemon 以 WSL 模式拉起 serve（`workspace_supervisor.rs:246` wsl.exe 路径）→ `/health` 200。

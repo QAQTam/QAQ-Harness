@@ -35,7 +35,8 @@ fn qaqh_service_host_spawn_subscribe_send_close() {
     qaqh_workspace::set_workspace(&ws.to_string_lossy());
 
     // ── 阶段 1：未 attach hub，宿主能力优雅降级（不 panic / 不阻塞）。──
-    let service = QaqhService::init();
+    qaqh_session::SessionManager::init(qaqh_types::platform::data_dir());
+    let service = QaqhService::init(qaqh_session::SessionManager::global());
     let host: &dyn SubagentHost = &service;
     let nohub_rx = host.subscribe("no-hub-seed");
     assert!(

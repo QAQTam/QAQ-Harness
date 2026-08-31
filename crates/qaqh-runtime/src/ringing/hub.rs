@@ -25,6 +25,7 @@ use qaqh_ringing::{
     RingingChannelSnapshot, RingingEvent, RingingEventEnvelope, RingingResetRequired,
     is_safe_integer,
 };
+use qaqh_session::SessionManager;
 use qaqh_types::tool_result::ToolResult;
 use tokio::sync::broadcast;
 
@@ -213,6 +214,9 @@ pub struct RingingHub {
     timeline_live: broadcast::Sender<TimelineLiveEntry>,
     timeline_store: Arc<Mutex<Option<TimelineStore>>>,
     timeline_persistence: Mutex<Option<TimelinePersistence>>,
+    /// 会话存储句柄（PR-3-1 注入化；conversation snapshot / timeline 重建的
+    /// 持久化读侧）。None = 测试或未装配（对应旧 `try_global()` 为空语义）。
+    sessions: Option<Arc<SessionManager>>,
 }
 
 impl RingingHub {
@@ -227,6 +231,12 @@ impl RingingHub {
         hub.load_timeline_persisted();
         hub.start_timeline_persistence();
         hub
+    }
+
+    /// 注入会话存储句柄（PR-3-1：daemon main 在 `SessionManager::init` 后装配）。
+    pub fn with_sessions(mut self, sessions: Arc<SessionManager>) -> Self {
+        self.sessions = Some(sessions);
+        self
     }
 
     fn with_options(epoch: String, root: Option<PathBuf>) -> Self {
@@ -266,6 +276,7 @@ impl RingingHub {
             timeline_live,
             timeline_store: Arc::new(Mutex::new(timeline_store)),
             timeline_persistence: Mutex::new(None),
+            sessions: None,
         }
     }
 
@@ -678,7 +689,8 @@ impl RingingHub {
     /// 事实源。重建结果与 conversation snapshot 同一基线（compact 优先），
     /// 并同步写回 timeline 缓存 + timeline journal（保证下次也 journal 权威）。
     fn rebuild_timeline_from_messages(&self, seed: &str) {
-        if let Some((snapshot, journal)) = super::timeline_rebuild::rebuild_timeline_snapshot(seed)
+        if let Some((snapshot, journal)) =
+            super::timeline_rebuild::rebuild_timeline_snapshot(self.sessions.as_deref(), seed)
         {
             {
                 let mut appender = self.timeline.lock().unwrap_or_else(|e| e.into_inner());
@@ -1494,7 +1506,9 @@ impl RingingHub {
     /// Conversation 频道完整快照：领域投影摘要 + 持久化消息构建的 turns。
     pub fn conversation_snapshot(&self, seed: &str) -> RingingChannelSnapshot {
         let mut snap = self.snapshot(RingingChannel::Conversation, seed);
-        if let Some(state) = super::conversation_snapshot::persisted_conversation_state(seed) {
+        if let Some(state) =
+            super::conversation_snapshot::persisted_conversation_state(self.sessions.as_deref(), seed)
+        {
             merge_persisted_conversation_state(&mut snap.state, state);
         }
         snap

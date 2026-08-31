@@ -49,7 +49,7 @@ fn spawn_subagent_runs_inprocess_loops_and_shutdown_signals_all() {
             }
         }
     });
-    let mut registry = AgentRegistry::new();
+    let mut registry = AgentRegistry::new(qaqh_session::SessionManager::global());
     registry.attach_ringing(hub);
 
     registry

@@ -29,6 +29,15 @@
 //!
 //! Ringing V1 引擎模块：`ringing_v1/engine_*.rs`（固定模块集合，无独立
 //! `Engine` trait；命令经 `dispatch_ringing_one` 直接路由到各引擎方法）。
+//!
+//! ## Module rules（PR-2-3 / R-4 评审检查单）
+//!
+//! 1. `agent/` 内禁止引用 runtime 自身的 ringing 模块（`use crate::ringing…`）——
+//!    ringing 是 daemon 侧投影/队列层，agent 仅经本模块的 channel 类型
+//!    （`types::WorkerCommand` / `types::WriterEvent`）与之交互。检查单：
+//!    在 `crates/qaqh-runtime/src/agent/` 内 grep `crate::ringing` → 0 命中。
+//! 2. 对外构造唯一入口为 `spawn_agent`（`actor.rs` / `registry.rs` 不得自行
+//!    装配 `AgentState`）。
 
 
 pub(crate) mod dashboard;
@@ -44,8 +53,11 @@ pub mod injection;
 pub mod loop_core;
 pub mod paced_emitter;
 pub mod prompt;
+pub(crate) mod spawn;
 pub(crate) mod turn_lap;
 pub mod types;
 pub mod wire;
 pub mod state;
 pub mod util;
+
+pub(crate) use spawn::{spawn_agent, ActorKind, SubagentSpawnSpec};

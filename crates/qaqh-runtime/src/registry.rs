@@ -3,7 +3,7 @@ use std::process::Command;
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, OnceLock};
 
-use crate::actor::SubagentSpawnSpec;
+use crate::agent::SubagentSpawnSpec;
 use crate::{RingingHub, SessionActivityTracker};
 
 static SYSTEM_PATH: OnceLock<String> = OnceLock::new();
@@ -666,7 +666,7 @@ pub(crate) fn externalize_large_content(
         return event;
     };
     let full_text = result.model.text.as_str();
-    if full_text.len() <= crate::ringing::content_store::CONTENT_STORE_THRESHOLD_BYTES {
+    if full_text.len() <= crate::ringing::CONTENT_STORE_THRESHOLD_BYTES {
         return qaqh_domain::DomainEvent::Tool(qaqh_domain::ToolEvent::ToolFinished {
             tool_call_id,
             turn_id,
@@ -739,7 +739,7 @@ mod tests {
     #[test]
     fn large_tool_finished_is_externalized() {
         let hub = RingingHub::new("test");
-        let big = "x".repeat(crate::ringing::content_store::CONTENT_STORE_THRESHOLD_BYTES + 1024);
+        let big = "x".repeat(crate::ringing::CONTENT_STORE_THRESHOLD_BYTES + 1024);
         let out = externalize_large_content(&hub, "s1", tool_finished(big.clone()));
         match out {
             qaqh_domain::DomainEvent::Tool(qaqh_domain::ToolEvent::ToolFinished {

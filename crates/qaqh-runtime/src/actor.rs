@@ -9,62 +9,8 @@
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender};
 
+use crate::agent::{ActorKind, SubagentSpawnSpec};
 use crate::{RingingHub, SessionActivityTracker};
-
-#[derive(Clone)]
-pub(crate) struct SubagentSpawnSpec {
-    pub(crate) tools: Vec<String>,
-    pub(crate) model: Option<String>,
-    pub(crate) base_url: Option<String>,
-    pub(crate) max_tokens: Option<u32>,
-    pub(crate) ephemeral: bool,
-}
-
-#[derive(Clone)]
-pub(crate) enum ActorKind {
-    /// A normal session worker resumed with an existing seed or created with a
-    /// preset seed.
-    Session {
-        resume_seed: Option<String>,
-        new_seed: Option<String>,
-        timeline_turn_count: u64,
-    },
-    Subagent(SubagentSpawnSpec),
-}
-
-/// Apply subagent config defaults (`cfg.subagent.*`) and explicit overrides.
-///
-/// Shared by the legacy process worker and the in-process actor so the two
-/// paths cannot drift. Explicit overrides win over settings defaults.
-pub(crate) fn apply_subagent_config(
-    agent: &mut crate::agent::state::agent::AgentState,
-    model: Option<&str>,
-    base_url: Option<&str>,
-    max_tokens: Option<u32>,
-) {
-    let sub = agent.config.subagent.clone();
-    if !sub.model.is_empty() && model.is_none() {
-        agent.config.model = sub.model;
-    }
-    if !sub.base_url.is_empty() && base_url.is_none() {
-        agent.config.base_url = sub.base_url;
-    }
-    if !sub.api_key.is_empty() {
-        agent.config.api_key = sub.api_key;
-    }
-    if sub.max_tokens > 0 && max_tokens.is_none() {
-        agent.config.max_tokens = sub.max_tokens;
-    }
-    if let Some(model) = model {
-        agent.config.model = model.to_string();
-    }
-    if let Some(base_url) = base_url {
-        agent.config.base_url = base_url.to_string();
-    }
-    if let Some(max_tokens) = max_tokens {
-        agent.config.max_tokens = max_tokens;
-    }
-}
 
 fn short_seed(seed: &str) -> String {
     seed.chars().take(8).collect()
@@ -126,6 +72,10 @@ fn publish_worker_event(
 }
 
 /// Shared actor body for main session loops and subagent loops.
+///
+/// Process-level concerns only: per-actor workspace thread-locals, backend
+/// selection, panic isolation and cleanup. Agent construction and the loop
+/// itself live behind [`crate::agent::spawn_agent`] (PR-2-3).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_actor(
     seed: String,
@@ -160,82 +110,7 @@ pub(crate) fn run_actor(
             qaqh_workspace::authorization::set_subagent_sandbox(true);
         }
 
-        // 权威配置读收敛 config 单入口（PR-1-8 同向）；图片能力快照
-        // 就地注入（PR-1-10：actor 进程的工具调用路径零磁盘读）。
-        let agent_config = qaqh_config::watch::authoritative().unwrap_or_default();
-        let mut agent = crate::agent::state::agent::AgentState::new(agent_config);
-        agent.refresh_image_capability();
-
-        // Both session actors and subagent actors use an actor-private
-        // ToolManager so daemon-side `skills.list_tools` stays stable while a
-        // loop is running.
-        let registrars = crate::agent::state::agent::agent_tool_registrars();
-        let mut manager = qaqh_workspace::registration::build_tool_manager(&registrars);
-        let allowed_tools: Vec<String> = match &kind {
-            ActorKind::Subagent(spec) => {
-                let mut tools = spec.tools.clone();
-                if !tools.iter().any(|tool| tool == "skills") {
-                    tools.push("skills".to_string());
-                }
-                tools
-            }
-            // Empty allowlist means all tools for normal sessions.
-            ActorKind::Session { .. } => Vec::new(),
-        };
-        manager.apply_init(allowed_tools, &seed);
-        qaqh_workspace::runtime::install_actor_tool_manager(manager);
-        agent.tool_defs = qaqh_workspace::runtime::all_tools();
-
-        match kind {
-            ActorKind::Subagent(spec) => {
-                agent.ephemeral = spec.ephemeral;
-                apply_subagent_config(
-                    &mut agent,
-                    spec.model.as_deref(),
-                    spec.base_url.as_deref(),
-                    spec.max_tokens,
-                );
-                agent.session.seed = seed.clone();
-                agent.session.created_at = qaqh_session::SessionManager::now_epoch();
-                log::info!(
-                    "[SUBAGENT-ACTOR] starting in-process subagent seed={} tools={:?} ephemeral={}",
-                    seed,
-                    spec.tools,
-                    spec.ephemeral
-                );
-            }
-            ActorKind::Session {
-                resume_seed,
-                new_seed,
-                timeline_turn_count,
-            } => {
-                if let Some(ref resume) = resume_seed {
-                    agent.session.resume_seed = Some(resume.clone());
-                }
-                if let Some(ref new) = new_seed {
-                    agent.session.seed = new.clone();
-                    agent.session.created_at = qaqh_session::SessionManager::now_epoch();
-                }
-                // Carry the timeline turn-count floor per-agent instead of via
-                // a process env var, so concurrent actors each see their own.
-                agent.timeline_turn_count = timeline_turn_count;
-                log::info!(
-                    "[SESSION-ACTOR] starting in-process session seed={} resume={:?} new={:?}",
-                    seed,
-                    resume_seed,
-                    new_seed
-                );
-            }
-        }
-
-        let mut loop_ = crate::agent::loop_core::Loop::from_channels(
-            agent,
-            cmd_rx,
-            event_tx,
-            cancel,
-            writer_dead,
-        );
-        loop_.run();
+        crate::agent::spawn_agent(&seed, kind, cmd_rx, event_tx, cancel, writer_dead);
 
         qaqh_workspace::clear_actor_context();
         cleanup_actor_state(is_subagent);

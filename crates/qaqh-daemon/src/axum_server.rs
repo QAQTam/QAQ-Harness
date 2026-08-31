@@ -281,7 +281,7 @@ mod axum_impl {
                     command_id: String::new(),
                     status: RingingCommandAckStatus::Rejected,
                     code: Some("invalid_body".into()),
-                    message: Some(format!("{e}")),
+                    message: Some(e.to_string()),
                     retry_after_ms: None,
                 };
                 return (
@@ -377,7 +377,7 @@ mod axum_impl {
             )
                 .into_response();
         }
-        let duplicate = duplicate_check.unwrap();
+        let duplicate = duplicate_check.expect("error branch already returned CONFLICT above");
         if duplicate {
             let ack = RingingCommandAck {
                 command_id: env.command_id.clone(),
@@ -627,7 +627,7 @@ mod axum_impl {
                 command_id: env.command_id.clone(),
                 status: RingingCommandAckStatus::Rejected,
                 code: Some("dispatch_failed".into()),
-                message: Some(format!("{e}")),
+                message: Some(e.to_string()),
                 retry_after_ms: None,
             };
             return (
@@ -1061,65 +1061,6 @@ mod axum_impl {
         replay
     }
 
-    #[cfg(test)]
-    mod pure_tests {
-        use super::*;
-        use qaqh_ringing::RingingResetRequired;
-        #[test] fn channel_parsing() {
-            assert_eq!(parse_channel("control"), Some(RingingChannel::Control));
-            assert_eq!(parse_channel("conversation"), Some(RingingChannel::Conversation));
-            assert_eq!(parse_channel("tool"), Some(RingingChannel::Tool));
-            assert_eq!(parse_channel("bogus"), None);
-        }
-        #[test] fn sse_cursor_parsing() {
-            assert_eq!(parse_sse_cursor("epoch-1:tool:42", "epoch-1", RingingChannel::Tool), 42);
-            assert_eq!(parse_sse_cursor("epoch-2:tool:42", "epoch-1", RingingChannel::Tool), 0);
-            assert_eq!(parse_sse_cursor("epoch-1:conversation:7", "epoch-1", RingingChannel::Tool), 0);
-            assert_eq!(parse_sse_cursor("garbage", "epoch-1", RingingChannel::Tool), 0);
-        }
-        #[test] fn timeline_cursor_is_separate() {
-            assert_eq!(parse_timeline_cursor("epoch-1:timeline:42", "epoch-1"), 42);
-            assert_eq!(parse_timeline_cursor("epoch-1:tool:42", "epoch-1"), 0);
-            assert_eq!(parse_timeline_cursor("epoch-2:timeline:42", "epoch-1"), 0);
-            assert_eq!(parse_timeline_cursor("epoch-1:timeline:42:extra", "epoch-1"), 0);
-        }
-        fn paged_turns(n: usize) -> Vec<qaqh_domain::TimelineTurn> {
-            (1..=n).map(|i| qaqh_domain::TimelineTurn { turn_id: format!("t{i}"), created_seq: i as u64, user_text: format!("q{i}"), sealed: true, state: qaqh_domain::TimelineTurnState::Completed, failure: None, rounds: vec![] }).collect()
-        }
-        #[test] fn timeline_pagination_first_page_is_tail_window() {
-            let (page, has_more) = paginate_turns(paged_turns(40), None, 30);
-            assert_eq!(page.len(), 30); assert_eq!(page.first().unwrap().turn_id, "t11"); assert_eq!(page.last().unwrap().turn_id, "t40"); assert!(has_more);
-        }
-        #[test] fn timeline_pagination_short_session_has_no_more() {
-            let (page, has_more) = paginate_turns(paged_turns(10), None, 30);
-            assert_eq!(page.len(), 10); assert!(!has_more);
-        }
-        #[test] fn timeline_pagination_before_turn_fetches_earlier_page() {
-            let (page, has_more) = paginate_turns(paged_turns(40), Some("t11"), 10);
-            assert_eq!(page.len(), 10); assert_eq!(page.first().unwrap().turn_id, "t1"); assert_eq!(page.last().unwrap().turn_id, "t10"); assert!(!has_more);
-        }
-        #[test] fn timeline_pagination_before_turn_mid_page_and_unknown_fallback() {
-            let (page, has_more) = paginate_turns(paged_turns(40), Some("t21"), 10);
-            assert_eq!(page.first().unwrap().turn_id, "t11"); assert_eq!(page.last().unwrap().turn_id, "t20"); assert!(has_more);
-            let (page, _) = paginate_turns(paged_turns(40), Some("t-unknown"), 10);
-            assert_eq!(page.last().unwrap().turn_id, "t40");
-            let (page, has_more) = paginate_turns(vec![], Some("t1"), 10);
-            assert!(page.is_empty()); assert!(!has_more);
-        }
-        #[test] fn session_close_seed_resolution_prefers_command_seed() {
-            assert_eq!(session_close_seed("s-command", &Some("s-envelope".into())), "s-command");
-            assert_eq!(session_close_seed("s-command", &None), "s-command");
-            assert_eq!(session_close_seed("", &Some("s-envelope".into())), "s-envelope");
-            assert_eq!(session_close_seed("", &None), "");
-        }
-        #[test] fn session_create_event_carries_command_causation() {
-            let hub = RingingHub::new("epoch-1");
-            publish_session_created(&hub, "s-created", "cmd-create");
-            let replay = hub.replay_channel_since(RingingChannel::Control, 0, false);
-            assert_eq!(replay.events.len(), 1); assert_eq!(replay.events[0].seed, "s-created"); assert_eq!(replay.events[0].causation_id.as_deref(), Some("cmd-create"));
-            assert!(matches!(&replay.events[0].event, qaqh_ringing::RingingEvent::Control(qaqh_domain::ControlEvent::SessionStateChanged { state: qaqh_domain::SessionState::Created, .. })));
-        }
-    }
 
     // ---- SSE handlers (P2) ----
     async fn handle_events(
@@ -1302,7 +1243,7 @@ mod axum_impl {
             PathBuf::from(s.to_string())
         }
         let canonical_root = strip_unc(&root.canonicalize().unwrap_or_else(|_| root.to_path_buf()));
-        let canonical_joined = strip_unc(&joined.canonicalize().unwrap_or_else(|_| joined));
+        let canonical_joined = strip_unc(&joined.canonicalize().unwrap_or(joined));
         if !canonical_joined.starts_with(&canonical_root) { return None; }
         Some(canonical_joined)
     }
@@ -1334,15 +1275,16 @@ mod axum_impl {
                 return ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-cache")], data.into_owned()).into_response();
             }
             // 尝试嵌入的 index.html 作为 SPA 回退（前端路由）——仅当 rel 非文件且嵌入存在
-            if WebUi::get(&decoded_rel).is_none() && !decoded_rel.contains('.') {
-                if let Some(embedded) = WebUi::get("index.html") {
-                    let data = embedded.data;
-                    let mime = mime_for(StdPath::new("index.html"));
-                    let mut html = String::from_utf8_lossy(&data).into_owned();
-                    let script = "<script src=\"./__qaqh_bridge__.js\"></script>";
-                    if let Some(idx) = html.find("</head>") { html.insert_str(idx, script); } else { html.push_str(script); }
-                    return ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-cache")], html).into_response();
-                }
+            if WebUi::get(&decoded_rel).is_none()
+                && !decoded_rel.contains('.')
+                && let Some(embedded) = WebUi::get("index.html")
+            {
+                let data = embedded.data;
+                let mime = mime_for(StdPath::new("index.html"));
+                let mut html = String::from_utf8_lossy(&data).into_owned();
+                let script = "<script src=\"./__qaqh_bridge__.js\"></script>";
+                if let Some(idx) = html.find("</head>") { html.insert_str(idx, script); } else { html.push_str(script); }
+                return ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-cache")], html).into_response();
             }
         }
         let root = renderer_root();
@@ -1351,15 +1293,15 @@ mod axum_impl {
         };
         if !file.exists() || !file.is_file() {
             // 文件系统缺失 → 仅对 SPA 路由（无扩展名）回退到嵌入 index.html
-            if !decoded_rel.contains('.') {
-                if let Some(embedded) = WebUi::get("index.html") {
-                    let data = embedded.data;
-                    let mime = mime_for(StdPath::new("index.html"));
-                    let mut html = String::from_utf8_lossy(&data).into_owned();
-                    let script = "<script src=\"./__qaqh_bridge__.js\"></script>";
-                    if let Some(idx) = html.find("</head>") { html.insert_str(idx, script); } else { html.push_str(script); }
-                    return ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-cache")], html).into_response();
-                }
+            if !decoded_rel.contains('.')
+                && let Some(embedded) = WebUi::get("index.html")
+            {
+                let data = embedded.data;
+                let mime = mime_for(StdPath::new("index.html"));
+                let mut html = String::from_utf8_lossy(&data).into_owned();
+                let script = "<script src=\"./__qaqh_bridge__.js\"></script>";
+                if let Some(idx) = html.find("</head>") { html.insert_str(idx, script); } else { html.push_str(script); }
+                return ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-cache")], html).into_response();
             }
             return (StatusCode::NOT_FOUND, [(header::CACHE_CONTROL, "no-cache")], "not found").into_response();
         }
@@ -1382,12 +1324,11 @@ mod axum_impl {
     }
 
     async fn loopback_guard(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
-        if req.uri().path().starts_with("/debug") {
-            if let Some(ConnectInfo(addr)) = req.extensions().get::<ConnectInfo<SocketAddr>>().cloned() {
-                if !addr.ip().is_loopback() {
-                    return (StatusCode::FORBIDDEN, [(header::CONTENT_TYPE, "text/plain"), (header::CACHE_CONTROL, "no-cache")], "webUI hosting is restricted to loopback connections").into_response();
-                }
-            }
+        if req.uri().path().starts_with("/debug")
+            && let Some(ConnectInfo(addr)) = req.extensions().get::<ConnectInfo<SocketAddr>>().cloned()
+            && !addr.ip().is_loopback()
+        {
+            return (StatusCode::FORBIDDEN, [(header::CONTENT_TYPE, "text/plain"), (header::CACHE_CONTROL, "no-cache")], "webUI hosting is restricted to loopback connections").into_response();
         }
         next.run(req).await
     }
@@ -1463,6 +1404,65 @@ mod axum_impl {
             .await
             .map_err(|e| e.to_string())
     }
+
+    #[cfg(test)]
+    mod pure_tests {
+        use super::*;
+        #[test] fn channel_parsing() {
+            assert_eq!(parse_channel("control"), Some(RingingChannel::Control));
+            assert_eq!(parse_channel("conversation"), Some(RingingChannel::Conversation));
+            assert_eq!(parse_channel("tool"), Some(RingingChannel::Tool));
+            assert_eq!(parse_channel("bogus"), None);
+        }
+        #[test] fn sse_cursor_parsing() {
+            assert_eq!(parse_sse_cursor("epoch-1:tool:42", "epoch-1", RingingChannel::Tool), 42);
+            assert_eq!(parse_sse_cursor("epoch-2:tool:42", "epoch-1", RingingChannel::Tool), 0);
+            assert_eq!(parse_sse_cursor("epoch-1:conversation:7", "epoch-1", RingingChannel::Tool), 0);
+            assert_eq!(parse_sse_cursor("garbage", "epoch-1", RingingChannel::Tool), 0);
+        }
+        #[test] fn timeline_cursor_is_separate() {
+            assert_eq!(parse_timeline_cursor("epoch-1:timeline:42", "epoch-1"), 42);
+            assert_eq!(parse_timeline_cursor("epoch-1:tool:42", "epoch-1"), 0);
+            assert_eq!(parse_timeline_cursor("epoch-2:timeline:42", "epoch-1"), 0);
+            assert_eq!(parse_timeline_cursor("epoch-1:timeline:42:extra", "epoch-1"), 0);
+        }
+        fn paged_turns(n: usize) -> Vec<qaqh_domain::TimelineTurn> {
+            (1..=n).map(|i| qaqh_domain::TimelineTurn { turn_id: format!("t{i}"), created_seq: i as u64, user_text: format!("q{i}"), sealed: true, state: qaqh_domain::TimelineTurnState::Completed, failure: None, rounds: vec![] }).collect()
+        }
+        #[test] fn timeline_pagination_first_page_is_tail_window() {
+            let (page, has_more) = paginate_turns(paged_turns(40), None, 30);
+            assert_eq!(page.len(), 30); assert_eq!(page.first().unwrap().turn_id, "t11"); assert_eq!(page.last().unwrap().turn_id, "t40"); assert!(has_more);
+        }
+        #[test] fn timeline_pagination_short_session_has_no_more() {
+            let (page, has_more) = paginate_turns(paged_turns(10), None, 30);
+            assert_eq!(page.len(), 10); assert!(!has_more);
+        }
+        #[test] fn timeline_pagination_before_turn_fetches_earlier_page() {
+            let (page, has_more) = paginate_turns(paged_turns(40), Some("t11"), 10);
+            assert_eq!(page.len(), 10); assert_eq!(page.first().unwrap().turn_id, "t1"); assert_eq!(page.last().unwrap().turn_id, "t10"); assert!(!has_more);
+        }
+        #[test] fn timeline_pagination_before_turn_mid_page_and_unknown_fallback() {
+            let (page, has_more) = paginate_turns(paged_turns(40), Some("t21"), 10);
+            assert_eq!(page.first().unwrap().turn_id, "t11"); assert_eq!(page.last().unwrap().turn_id, "t20"); assert!(has_more);
+            let (page, _) = paginate_turns(paged_turns(40), Some("t-unknown"), 10);
+            assert_eq!(page.last().unwrap().turn_id, "t40");
+            let (page, has_more) = paginate_turns(vec![], Some("t1"), 10);
+            assert!(page.is_empty()); assert!(!has_more);
+        }
+        #[test] fn session_close_seed_resolution_prefers_command_seed() {
+            assert_eq!(session_close_seed("s-command", &Some("s-envelope".into())), "s-command");
+            assert_eq!(session_close_seed("s-command", &None), "s-command");
+            assert_eq!(session_close_seed("", &Some("s-envelope".into())), "s-envelope");
+            assert_eq!(session_close_seed("", &None), "");
+        }
+        #[test] fn session_create_event_carries_command_causation() {
+            let hub = RingingHub::new("epoch-1");
+            publish_session_created(&hub, "s-created", "cmd-create");
+            let replay = hub.replay_channel_since(RingingChannel::Control, 0, false);
+            assert_eq!(replay.events.len(), 1); assert_eq!(replay.events[0].seed, "s-created"); assert_eq!(replay.events[0].causation_id.as_deref(), Some("cmd-create"));
+            assert!(matches!(&replay.events[0].event, qaqh_ringing::RingingEvent::Control(qaqh_domain::ControlEvent::SessionStateChanged { state: qaqh_domain::SessionState::Created, .. })));
+        }
+    }
 }
 #[allow(unused_imports)]
 pub use axum_impl::{AppState, build_router, run_axum_with};
@@ -1481,7 +1481,7 @@ mod axum_tests {
         ));
         let leases = std::sync::Arc::new(std::sync::Mutex::new(qaqh_runtime::ringing::RingingLeaseStore::new()));
         let pending = std::sync::Arc::new(std::sync::Mutex::new(qaqh_runtime::ringing::PendingCommandStore::new()));
-        let service = TEST_SERVICE.get_or_init(|| qaqh_runtime::QaqhService::init()).clone();
+        let service = TEST_SERVICE.get_or_init(qaqh_runtime::QaqhService::init).clone();
         let (shutdown, _) = tokio::sync::watch::channel(false);
         AppState {
             hub,

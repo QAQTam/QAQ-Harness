@@ -189,10 +189,7 @@ fn clean_title(raw: &str) -> String {
 
 /// 从 agent 配置构建 ProviderConfig（与 engine_turn/engine_compact 同构）。
 fn build_provider(ctx: &RingContext) -> qaqh_gate::ProviderConfig {
-    let ep = qaqh_config::registry::find_endpoint(
-        &ctx.agent.config.provider_id,
-        &ctx.agent.config.endpoint,
-    );
+    let ep = ctx.agent.endpoint_spec.clone();
     let is_responses = ep.as_ref().map(|e| e.protocol.as_str()) == Some("responses");
     let is_anthropic = ep.as_ref().map(|e| e.protocol.as_str()) == Some("anthropic");
     if is_anthropic {

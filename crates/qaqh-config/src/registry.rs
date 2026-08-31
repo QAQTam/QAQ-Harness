@@ -906,3 +906,10 @@ mod tests {
         assert!(!endpoint.models.contains(&"minimax-m3".to_string()));
     }
 }
+
+/// Resolve the endpoint spec for an already-loaded [`crate::Config`]
+/// (PR-1-9 / B7): the loop resolves once at config-assembly/reload time and
+/// engines read the stored field instead of walking the registry per call.
+pub fn resolve_for_config(cfg: &crate::Config) -> Option<EndpointSpec> {
+    find_endpoint(&cfg.provider_id, &cfg.endpoint)
+}

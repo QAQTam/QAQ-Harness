@@ -244,7 +244,7 @@ config 权威读只在 config crate 的 reload/watch 服务（与 config-revamp 
 两文档交叉引用，不重复施工）。
 **验收**：`grep -rn "Config::load()" crates/qaqh-msgloop/src` → 0。
 
-### PR-1-9（B7）endpoint 一次性解析
+### PR-1-9（B7）endpoint 一次性解析 ✅（AgentState.endpoint_spec + config 单入口 resolve_for_config）
 **现状**：`engine_compact.rs:224`、`engine_title.rs:183`、`turn_lap/gate.rs:636` 三处
 `qaqh_config::registry::find_endpoint`。
 **步骤**（Q6a）：turn 开始时一次性解析 endpoint/protocol 存入 `AgentState` 字段

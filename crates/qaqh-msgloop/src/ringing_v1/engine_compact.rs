@@ -219,10 +219,7 @@ impl CompactEngine {
             )
         };
 
-        let ep = qaqh_config::registry::find_endpoint(
-            &ctx.agent.config.provider_id,
-            &ctx.agent.config.endpoint,
-        );
+        let ep = ctx.agent.endpoint_spec.clone();
         let is_responses = ep.as_ref().map(|e| e.protocol.as_str()) == Some("responses");
         let is_anthropic = ep.as_ref().map(|e| e.protocol.as_str()) == Some("anthropic");
         let provider = if is_anthropic {

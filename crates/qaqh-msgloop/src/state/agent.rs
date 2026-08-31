@@ -190,6 +190,11 @@ pub struct AgentState {
     /// Loop bookkeeping queue (PR-1-5 / B6): title / context-stats / mode /
     /// usage / skills writes, drained by [`Self::drain_persist_ops`].
     pub pending_meta_ops: Vec<MetaOp>,
+    /// Endpoint spec resolved once from the config's (provider, endpoint)
+    /// pair (PR-1-9 / B7). Refreshed whenever the config is replaced
+    /// ([`Self::new`] / reload `apply_config`); engines read this field
+    /// instead of re-walking the provider registry per request.
+    pub endpoint_spec: Option<qaqh_types::EndpointSpec>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -204,7 +209,7 @@ impl AgentState {
         // This prevents accidental persistence of a placeholder seed.
         let msg = qaqh_message::MessageStore::new("");
         let effective_input_tokens = config.context_limit as usize;
-        Self {
+        let mut agent = Self {
             msg,
             config,
             session: SessionMeta::default(),
@@ -224,7 +229,16 @@ impl AgentState {
             last_injected_epoch: 0,
             session_manager: SessionManager::try_global(),
             pending_meta_ops: Vec::new(),
-        }
+            endpoint_spec: None,
+        };
+        agent.refresh_endpoint_spec();
+        agent
+    }
+
+    /// Re-resolve [`Self::endpoint_spec`] from the current config (PR-1-9).
+    /// Call after any mutation of `config.provider_id` / `config.endpoint`.
+    pub fn refresh_endpoint_spec(&mut self) {
+        self.endpoint_spec = qaqh_config::registry::resolve_for_config(&self.config);
     }
 
     /// Queue a loop-bookkeeping write for the host flush service (PR-1-5).

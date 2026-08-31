@@ -637,10 +637,7 @@ pub(crate) fn gate_request(
 /// `request_tag` feeds the OpenCode gateway management headers (`msg_…`
 /// request id): pass the turn id for normal rounds.
 pub(crate) fn provider_for(ctx: &RingContext, request_tag: &str) -> qaqh_gate::ProviderConfig {
-    let ep = qaqh_config::registry::find_endpoint(
-        &ctx.agent.config.provider_id,
-        &ctx.agent.config.endpoint,
-    );
+    let ep = ctx.agent.endpoint_spec.clone();
     let is_responses = ep.as_ref().map(|e| e.protocol.as_str()) == Some("responses");
     let is_anthropic = ep.as_ref().map(|e| e.protocol.as_str()) == Some("anthropic");
     if is_anthropic {

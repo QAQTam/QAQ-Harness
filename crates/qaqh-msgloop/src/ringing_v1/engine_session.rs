@@ -104,6 +104,8 @@ impl SessionEngine {
         agent.config.context_limit = cfg.context_limit;
         agent.config.auto_compact_threshold = cfg.auto_compact_threshold;
         agent.config.permission_level = cfg.permission_level;
+        // (provider, endpoint) 解析随配置刷新（PR-1-9：engines 只读字段）。
+        agent.refresh_endpoint_spec();
     }
 }
 

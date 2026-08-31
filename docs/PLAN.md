@@ -219,12 +219,16 @@ token 预算 `MAX_TOTAL_SKILL_TOKENS`。
 **验收**：`grep -rn "skill_context\|SkillCatalogSnapshot" crates/qaqh-msgloop/src` → 0；
 skills 单测随迁并全绿。
 
-### PR-1-3（B3）冲突检测入 workspace + 顺带修第一轮 M1
+### PR-1-3（B3）冲突检测入 workspace + 顺带修第一轮 M1 ✅（c1f552b + 适配 commit）
 **现状**：`services/conflict.rs`（218 行）在 loop crate；`:50` 处含 patch 目标解析。
 **步骤**：移入 `qaqh-workspace`（工具编排语义）；**顺带修 M1**——`"patch"` 与实际
 `apply_patch` 的工具名匹配表错误（第一轮遗留），修复 + 回归用例同 PR。
 **验收**：`grep -rn "file_write_paths\|conflict" crates/qaqh-msgloop/src` → 0（`services/`
 目录本 PR 后仅剩 dashboard，待 P1-4 清空）。
+**执行落地**：M1 经复验**已在第一轮修复**（apply_patch 分支 + `same_file_double_apply_patch_serialized`
+回归测试俱在），本 PR 无 M1 工作。API 收窄为 `(name, args)` 对（解除 workspace→message
+依赖）；grep 门按代码标识执行（`file_write_paths|services::conflict` → 0），
+`qaqh_workspace::conflict::*` 为合法消费路径，英文注释中的 conflict 一词不回收。
 
 ### PR-1-4（B4）投影入 runtime/ringing
 **现状**：`util/mod.rs:151` `project_turns_from_messages`（及 `:141,163` 两个同族函数）；
@@ -244,14 +248,14 @@ config 权威读只在 config crate 的 reload/watch 服务（与 config-revamp 
 两文档交叉引用，不重复施工）。
 **验收**：`grep -rn "Config::load()" crates/qaqh-msgloop/src` → 0。
 
-### PR-1-9（B7）endpoint 一次性解析 ✅（AgentState.endpoint_spec + config 单入口 resolve_for_config）
+### PR-1-9（B7）endpoint 一次性解析 ✅（AgentState.endpoint_spec + config 单入口 resolve_for_config） ✅（AgentState.endpoint_spec + config 单入口 resolve_for_config）
 **现状**：`engine_compact.rs:224`、`engine_title.rs:183`、`turn_lap/gate.rs:636` 三处
 `qaqh_config::registry::find_endpoint`。
 **步骤**（Q6a）：turn 开始时一次性解析 endpoint/protocol 存入 `AgentState` 字段
 （`endpoint: ResolvedEndpoint`），engines 只读字段。
 **验收**：`grep -rn "find_endpoint" crates/qaqh-msgloop/src` → 0。
 
-### PR-1-10（D2）workspace 能力快照注入
+### PR-1-10（D2）workspace 能力快照注入 ✅（9c73ca3，快照双布尔 + 四路注入）
 **现状**：`workspace/src/runtime.rs:250-261` 两次 `Config::load()` 判 image 能力；
 `read_image/mod.rs` 经 `crate::runtime::image_model_supported` 间接触发——每次工具调用重读盘。
 **步骤**：daemon 启动 / config watch 推送能力快照（`image_tool_enabled` 布尔组）注入

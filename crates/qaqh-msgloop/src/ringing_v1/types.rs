@@ -236,9 +236,9 @@ pub struct TurnState {
     pub pending_permission_ids: Vec<String>,
     /// Authorized calls held until every permission decision is recorded.
     pub deferred_authorized: Vec<AdmittedTool>,
-    /// Original assistant tool-call order for deterministic conflict handling.
+    /// Original assistant tool-call order for deterministic write serialization.
     pub tool_call_order: Vec<String>,
-    /// Calls that must run after earlier conflicting writers.
+    /// Calls that must run after earlier same-file writers.
     pub serial_call_ids: HashSet<String>,
     /// Authorized ask_user calls in assistant tool-call order.
     pub pending_asks: VecDeque<PendingAsk>,

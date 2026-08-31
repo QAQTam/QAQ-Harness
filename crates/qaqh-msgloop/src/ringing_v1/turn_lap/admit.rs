@@ -9,7 +9,7 @@ use qaqh_types::UsageInfo;
 use crate::ringing_v1::engine_tool::ToolEngine;
 use crate::ringing_v1::turn_lap::gate::{abort_running_turn, seal_timeline_terminal_round};
 use crate::ringing_v1::types::*;
-use crate::services::{conflict, dashboard};
+use crate::services::dashboard;
 
 // ── helpers (from engine_turn.rs, duplicated for phase decoupling) ──
 
@@ -304,7 +304,7 @@ pub(crate) fn execute_admitted_batch(
 /// - `LoopPhase::ToolsRunning`
 /// - duplicate ID check (→ `Handled`)
 /// - `MAX_TOOL_CALLS_PER_ROUND = 16` truncate
-/// - `tool_call_order` + `serial_call_ids` via `conflict::resolve_write_conflicts`
+/// - `tool_call_order` + `serial_call_ids` via workspace write-serialization
 /// - `tool.admit_batch` + pre-execution suspend (permission / plan / todo)
 /// - bounded parallel + serial execution (with `_with_diff`, `CodeChanged`, cancel)
 /// - post-execution suspend (permission / ask / plan / todo)
@@ -399,7 +399,12 @@ pub(crate) fn admit_and_dispatch(
         pending.len()
     );
     const MAX_PARALLEL_TOOL_WORKERS: usize = 4;
-    let (_serial_groups, serial_after) = conflict::resolve_write_conflicts(&pending);
+    let write_pairs: Vec<(String, serde_json::Value)> = pending
+        .iter()
+        .map(|tool| (tool.name.clone(), tool.args.clone()))
+        .collect();
+    let (_serial_groups, serial_after) =
+        qaqh_workspace::conflict::resolve_write_conflicts(&write_pairs);
     let serial_call_ids: HashSet<String> = serial_after
         .iter()
         .map(|index| pending[*index].id.clone())

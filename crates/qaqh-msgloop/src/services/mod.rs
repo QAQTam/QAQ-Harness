@@ -7,8 +7,6 @@
 //!
 //! | Module           | Role                            |
 //! |------------------|---------------------------------|
-//! | `conflict.rs`    | Write-conflict detection        |
 //! | `dashboard.rs`   | Status / metrics reporting      |
 
-pub(crate) mod conflict;
 pub(crate) mod dashboard;

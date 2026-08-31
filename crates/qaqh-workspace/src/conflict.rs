@@ -1,15 +1,16 @@
 //! Write-conflict detection for tool execution.
 //!
 //! Detects same-file write conflicts among pending tool calls and groups them
-//! into serial execution sets to avoid race conditions.
+//! into serial execution sets to avoid race conditions. Moved here from the
+//! loop crate (PR-1-3 / B3): tool-orchestration semantics belong to the tool
+//! crate. The API takes `(tool_name, args)` pairs — no dependency on any
+//! conversation-state crate.
 
 use std::collections::{HashMap, HashSet};
 
-use serde_json;
-
 /// Extract file paths that a tool writes to (mutates).
 /// Returns empty vec for read-only and non-file tools.
-pub(crate) fn file_write_paths(tool_name: &str, args: &serde_json::Value) -> Vec<String> {
+pub fn file_write_paths(tool_name: &str, args: &serde_json::Value) -> Vec<String> {
     let mut paths = Vec::new();
     let action = if tool_name == "file" {
         args.get("action").and_then(|v| v.as_str()).unwrap_or("")
@@ -47,7 +48,7 @@ pub(crate) fn file_write_paths(tool_name: &str, args: &serde_json::Value) -> Vec
             // M1：目标在 patch 文本里（Codex 格式头），解析后按同文件分组；
             // 原名单只匹配 "patch" 等旧名，apply_patch 双调用曾并行竞态。
             if let Some(patch) = args.get("patch").and_then(|v| v.as_str()) {
-                for target in qaqh_workspace::permission::patch_target_paths(patch) {
+                for target in crate::permission::patch_target_paths(patch) {
                     paths.push(target);
                 }
             }
@@ -72,12 +73,10 @@ fn collect_paths(args: &serde_json::Value, paths: &mut Vec<String>) {
 
 /// Detect same-file write conflicts among pending tools and group them
 /// into serial execution sets. Returns (serial_groups, serial_after_indices).
-pub(crate) fn resolve_write_conflicts(
-    pending: &[qaqh_message::PendingTool],
-) -> (Vec<Vec<usize>>, HashSet<usize>) {
+pub fn resolve_write_conflicts(pending: &[(String, serde_json::Value)]) -> (Vec<Vec<usize>>, HashSet<usize>) {
     let mut file_writers: HashMap<String, Vec<usize>> = HashMap::new();
-    for (i, tool) in pending.iter().enumerate() {
-        for path in file_write_paths(&tool.name, &tool.args) {
+    for (i, (name, args)) in pending.iter().enumerate() {
+        for path in file_write_paths(name, args) {
             file_writers.entry(path).or_default().push(i);
         }
     }
@@ -128,22 +127,17 @@ pub(crate) fn resolve_write_conflicts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qaqh_message::PendingTool;
 
-    fn tool(id: &str, name: &str, path: &str) -> PendingTool {
-        PendingTool {
-            id: id.to_string(),
-            name: name.to_string(),
-            args: serde_json::json!({"path": path}),
-        }
+    fn tool(name: &str, path: &str) -> (String, serde_json::Value) {
+        (name.to_string(), serde_json::json!({"path": path}))
     }
 
     #[test]
     fn flat_file_mutations_on_same_path_are_serialized() {
         let pending = vec![
-            tool("write-1", "write", "src/lib.rs"),
-            tool("edit-1", "edit_file", "src/lib.rs"),
-            tool("delete-1", "delete", "src/other.rs"),
+            tool("write", "src/lib.rs"),
+            tool("edit_file", "src/lib.rs"),
+            tool("delete", "src/other.rs"),
         ];
 
         let (groups, serial_after) = resolve_write_conflicts(&pending);
@@ -154,16 +148,17 @@ mod tests {
 
     #[test]
     fn same_file_double_apply_patch_serialized() {
-        let mk = |id: &str, target: &str| PendingTool {
-            id: id.to_string(),
-            name: "apply_patch".to_string(),
-            args: serde_json::json!({
-                "patch": format!(
-                    "*** Begin Patch\n*** Update File: {target}\n@@\n-old\n+new\n*** End Patch"
-                )
-            }),
+        let mk = |target: &str| {
+            (
+                "apply_patch".to_string(),
+                serde_json::json!({
+                    "patch": format!(
+                        "*** Begin Patch\n*** Update File: {target}\n@@\n-old\n+new\n*** End Patch"
+                    )
+                }),
+            )
         };
-        let pending = vec![mk("ap-1", "src/a.rs"), mk("ap-2", "src/a.rs")];
+        let pending = vec![mk("src/a.rs"), mk("src/a.rs")];
         let (groups, serial_after) = resolve_write_conflicts(&pending);
         assert_eq!(groups, vec![vec![0, 1]]);
         assert_eq!(serial_after, HashSet::from([1]));
@@ -172,16 +167,14 @@ mod tests {
     #[test]
     fn copy_range_write_targets_are_grouped() {
         let pending = vec![
-            PendingTool {
-                id: "cr-1".into(),
-                name: "copy_range".into(),
-                args: serde_json::json!({"source_path":"a.txt","target_path":"out/b.txt"}),
-            },
-            PendingTool {
-                id: "cr-2".into(),
-                name: "copy_range".into(),
-                args: serde_json::json!({"source_path":"c.txt","target_path":"out/b.txt"}),
-            },
+            (
+                "copy_range".to_string(),
+                serde_json::json!({"source_path":"a.txt","target_path":"out/b.txt"}),
+            ),
+            (
+                "copy_range".to_string(),
+                serde_json::json!({"source_path":"c.txt","target_path":"out/b.txt"}),
+            ),
         ];
         let (groups, serial_after) = resolve_write_conflicts(&pending);
         assert_eq!(groups, vec![vec![0, 1]]);
@@ -191,8 +184,8 @@ mod tests {
     #[test]
     fn independent_file_mutations_remain_parallel() {
         let pending = vec![
-            tool("write-1", "write", "src/a.rs"),
-            tool("edit-1", "edit_file", "src/b.rs"),
+            tool("write", "src/a.rs"),
+            tool("edit_file", "src/b.rs"),
         ];
 
         let (groups, serial_after) = resolve_write_conflicts(&pending);
@@ -204,10 +197,10 @@ mod tests {
     #[test]
     fn todo_mutations_are_serialized_in_model_order() {
         let pending = vec![
-            tool("todo-1", "todo", ""),
-            tool("todo-2", "todo", ""),
-            tool("read-1", "read", ""),
-            tool("todo-3", "todo", ""),
+            tool("todo", ""),
+            tool("todo", ""),
+            tool("read", ""),
+            tool("todo", ""),
         ];
 
         let (groups, serial_after) = resolve_write_conflicts(&pending);

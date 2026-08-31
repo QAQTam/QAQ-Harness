@@ -21,7 +21,7 @@ pub fn rebuild_timeline_snapshot(
         .as_ref()
         .map(|context| context.messages.as_slice())
         .unwrap_or(archive_messages.as_slice());
-    let (_, turns) = qaqh_msgloop::util::project_turns_from_messages(seed, messages, None, None);
+    let (_, turns) = super::projection::project_turns_from_messages(seed, messages, None, None);
     timeline_snapshot_from_turns(seed, &turns)
 }
 

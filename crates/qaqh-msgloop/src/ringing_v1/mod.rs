@@ -41,6 +41,7 @@
 //! Injection must go through the InjectionBus (roadmap 刀7), not through a
 //! new per-feature path.
 
+pub(crate) mod dashboard;
 pub mod engine_compact;
 pub mod engine_input;
 pub mod engine_misc;

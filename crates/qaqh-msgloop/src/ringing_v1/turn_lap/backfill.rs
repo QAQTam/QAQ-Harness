@@ -6,7 +6,7 @@ use qaqh_types::UsageInfo;
 
 use crate::ringing_v1::engine_tool::ToolEngine;
 use crate::ringing_v1::types::{Outcome, RingContext};
-use crate::services::dashboard;
+use crate::ringing_v1::dashboard;
 use crate::util;
 
 // ── helpers (from engine_turn.rs, duplicated for phase decoupling) ──

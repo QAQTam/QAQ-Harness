@@ -10,7 +10,7 @@
 //! The Loop orchestrates this by calling `turn.reset()` and `tool.reset()`
 //! BEFORE calling `handle_undo()`.
 
-use crate::services::dashboard;
+use super::dashboard;
 use crate::state::agent::{AgentState, MetaOp};
 
 use super::types::Emitter;

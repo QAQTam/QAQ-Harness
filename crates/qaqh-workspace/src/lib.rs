@@ -4,6 +4,7 @@
 
 pub mod confirm_apply;
 pub mod conflict;
+pub mod dashboard;
 pub mod copy_range;
 pub mod exec;
 pub mod grep_tool;

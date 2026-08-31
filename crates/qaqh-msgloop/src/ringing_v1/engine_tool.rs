@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use crate::services::dashboard;
+use super::dashboard;
 use crate::state::agent::PendingApproval;
 use qaqh_domain::{AskMode, AskQuestion};
 

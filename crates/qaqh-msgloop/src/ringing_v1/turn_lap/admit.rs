@@ -9,7 +9,7 @@ use qaqh_types::UsageInfo;
 use crate::ringing_v1::engine_tool::ToolEngine;
 use crate::ringing_v1::turn_lap::gate::{abort_running_turn, seal_timeline_terminal_round};
 use crate::ringing_v1::types::*;
-use crate::services::dashboard;
+use crate::ringing_v1::dashboard;
 
 // ── helpers (from engine_turn.rs, duplicated for phase decoupling) ──
 

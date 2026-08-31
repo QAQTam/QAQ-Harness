@@ -72,13 +72,9 @@ impl SessionEngine {
         agent: &mut crate::state::agent::AgentState,
         _cancel: &CancelToken,
     ) {
-        // P2-D1：磁盘为权威源；磁盘读失败时回退单写口广播的最新镜像
-        // （qaqh_config::watch），保证 reload 永远拿得到一份完整快照。
-        let loaded = match qaqh_config::Config::load() {
-            Ok(cfg) => Some(cfg),
-            Err(_) => qaqh_config::watch::latest().map(|arc| (*arc).clone()),
-        };
-        if let Some(cfg) = loaded {
+        // P2-D1：磁盘为权威源；磁盘读失败时回退单写口广播的最新镜像。
+        // 权威读收敛到 config crate 单入口（PR-1-8）。
+        if let Some(cfg) = qaqh_config::watch::authoritative() {
             Self::apply_config(cfg, agent);
             qaqh_workspace::workspace::load_session_workspace(&agent.session.seed);
         }

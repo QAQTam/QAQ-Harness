@@ -380,40 +380,13 @@ impl AgentState {
         self.observe_prepared_request(&fingerprint, &request_key, raw_tokens, observed_tokens)
     }
 
-    pub fn init(caller: &str) -> Self {
-        let config = match Config::load() {
-            Ok(c) => c,
-            Err(e) => {
-                log::warn!("qaqh-agent: Config::load failed ({e}), using default config");
-                Config::default()
-            }
-        };
+    /// Assemble an agent from a caller-supplied config (PR-1-8 / B5): the
+    /// config authority lives in the config crate (watch::authoritative /
+    /// daemon assembly); msgloop never reads the disk itself.
+    pub fn init(caller: &str, config: Config) -> Self {
         runtime::init_tools(caller, &agent_tool_registrars(), vec![]);
         let mut agent = Self::new(config);
         agent.tool_defs = runtime::all_tools(); // all tools, no allowlist
-        agent
-    }
-
-    /// Initialize agent in subagent mode with a restricted tool allowlist and optional ephemeral flag.
-    /// The LLM sees ALL tools (cache-friendly); the ToolManager enforces the allowlist at execution.
-    pub fn init_subagent(allowed_tools: &[String], ephemeral: bool) -> Self {
-        let config = match Config::load() {
-            Ok(c) => c,
-            Err(e) => {
-                log::warn!("qaqh-agent: Config::load failed ({e}), using default config");
-                Config::default()
-            }
-        };
-        let mut allowed_tools = allowed_tools.to_vec();
-        for required in ["skills"] {
-            if !allowed_tools.iter().any(|tool| tool == required) {
-                allowed_tools.push(required.to_string());
-            }
-        }
-        runtime::init_tools("subagent", &agent_tool_registrars(), allowed_tools);
-        let mut agent = Self::new(config);
-        agent.ephemeral = ephemeral;
-        agent.tool_defs = runtime::all_tools(); // full set — LLM cache friendly
         agent
     }
 

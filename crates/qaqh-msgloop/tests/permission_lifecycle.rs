@@ -340,7 +340,7 @@ fn run_case(
     let mock = MockServer::sequential(scenarios);
     qaqh_workspace::set_workspace(&workspace.to_string_lossy());
 
-    let mut agent = AgentState::init("permission-lifecycle-test");
+    let mut agent = AgentState::init("permission-lifecycle-test", qaqh_config::Config::default());
     agent.ephemeral = true;
     agent.config.permission_level = permission_level;
     agent.config.base_url = mock.base_url.clone();

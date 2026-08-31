@@ -433,7 +433,7 @@ fn run_case_with_delay(
     let request_count = mock.requests.clone();
     qaqh_workspace::set_workspace(&temp.path().to_string_lossy());
 
-    let mut agent = AgentState::init("ask-lifecycle-test");
+    let mut agent = AgentState::init("ask-lifecycle-test", qaqh_config::Config::default());
     agent.ephemeral = true;
     agent.config.permission_level = 1;
     agent.config.base_url = mock.base_url.clone();

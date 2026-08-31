@@ -51,7 +51,7 @@ fn inprocess_channels_run_the_same_session_lifecycle_as_pipes() {
     qaqh_workspace::set_workspace(&ws.to_string_lossy());
     SESSION_INIT.call_once(|| qaqh_session::SessionManager::init(qaqh_types::platform::data_dir()));
 
-    let mut agent = AgentState::init("test");
+    let mut agent = AgentState::init("test", qaqh_config::Config::default());
     agent.ephemeral = true;
 
     let channels = LoopChannels::new();

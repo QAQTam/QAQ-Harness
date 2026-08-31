@@ -26,7 +26,7 @@ fn ten_parallel_reads_same_file() {
 
     // ── Init agent ──
     qaqh_session::SessionManager::init(qaqh_types::platform::data_dir());
-    let mut agent = AgentState::init("test");
+    let mut agent = AgentState::init("test", qaqh_config::Config::default());
     // Make the session ephemeral to avoid disk I/O interference
     agent.ephemeral = true;
 

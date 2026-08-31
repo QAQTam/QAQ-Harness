@@ -244,7 +244,7 @@ fn create_session_emits_session_state() {
     qaqh_workspace::set_workspace(&ws.to_string_lossy());
     SESSION_INIT.call_once(|| qaqh_session::SessionManager::init(qaqh_types::platform::data_dir()));
 
-    let mut agent = AgentState::init("test");
+    let mut agent = AgentState::init("test", qaqh_config::Config::default());
     agent.ephemeral = true;
 
     let (ir, mut iw) = os_pipe::pipe().expect("os pipe");
@@ -285,7 +285,7 @@ fn send_message_triggers_turn_lifecycle() {
 
     SESSION_INIT.call_once(|| qaqh_session::SessionManager::init(qaqh_types::platform::data_dir()));
 
-    let mut agent = AgentState::init("test");
+    let mut agent = AgentState::init("test", qaqh_config::Config::default());
     agent.ephemeral = true;
     agent.config.base_url = mock.base_url.clone();
     agent.config.api_key = "sk-test".into();
@@ -385,7 +385,7 @@ fn system_injection_lands_inside_running_turn() {
 
     SESSION_INIT.call_once(|| qaqh_session::SessionManager::init(qaqh_types::platform::data_dir()));
 
-    let mut agent = AgentState::init("test");
+    let mut agent = AgentState::init("test", qaqh_config::Config::default());
     agent.ephemeral = true;
     agent.config.base_url = mock.base_url.clone();
     agent.config.api_key = "sk-test".into();
@@ -503,7 +503,7 @@ fn ringing_send_is_not_dropped_during_a_session_switch() {
     qaqh_workspace::set_workspace(&ws.to_string_lossy());
     SESSION_INIT.call_once(|| qaqh_session::SessionManager::init(qaqh_types::platform::data_dir()));
 
-    let mut agent = AgentState::init("test");
+    let mut agent = AgentState::init("test", qaqh_config::Config::default());
     agent.ephemeral = true;
     agent.config.base_url = mock.base_url.clone();
     agent.config.api_key = "sk-test".into();

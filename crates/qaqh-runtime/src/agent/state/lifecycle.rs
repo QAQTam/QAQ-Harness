@@ -194,7 +194,7 @@ pub fn init_session(agent: &mut AgentState, restore_seed: Option<&str>) -> bool 
         agent.config.context_limit as usize,
     );
     agent.msg.push_system(qaqh_types::Message::system(
-        &qaqh_config::prompt::system_prompt_for_mode(&agent.session.tool_mode),
+        &crate::agent::prompt::system_prompt_for_mode(&agent.session.tool_mode),
     ));
     agent
         .msg
@@ -225,7 +225,7 @@ pub fn create_session(agent: &mut AgentState) {
         agent.config.context_limit as usize,
     );
     agent.msg.push_system(qaqh_types::Message::system(
-        &qaqh_config::prompt::system_prompt_for_mode(&agent.session.tool_mode),
+        &crate::agent::prompt::system_prompt_for_mode(&agent.session.tool_mode),
     ));
     agent
         .msg
@@ -266,7 +266,7 @@ pub fn create_session_with_seed(agent: &mut AgentState) {
         }
     }
     agent.msg.push_system(qaqh_types::Message::system(
-        &qaqh_config::prompt::system_prompt_for_mode(&agent.session.tool_mode),
+        &crate::agent::prompt::system_prompt_for_mode(&agent.session.tool_mode),
     ));
     agent
         .msg

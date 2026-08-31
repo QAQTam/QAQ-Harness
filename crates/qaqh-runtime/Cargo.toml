@@ -15,6 +15,7 @@ qaqh-session = { path = "../qaqh-session" }
 qaqh-subagent = { path = "../qaqh-subagent" }
 qaqh-workspace = { path = "../qaqh-workspace" }
 qaqh-gate = { path = "../qaqh-gate" }
+unicode-normalization = "0.1"
 qaqh-skills = { path = "../qaqh-skills" }
 qaqh-types = { path = "../qaqh-types" }
 log = "0.4"

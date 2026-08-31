@@ -32,6 +32,7 @@
 
 
 pub(crate) mod dashboard;
+pub mod input_guard;
 pub mod engine_compact;
 pub mod engine_input;
 pub mod engine_misc;
@@ -42,6 +43,7 @@ pub mod engine_turn;
 pub mod injection;
 pub mod loop_core;
 pub mod paced_emitter;
+pub mod prompt;
 pub(crate) mod turn_lap;
 pub mod types;
 pub mod wire;

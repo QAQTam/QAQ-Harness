@@ -5,8 +5,8 @@
 
 use std::sync::OnceLock;
 
-const DEFAULT_PROMPT: &str = include_str!("../prompts/backend_prompt.md");
-const OS_ENV_TEMPLATE: &str = include_str!("../prompts/os_env.md");
+const DEFAULT_PROMPT: &str = include_str!("prompts/backend_prompt.md");
+const OS_ENV_TEMPLATE: &str = include_str!("prompts/os_env.md");
 
 /// Cached OS info string. Set at startup.
 pub static OS_INFO: OnceLock<String> = OnceLock::new();

@@ -67,7 +67,7 @@ fn pattern_found(text: &str, pattern: &str) -> bool {
     let is_pure_ascii = pattern.bytes().all(|b| b.is_ascii());
 
     let mut search_start = 0usize;
-    while let Some(pos) = text[search_start..].find(&needle) {
+    while let Some(pos) = text.get(search_start..).and_then(|tail| tail.find(&needle)) {
         let abs_start = search_start + pos;
         let abs_end = abs_start + needle.len();
 

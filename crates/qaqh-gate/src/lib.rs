@@ -9,7 +9,6 @@
 //! boundaries.  The clippy `string_slice` lint is allowed at the crate
 //! level (see Cargo.toml).
 
-pub mod guard;
 mod anthropic;
 mod openai;
 mod responses;

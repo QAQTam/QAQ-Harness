@@ -87,7 +87,7 @@ impl InputEngine {
         );
 
         if ctx.agent.config.compliance_enabled {
-            if let Err(reason) = qaqh_gate::guard::content_guard(&text) {
+            if let Err(reason) = crate::agent::input_guard::content_guard(&text) {
                 log::info!("[INPUT] compliance blocked: {reason}");
                 // Ringing 双发：OperationFailed（Control 频道错误终态）
                 ctx.emitter.emit_domain(qaqh_domain::DomainEvent::Control(

@@ -64,7 +64,7 @@ pub fn detect_os_info() {
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| format!("{} {}", std::env::consts::OS, std::env::consts::ARCH));
-    let _ = qaqh_config::prompt::OS_INFO.set(info);
+    let _ = crate::agent::prompt::OS_INFO.set(info);
     let mut tools = Vec::new();
     for (program, args) in [
         ("git", vec!["--version"]),
@@ -84,7 +84,7 @@ pub fn detect_os_info() {
             }
         }
     }
-    let _ = qaqh_config::prompt::TOOLS_INFO.set(tools.join(", "));
+    let _ = crate::agent::prompt::TOOLS_INFO.set(tools.join(", "));
 }
 
 fn background_command(program: &str) -> Command {

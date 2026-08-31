@@ -52,12 +52,14 @@ fn main() {
         std::process::exit(1);
     });
 
+    let ctx = qaqh_workspace::runtime::ToolCtx::admitted("cli");
     let r = qaqh_workspace::execution::execute_with_context(
         tool,
         "",
         &parsed_args.to_string(),
         "cli_0",
         None,
+        &ctx,
     );
 
     println!("{}", r.result.model_text());

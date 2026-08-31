@@ -19,7 +19,6 @@ impl SessionEngine {
     /// Create a new session with a fresh seed.
     pub fn create(&self, agent: &mut crate::agent::state::agent::AgentState, _cancel: &CancelToken) {
         lifecycle::create_session(agent);
-        qaqh_workspace::runtime::set_context(&agent.session.seed, agent.config.permission_level);
     }
 
     /// Create a new session with a pre-set seed (from CLI --seed).
@@ -29,7 +28,6 @@ impl SessionEngine {
         _cancel: &CancelToken,
     ) {
         lifecycle::create_session_with_seed(agent);
-        qaqh_workspace::runtime::set_context(&agent.session.seed, agent.config.permission_level);
     }
 
     /// Resume an existing session. Returns false if the session doesn't exist.
@@ -41,11 +39,6 @@ impl SessionEngine {
     ) -> bool {
         log::info!("[SESSION] resume seed={seed}");
         if lifecycle::init_session(agent, Some(seed)) {
-                qaqh_workspace::runtime::set_context(
-                &agent.session.seed,
-                agent.config.permission_level,
-            );
-
             // Restore persisted agent mode（0=Code 也重置：避免进程内已切
             // plan/code 后恢复默认会话仍停留在旧模式——前后端显示/拦截一致）。
             let saved_mode = agent.session.mode;

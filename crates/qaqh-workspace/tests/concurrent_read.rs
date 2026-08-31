@@ -27,12 +27,14 @@ fn ten_parallel_reads() {
         let done_tx = done_tx.clone();
         handles.push(std::thread::spawn(move || {
             qaqh_workspace::runtime::set_context("test", 4);
+            let ctx = qaqh_workspace::runtime::ToolCtx::admitted("test");
             let result = qaqh_workspace::execution::execute_with_context(
                 "read",
                 "",
                 &args,
                 &format!("tc_{}", i),
                 None,
+                &ctx,
             );
             done_tx.send((i, result.success, result.content)).unwrap();
         }));

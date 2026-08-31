@@ -144,11 +144,6 @@ impl ToolEngine {
     ) {
         let effective_name = crate::agent::util::resolve_effective_name(name, action, args);
 
-        qaqh_workspace::runtime::set_context(
-            &ctx.agent.session.seed,
-            ctx.agent.config.permission_level,
-        );
-
         match qaqh_workspace::authorize_call(
             &ctx.agent.session.seed,
             id,
@@ -934,7 +929,6 @@ impl ToolEngine {
 
     pub fn clear_pending(&mut self) {
         self.pending.clear();
-        qaqh_workspace::runtime::clear_context();
     }
 }
 

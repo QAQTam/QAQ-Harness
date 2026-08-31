@@ -107,6 +107,13 @@ fn manual_status_transitions_round_trip_to_the_frontend_contract() {
     }
     qaqh_workspace::runtime::init_tools("todo-contract", &[], vec![]);
     qaqh_workspace::runtime::set_context("todo-contract", 1);
+    // PR-3-2：显式上下文（permission_level=1 与旧环境一致）。
+    let ctx = qaqh_workspace::runtime::ToolCtx {
+        session_id: "todo-contract".into(),
+        permission_level: 1,
+        mode: 0,
+        workspace_root: None,
+    };
 
     for (index, title) in ["Working", "Done", "Cancelled", "Waiting"]
         .into_iter()
@@ -119,6 +126,7 @@ fn manual_status_transitions_round_trip_to_the_frontend_contract() {
                 .to_string(),
             &format!("todo-create-{index}"),
             None,
+            &ctx,
         );
         assert!(create.success, "create failed: {}", create.content);
     }
@@ -129,6 +137,7 @@ fn manual_status_transitions_round_trip_to_the_frontend_contract() {
         r#"{"action":"set","id":1,"status":"in_progress"}"#,
         "todo-working",
         None,
+        &ctx,
     );
     assert!(
         working.success,
@@ -142,6 +151,7 @@ fn manual_status_transitions_round_trip_to_the_frontend_contract() {
         r#"{"action":"set","id":"T2","status":"completed","evidence":"verified"}"#,
         "todo-completed",
         None,
+        &ctx,
     );
     assert!(
         completed.success,
@@ -155,6 +165,7 @@ fn manual_status_transitions_round_trip_to_the_frontend_contract() {
         r#"{"action":"set","id":"3","status":"cancelled"}"#,
         "todo-cancelled",
         None,
+        &ctx,
     );
     assert!(
         cancelled.success,
@@ -168,6 +179,7 @@ fn manual_status_transitions_round_trip_to_the_frontend_contract() {
         r#"{"action":"list"}"#,
         "todo-list",
         None,
+        &ctx,
     );
     assert!(list.success, "list failed: {}", list.content);
     let list_json: serde_json::Value =

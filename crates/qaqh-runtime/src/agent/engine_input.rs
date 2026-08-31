@@ -81,11 +81,6 @@ impl InputEngine {
         // newest user message and break the prefix cache at turn-1's message.
         qaqh_workspace::clear_cancel();
 
-        qaqh_workspace::runtime::set_context(
-            &ctx.agent.session.seed,
-            ctx.agent.config.permission_level,
-        );
-
         if ctx.agent.config.compliance_enabled {
             if let Err(reason) = crate::agent::input_guard::content_guard(&text) {
                 log::info!("[INPUT] compliance blocked: {reason}");
@@ -246,10 +241,6 @@ impl InputEngine {
 
         ctx.cancel.clear();
         qaqh_workspace::clear_cancel();
-        qaqh_workspace::runtime::set_context(
-            &ctx.agent.session.seed,
-            ctx.agent.config.permission_level,
-        );
 
         log::info!("[INPUT] pushing system injection via ContextFlow (subagent source)");
         let turn_id = ctx.agent.msg.allocate_turn_id();

@@ -59,25 +59,86 @@ pub fn context() -> Option<RuntimeContext> {
     RUNTIME_CTX.with(|ctx| ctx.borrow().clone())
 }
 
-/// Fail closed if the proof is missing a session or no longer matches the runtime.
-pub(crate) fn verify_active_session(authorized_session: &str) -> Result<(), String> {
-    if authorized_session.is_empty() {
-        return Err("missing session in authorization".to_string());
-    }
-    RUNTIME_CTX.with(|runtime| {
-        let context = runtime.borrow();
-        let context = context
-            .as_ref()
-            .ok_or_else(|| "no active session".to_string())?;
-        if authorized_session != context.active_session {
-            return Err("session mismatch".to_string());
-        }
-        Ok(())
-    })
-}
-
 pub fn set_mode(mode: u8) {
     AGENT_MODE.with(|slot| slot.set(mode));
+}
+
+/// Explicit tool-execution context (PR-3-2 / D5-G2): the caller (agent tool
+/// dispatch, workspace serve, CLI) assembles one per execution instead of
+/// mutating process/thread state first. Threaded through the execute path;
+/// the workspace installs it for the duration of the call and restores the
+/// previous ambient state on drop.
+#[derive(Clone, Debug)]
+pub struct ToolCtx {
+    pub session_id: String,
+    pub permission_level: u8,
+    /// Agent operating mode (0=Code, 1=Plan) recorded at dispatch time.
+    pub mode: u8,
+    /// Workspace root for this execution. `None` = keep the current process
+    /// workspace (agent in-process path; serve sets it separately until
+    /// PR-3-3 moves cwd injection fully host-side).
+    pub workspace_root: Option<String>,
+}
+
+impl ToolCtx {
+    /// Context for an already-admitted caller (serve / CLI): full permission,
+    /// Code mode, current process workspace.
+    pub fn admitted(session_id: impl Into<String>) -> Self {
+        Self {
+            session_id: session_id.into(),
+            permission_level: 4,
+            mode: 0,
+            workspace_root: None,
+        }
+    }
+}
+
+/// RAII guard restoring the thread's previous ambient context.
+pub struct ToolCtxGuard {
+    previous: Option<RuntimeContext>,
+    restore_mode: u8,
+}
+
+impl Drop for ToolCtxGuard {
+    fn drop(&mut self) {
+        RUNTIME_CTX.with(|ctx| *ctx.borrow_mut() = self.previous.take());
+        AGENT_MODE.with(|slot| slot.set(self.restore_mode));
+    }
+}
+
+/// Install `ctx` as the ambient runtime context for this thread until the
+/// returned guard drops. The execute path calls this so tool handlers can
+/// keep reading ambient state while the *caller* stays explicit.
+pub fn install_tool_ctx(ctx: &ToolCtx) -> ToolCtxGuard {
+    let previous = RUNTIME_CTX.with(|slot| {
+        let previous = slot.borrow().clone();
+        *slot.borrow_mut() = Some(RuntimeContext {
+            active_session: ctx.session_id.clone(),
+            permission_level: ctx.permission_level,
+        });
+        previous
+    });
+    let restore_mode = AGENT_MODE.with(|slot| {
+        let previous = slot.get();
+        slot.set(ctx.mode);
+        previous
+    });
+    ToolCtxGuard {
+        previous,
+        restore_mode,
+    }
+}
+
+/// Bind only the active session (permission stays unknown post-admission).
+/// Used by `execute_authorized` where the [`AuthorizedToolCall`](crate::AuthorizedToolCall)
+/// itself is the execution context.
+pub fn bind_session(session_id: &str) -> ToolCtxGuard {
+    install_tool_ctx(&ToolCtx {
+        session_id: session_id.to_string(),
+        permission_level: 0,
+        mode: AGENT_MODE.with(|slot| slot.get()),
+        workspace_root: None,
+    })
 }
 
 /// 运行时重设工具白名单（工具模式 Standard/Minimal/Custom 的入口）。

@@ -407,7 +407,7 @@ crate 内部惰性迁移读取）四处；一并按注入化处理或登记白�
   （白名单）；其余为测试装配点（§10.3）与 doc 注释。
 - 出口：53 targets / 794 passed / 0 failed；clippy 0 error。
 
-### PR-3-2（D5/G2）workspace 会话作用域 ToolCtx
+### PR-3-2（D5/G2）workspace 会话作用域 ToolCtx ✅（2026-08-31 完成登记见节末）
 **现状**：`workspace/src/runtime.rs` 的 `set_context`/`set_mode`/`files_read`、
 `workspace.rs` 的 `set_process_workspace` 进程级全局组。
 **步骤**：新增 `ToolCtx`（session_id / cwd / mode / files_read 视图）显式传参贯穿
@@ -415,6 +415,29 @@ crate 内部惰性迁移读取）四处；一并按注入化处理或登记白�
 但保留理由已从"全局互斥刚需"降级为"顺序性选择"。
 **验收**：`grep -rn "runtime::set_context\|set_process_workspace" crates/qaqh-runtime/src/agent` → 0；
 workspace lib + serve 集成全绿（含 PR-0-3 修复的那批）。
+**完成登记（2026-08-31）**：
+- `ToolCtx { session_id, permission_level, mode, workspace_root: Option }` 落地
+  `workspace/runtime.rs`，附 `install_tool_ctx`（RAII 安装 ambient
+  RUNTIME_CTX/AGENT_MODE 并在 drop 时还原）与 `bind_session`（仅绑会话）。
+- 两条 execute 边界显式化：`execute_with_context` 增 `&ToolCtx` 形参（serve/CLI/
+  测试路径），空 session_id fail-closed（`RuntimeNotInitialized` 语义迁移至显式
+  上下文）；`execute_authorized` 以授权调用自绑定——ambient 防御性比对（存在且
+  ≠ 调用会话才 SessionMismatch）+ `bind_session`，agent 工具线程**零接线改动**
+  （调用点不变，环境不再预置）。
+- agent 侧删除 5 处 `set_context` + 1 处 `clear_context`（engine_session/
+  engine_input/engine_tool）；`set_mode` 保留（经 ActorToolScope 捕获/安装供应
+  `is_plan_mode`）。
+- serve 串行队列保留：job 级 `ToolCtx::admitted(session)`；process 内联分支
+  "不设 workspace" 语义保留；`set_process_workspace` 在 serve/CLI 留存至
+  PR-3-3（cwd 注入后移除）。
+- 契约测试迁移：`missing_context_fails_closed` → 空 session_id fail-closed；
+  `session_mismatch_rejected` 语义保留；concurrent_read / todo_contract /
+  execution.rs 内测全部改显式 ctx（todo 保留 permission_level=1）。
+- **残留登记（ToolCtx 全量传参的后半程）**：mode / files_read /
+  `set_current_session`（code-delta 绑定）仍走 ambient（thread-local / crate
+  全局，per-actor 隔离已由 ActorToolScope 与私有 manager 保证）；逐 handler
+  全量传参不在本 PR（30+ handler，收益边际），验收 grep 按字面达成。
+- 出口：53 targets / 794 passed / 0 failed；clippy 0 error；验收 grep → 0。
 
 ### PR-3-3（D3 搭车）cwd 由宿主注入
 **现状**（勘误：引用在 `code_delta.rs:91` 与 `workspace.rs:35-36`，提案误记 file_query.rs:91）。

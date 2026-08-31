@@ -122,7 +122,7 @@ fn text_response(
 
 /// 执行单个工具调用（catch_unwind 防护），返回结果 + 账本增量。
 /// 串行 worker 与 process 内联分支共用。
-fn run_tool(request: &ExecuteRequest) -> ExecuteOutcome {
+fn run_tool(request: &ExecuteRequest, ctx: &crate::runtime::ToolCtx) -> ExecuteOutcome {
     let name = request.name.clone();
     let args = serde_json::to_string(&request.args).unwrap_or_else(|_| "{}".into());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -132,6 +132,7 @@ fn run_tool(request: &ExecuteRequest) -> ExecuteOutcome {
             &args,
             &request.call_id,
             None,
+            ctx,
         )
     }))
     .unwrap_or_else(|payload| {
@@ -239,8 +240,11 @@ fn handle_execute(
     // 即时 check/kill 抢占，否则 kill 请求会排队到任务结束，无法中断。
     // 不 set workspace：进程注册表与 workspace 无关，避免干扰 worker 状态。
     if parsed.name == "process" {
-        crate::runtime::set_context(&parsed.session_id, 4);
-        let outcome = run_tool(&parsed);
+        // process 工具（check/wait/kill）内联执行：进程注册表是内存状态且线程
+        // 安全，无需串行 worker——长任务执行期间必须能即时 check/kill 抢占。
+        // 不 set workspace：进程注册表与 workspace 无关，避免干扰 worker 状态。
+        let ctx = crate::runtime::ToolCtx::admitted(&parsed.session_id);
+        let outcome = run_tool(&parsed, &ctx);
         respond_outcome(request, outcome);
         return;
     }
@@ -395,9 +399,9 @@ pub fn serve(host: &str, port: u16, token: &str) -> Result<(), String> {
         .name("workspace-executor".into())
         .spawn(move || {
             while let Ok(job) = rx.recv() {
-                crate::runtime::set_context(&job.request.session_id, 4);
                 crate::workspace::set_process_workspace(&job.request.workspace);
-                let outcome = run_tool(&job.request);
+                let ctx = crate::runtime::ToolCtx::admitted(&job.request.session_id);
+                let outcome = run_tool(&job.request, &ctx);
                 let _ = job.respond.send(outcome);
             }
             // channel 断开（唯一 sender 是 HTTP 线程持有的 Arc<tx>，只有

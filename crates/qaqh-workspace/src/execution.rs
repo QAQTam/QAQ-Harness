@@ -24,9 +24,16 @@ pub fn execute_authorized(
     let started = Instant::now();
     let (invocation, authorized_resources, authorized_workspace) = call.into_parts();
 
-    if let Err(_error) = crate::runtime::verify_active_session(&invocation.session_id) {
+    // PR-3-2：授权调用本身就是执行上下文。环境上下文仅作防御性比对
+    // （存在且 ≠ 调用会话才拒绝；工具线程无预置环境属合法形态），随后
+    // 显式绑定调用会话，供深层 handler 的 ambient 读取（todo/read_image/
+    // subagent 父会话解析）。
+    if let Some(ambient) = crate::runtime::context()
+        && ambient.active_session != invocation.session_id
+    {
         return failure(&invocation.tool_name, crate::ToolError::SessionMismatch);
     }
+    let _session_guard = crate::runtime::bind_session(&invocation.session_id);
 
     let active_workspace = crate::runtime::active_workspace_root();
     if active_workspace != authorized_workspace {
@@ -152,14 +159,24 @@ pub fn execute_authorized(
     }
 }
 
-/// Parse, admit, and execute a call against the current runtime context.
+/// Parse, admit, and execute a call under an explicit [`ToolCtx`](crate::runtime::ToolCtx)
+/// (PR-3-2): serve / CLI / tests assemble the context per call instead of
+/// pre-mutating ambient state.
 pub fn execute_with_context(
     name: &str,
     action: &str,
     args: &str,
     tool_call_id: &str,
     progress_tx: Option<crate::ExecProgressSender>,
+    ctx: &crate::runtime::ToolCtx,
 ) -> ToolExecResult {
+    // Fail closed：显式上下文缺会话等价于旧“runtime 未初始化”。
+    if ctx.session_id.is_empty() {
+        return failure(
+            &resolve_name(name, action),
+            crate::ToolError::RuntimeNotInitialized,
+        );
+    }
     let args: serde_json::Value = match serde_json::from_str(args) {
         Ok(args) => args,
         Err(error) => {
@@ -171,12 +188,7 @@ pub fn execute_with_context(
             );
         }
     };
-    let Some(context) = crate::runtime::context() else {
-        return failure(
-            &resolve_name(name, action),
-            crate::ToolError::RuntimeNotInitialized,
-        );
-    };
+    let _ctx_guard = crate::runtime::install_tool_ctx(ctx);
 
     let call_id = if tool_call_id.is_empty() {
         format!(
@@ -203,7 +215,7 @@ pub fn execute_with_context(
     let category = crate::runtime::lookup_category(&resolved_name)
         .unwrap_or(crate::permission::ToolCategory::Write);
     let invocation = ToolInvocation {
-        session_id: context.active_session,
+        session_id: ctx.session_id.clone(),
         call_id,
         tool_name: resolved_name.clone(),
         action: resolved_action,
@@ -213,7 +225,7 @@ pub fn execute_with_context(
 
     match admit(
         invocation,
-        context.permission_level,
+        ctx.permission_level,
         &workspace_root,
         &HashSet::new(),
     ) {
@@ -377,6 +389,7 @@ mod tests {
             r#"{"action":"activate","name":"typed-skill"}"#,
             "skill-call-1",
             None,
+            &crate::runtime::ToolCtx::admitted("test_session"),
         );
 
         assert!(result.success);
@@ -398,6 +411,7 @@ mod tests {
             r#"{"action":"resource","name":"typed-skill","path":"references/info.md"}"#,
             "resource-call-1",
             None,
+            &crate::runtime::ToolCtx::admitted("test_session"),
         );
         assert!(resource.success);
         assert_eq!(resource.content, "complete reference");
@@ -409,6 +423,7 @@ mod tests {
             &serde_json::json!({"path": skill_dir.join("SKILL.md")}).to_string(),
             "generic-skill-read",
             None,
+            &crate::runtime::ToolCtx::admitted("test_session"),
         );
         assert!(!generic_read.success);
         assert_eq!(
@@ -426,12 +441,13 @@ mod tests {
             r#"{"action":"resource","name":"typed-skill","path":"../outside.md"}"#,
             "resource-call-2",
             None,
+            &crate::runtime::ToolCtx::admitted("test_session"),
         );
         assert!(!traversal.success);
         assert!(traversal.content.contains("SKILL_RESOURCE_UNAVAILABLE"));
 
         let list =
-            execute_with_context("skills", "", r#"{"action":"list"}"#, "skills-list-1", None);
+            execute_with_context("skills", "", r#"{"action":"list"}"#, "skills-list-1", None, &crate::runtime::ToolCtx::admitted("test_session"));
         assert!(list.success);
         assert!(list.content.contains("typed-skill"));
 
@@ -441,6 +457,7 @@ mod tests {
             r#"{"action":"list","name":"typed-skill"}"#,
             "skills-invalid-1",
             None,
+            &crate::runtime::ToolCtx::admitted("test_session"),
         );
         assert!(!invalid.success);
         assert!(invalid.content.contains("INVALID_ARGUMENTS"));
@@ -754,7 +771,7 @@ mod tests {
         crate::runtime::set_context("test_session", 4);
         TEST_HANDLER_COUNT.store(0, Ordering::SeqCst);
         // With Level 4 permission context, auto-approve should work
-        let result = execute_with_context("test_counter", "", "{}", "compat-2", None);
+        let result = execute_with_context("test_counter", "", "{}", "compat-2", None, &crate::runtime::ToolCtx::admitted("test_session"));
         assert!(
             result.success,
             "compat wrapper should succeed with permission context: {}",
@@ -863,9 +880,11 @@ mod tests {
     #[test]
     fn missing_context_fails_closed() {
         let _test_guard = setup_test_manager();
-        crate::runtime::clear_context();
         TEST_HANDLER_COUNT.store(0, Ordering::SeqCst);
-        let result = execute_with_context("test_counter", "", "{}", "miss-ctx-1", None);
+        // PR-3-2：fail-closed 契约迁移到显式 ToolCtx——空 session_id 等价于
+        // 旧“runtime context 未初始化”。
+        let ctx = crate::runtime::ToolCtx::admitted("");
+        let result = execute_with_context("test_counter", "", "{}", "miss-ctx-1", None, &ctx);
         assert!(
             !result.success,
             "should fail closed without runtime context"
@@ -884,7 +903,7 @@ mod tests {
         let _test_guard = setup_test_manager();
         crate::runtime::set_context("test", 4);
         TEST_HANDLER_COUNT.store(0, Ordering::SeqCst);
-        let result = execute_with_context("test_counter", "", "not-json{{{", "inv-json-1", None);
+        let result = execute_with_context("test_counter", "", "not-json{{{", "inv-json-1", None, &crate::runtime::ToolCtx::admitted("test"));
         assert!(!result.success, "invalid JSON should fail");
         assert!(
             result.content.contains("[ERROR]"),

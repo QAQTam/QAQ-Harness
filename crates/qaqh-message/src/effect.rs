@@ -20,26 +20,6 @@ pub struct PendingTool {
     pub args: serde_json::Value,
 }
 
-/// Simplified tool execution request (sent from MessageStore to ToolManager).
-#[derive(Debug, Clone)]
-pub struct ToolExecRequest {
-    pub id: String,
-    pub name: String,
-    pub args: serde_json::Value,
-}
-
-/// Simplified tool execution report (ToolManager → MessageStore).
-#[derive(Debug, Clone)]
-pub struct ToolExecReport {
-    pub content: String,
-    pub success: bool,
-    /// Files affected by this tool call.
-    pub files_affected: Vec<String>,
-}
-
-/// Callback type for tool execution.
-pub type ToolExecutorFn = Box<dyn Fn(ToolExecRequest) -> ToolExecReport + Send>;
-
 /// Host-side persistence instruction (PR-1-6 / A1).
 ///
 /// MessageStore never touches the session manager singleton: every disk write is enqueued

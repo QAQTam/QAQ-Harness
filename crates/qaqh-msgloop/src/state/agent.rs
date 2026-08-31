@@ -5,7 +5,6 @@ use super::skill_context::SkillContextManager;
 use super::token_calibration::{
     RequestTokenEstimate, SessionTokenCalibrator, prepared_request_metrics,
 };
-use qaqh_message::{ToolExecReport, ToolExecRequest};
 use qaqh_workspace::registration::ToolRegistrar;
 use qaqh_workspace::runtime;
 use std::path::Path;
@@ -647,23 +646,6 @@ impl AgentState {
             runtime,
             diagnostics,
         }
-    }
-
-    pub fn rebind_store(&mut self) {
-        self.msg.set_tool_executor(Box::new(|req: ToolExecRequest| {
-            let result = qaqh_workspace::execution::execute_with_context(
-                &req.name,
-                "",
-                &req.args.to_string(),
-                &req.id,
-                None,
-            );
-            ToolExecReport {
-                content: result.content,
-                success: result.success,
-                files_affected: Vec::new(),
-            }
-        }));
     }
 
     pub fn maybe_save_session(&mut self) {

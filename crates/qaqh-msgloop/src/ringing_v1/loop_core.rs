@@ -731,8 +731,6 @@ impl Loop {
     /// SSE, tool execution) see the cancellation immediately via
     /// `cancel.is_set()` polling.
     pub fn run(&mut self) {
-        self.session.agent.rebind_store();
-
         // ── Init: handle pre-set seed from CLI ──
         self.init_session();
 

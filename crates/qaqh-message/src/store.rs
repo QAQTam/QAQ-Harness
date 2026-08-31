@@ -1,4 +1,4 @@
-use crate::effect::{Effect, PendingTool, PersistOp, ToolExecRequest, ToolExecutorFn};
+use crate::effect::{Effect, PendingTool, PersistOp};
 use qaqh_types::{Message, ToolDef};
 
 /// Tool results are finalized exactly once, at storage time — but the shaping
@@ -122,7 +122,6 @@ pub struct MessageStore {
     orphan_tool_results: Vec<String>,
     turns: Vec<Turn>,
     cancelled: bool,
-    tool_executor: Option<ToolExecutorFn>,
     /// Number of earliest turns that have been compacted (skipped in LLM context).
     compact_skip: usize,
     /// True once the store is backed by a separate compact checkpoint instead
@@ -155,7 +154,6 @@ impl std::fmt::Debug for MessageStore {
             .field("seed", &self.seed)
             .field("turns", &self.turns.len())
             .field("cancelled", &self.cancelled)
-            .field("has_executor", &self.tool_executor.is_some())
             .field("compact_skip", &self.compact_skip)
             .field("next_msg_id", &self.next_msg_id)
             .finish()
@@ -172,7 +170,6 @@ impl Clone for MessageStore {
             orphan_tool_results: self.orphan_tool_results.clone(),
             turns: self.turns.clone(),
             cancelled: self.cancelled,
-            tool_executor: None,
             compact_skip: self.compact_skip,
             has_compact_context: self.has_compact_context,
             next_msg_id: self.next_msg_id,
@@ -196,7 +193,6 @@ impl MessageStore {
             orphan_tool_results: Vec::new(),
             turns: Vec::new(),
             cancelled: false,
-            tool_executor: None,
             compact_skip: 0,
             has_compact_context: false,
             next_msg_id: 1,
@@ -826,55 +822,8 @@ impl MessageStore {
         self.flush_deferred_trailing();
     }
 
-    /// Execute all pending tools in the current step. When `tool_executor` is None
-    /// (e.g. during session restore), returns early without injecting errors.
-    pub fn execute_tools_batch(&mut self) -> Effect {
-        let executor = match &self.tool_executor {
-            Some(e) => e,
-            None => {
-                log::warn!("execute_tools_batch: no tool executor set — skipping tool execution");
-                return Effect::None;
-            }
-        };
-
-        let pending: Vec<PendingTool> = {
-            let step = match self.turns.last().and_then(|t| t.steps.last()) {
-                Some(s) => s,
-                None => return Effect::None,
-            };
-            let tool_ids = step.assistant_tool_ids();
-            step.pending_tools()
-                .into_iter()
-                .filter(|t| tool_ids.contains(&t.id) && !step.tool_result_has_id(&t.id))
-                .collect()
-        };
-
-        if pending.is_empty() {
-            return Effect::None;
-        }
-
-        let mut reports: Vec<(String, String, bool)> = Vec::new();
-        for tool in &pending {
-            let req = ToolExecRequest {
-                id: tool.id.clone(),
-                name: tool.name.clone(),
-                args: tool.args.clone(),
-            };
-            let report = executor(req);
-            reports.push((tool.id.clone(), report.content, report.success));
-        }
-        let mut changed = false;
-        for (tc_id, content, success) in reports {
-            changed |= self.push_tool_result_inner(&tc_id, &content, success, None, &[]);
-        }
-        if changed {
-            self.context_revision = self.context_revision.saturating_add(1);
-        }
-
-        // Tools executed; caller re-evaluates (build context → gate → push_assistant)
-        Effect::None
-    }
-
+    /// Snapshot of the last step's tool results as
+    /// `(tool_call_id, tool_name, result_text, success, diff)`.
     pub fn last_step_tool_results(&self) -> Vec<(String, String, String, bool, Option<String>)> {
         let step = match self.turns.last().and_then(|t| t.steps.last()) {
             Some(s) => s,
@@ -989,10 +938,6 @@ impl MessageStore {
         // flattening them to the tail.
         v.extend(self.flat_in_write_order(0));
         v
-    }
-
-    pub fn set_tool_executor(&mut self, executor: ToolExecutorFn) {
-        self.tool_executor = Some(executor);
     }
 
     /// Save all messages (full rewrite). Used for undo or compact.

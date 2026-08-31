@@ -19,7 +19,6 @@ impl SessionEngine {
     /// Create a new session with a fresh seed.
     pub fn create(&self, agent: &mut crate::state::agent::AgentState, _cancel: &CancelToken) {
         lifecycle::create_session(agent);
-        agent.rebind_store();
         qaqh_workspace::runtime::set_context(&agent.session.seed, agent.config.permission_level);
     }
 
@@ -30,7 +29,6 @@ impl SessionEngine {
         _cancel: &CancelToken,
     ) {
         lifecycle::create_session_with_seed(agent);
-        agent.rebind_store();
         qaqh_workspace::runtime::set_context(&agent.session.seed, agent.config.permission_level);
     }
 
@@ -43,8 +41,7 @@ impl SessionEngine {
     ) -> bool {
         log::info!("[SESSION] resume seed={seed}");
         if lifecycle::init_session(agent, Some(seed)) {
-            agent.rebind_store();
-            qaqh_workspace::runtime::set_context(
+                qaqh_workspace::runtime::set_context(
                 &agent.session.seed,
                 agent.config.permission_level,
             );

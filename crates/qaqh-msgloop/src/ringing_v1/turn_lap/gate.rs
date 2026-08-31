@@ -444,13 +444,17 @@ pub(crate) fn gate_request(
                 if let Some(ref u) = usage {
                     ctx.agent.session.record_usage(u);
                     if !ctx.agent.ephemeral {
-                        qaqh_session::SessionManager::global().persist_usage(
-                            &ctx.agent.session.seed,
-                            ctx.agent.session.usage_totals.clone(),
-                            ctx.agent.session.last_usage.clone(),
-                            ctx.agent.session.usage_requests,
-                            ctx.agent.session.cache_reported_requests,
-                        );
+                        ctx.agent
+                            .enqueue_meta_op(crate::state::agent::MetaOp::PersistUsage {
+                                seed: ctx.agent.session.seed.clone(),
+                                totals: ctx.agent.session.usage_totals.clone(),
+                                last_usage: ctx.agent.session.last_usage.clone(),
+                                requests: ctx.agent.session.usage_requests,
+                                cache_reported_requests: ctx
+                                    .agent
+                                    .session
+                                    .cache_reported_requests,
+                            });
                     }
                     util::record_token_usage(u, &ctx.agent.config.model);
                     last_usage = usage.clone();

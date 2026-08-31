@@ -6,8 +6,6 @@
 //!    tokens to frontend via CompactDelta events)
 //! 3. `apply_result()` — synchronous, fast (apply on main thread)
 
-use qaqh_session::SessionManager;
-
 use super::types::*;
 use crate::util;
 
@@ -187,7 +185,7 @@ impl CompactEngine {
                 .agent
                 .session
                 .updated_at
-                .max(SessionManager::now_epoch());
+                .max(qaqh_session::now_epoch());
             let start_str = util::epoch_to_date(created);
             let dur = updated.saturating_sub(created);
             format!(
@@ -394,7 +392,10 @@ impl CompactEngine {
             "thinking_blocks": thinking_blocks, "tool_call_blocks": tool_call_blocks,
         });
         // 统一数据源：上下文统计并入 meta.json（原 context_stats.json 退役）。
-        qaqh_session::SessionManager::global().set_context_stats(&ctx.agent.session.seed, &stats);
+        // 覆盖式快照写，无 dispatch 时序约束，走注入句柄直写（PR-1-5）。
+        if let Some(sm) = ctx.agent.session_manager {
+            sm.set_context_stats(&ctx.agent.session.seed, &stats);
+        }
 
         // Ringing 双发：CompactFinished（成功/零压缩如实区分终态）
         ctx.emitter

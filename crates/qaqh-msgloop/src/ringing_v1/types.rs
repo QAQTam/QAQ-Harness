@@ -450,8 +450,10 @@ impl SessionBundle {
     pub fn flush(&mut self) {
         self.agent.session.skills = self.agent.skills.session_state();
         if !self.agent.ephemeral && !self.agent.session.seed.is_empty() {
-            qaqh_session::SessionManager::global()
-                .persist_skills(&self.agent.session.seed, self.agent.session.skills.clone());
+            let skills = self.agent.session.skills.clone();
+            let seed = self.agent.session.seed.clone();
+            self.agent
+                .enqueue_meta_op(crate::state::agent::MetaOp::PersistSkills { seed, skills });
         }
         self.agent.msg.flush_meta(
             &self.agent.config.model,

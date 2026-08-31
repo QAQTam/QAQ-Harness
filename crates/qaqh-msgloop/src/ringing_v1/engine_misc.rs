@@ -11,7 +11,7 @@
 //! BEFORE calling `handle_undo()`.
 
 use crate::services::dashboard;
-use crate::state::agent::AgentState;
+use crate::state::agent::{AgentState, MetaOp};
 
 use super::types::Emitter;
 
@@ -67,7 +67,11 @@ impl MiscEngine {
             "messages": 0,
         });
         // 统一数据源：上下文统计并入 meta.json（原 context_stats.json 退役）。
-        qaqh_session::SessionManager::global().set_context_stats(&agent.session.seed, &stats);
+        // Dashboard 刷新走注入句柄直写（&AgentState 不可变借用，且该写是
+        // 覆盖式快照、无 dispatch 时序约束，不入 MetaOp 队列——PR-1-5）。
+        if let Some(sm) = agent.session_manager {
+            sm.set_context_stats(&agent.session.seed, &stats);
+        }
 
         // Ringing 双发：DashboardUpdated（replaceable 覆盖）
         emitter.emit_domain(qaqh_domain::DomainEvent::Control(
@@ -97,7 +101,10 @@ impl MiscEngine {
         };
         qaqh_workspace::runtime::set_mode(m);
         if !agent.session.seed.is_empty() {
-            qaqh_session::SessionManager::global().persist_mode(&agent.session.seed, m);
+            agent.enqueue_meta_op(MetaOp::PersistMode {
+                seed: agent.session.seed.clone(),
+                mode: m,
+            });
         }
         log::info!("[MISC] mode set to {mode_str} (internal={m})");
     }

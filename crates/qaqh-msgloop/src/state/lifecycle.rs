@@ -1,10 +1,9 @@
 //! Session lifecycle: initialization, health status.
 
 use super::agent::AgentState;
-use qaqh_session::SessionManager;
 use qaqh_workspace;
 
-/// Load session from disk via [`SessionManager`].
+/// Load session from disk via the injected session-manager handle.
 ///
 /// On success, restores the message store and rebinds the workspace.
 /// On failure (file missing or corrupt), generates a fresh seed and
@@ -17,7 +16,7 @@ pub fn init_session(agent: &mut AgentState, restore_seed: Option<&str>) -> bool 
             // Fast check: if the session directory doesn't exist at all, fail early
             // instead of silently creating a new session. This lets the caller
             // send a proper Error event rather than a confusing SessionCreated.
-            if !SessionManager::global().exists(s) {
+            if !agent.session_manager.is_some_and(|sm| sm.exists(s)) {
                 log::error!(
                     "qaqh-agent: session {} not found — directory does not exist",
                     s
@@ -25,7 +24,7 @@ pub fn init_session(agent: &mut AgentState, restore_seed: Option<&str>) -> bool 
                 return false;
             }
             if let Some((meta, archive_messages, compact_context)) =
-                SessionManager::global().load_for_resume(s)
+                agent.session_manager.and_then(|sm| sm.load_for_resume(s))
             {
                 let active_messages = compact_context
                     .as_ref()
@@ -169,14 +168,14 @@ pub fn init_session(agent: &mut AgentState, restore_seed: Option<&str>) -> bool 
                 s
             );
             log::warn!("[LIFECYCLE] load failed for {s}, generating new seed");
-            SessionManager::generate_seed()
+            qaqh_session::generate_seed()
         }
         None => return false,
     };
 
     // Create fresh session (either no restore_seed, or restore failed)
     agent.session.seed = seed.clone();
-    agent.session.created_at = SessionManager::now_epoch();
+    agent.session.created_at = qaqh_session::now_epoch();
     agent.session.reset_usage();
     agent.session.from_resume = false;
     agent.msg = if agent.ephemeral {
@@ -206,8 +205,8 @@ pub fn init_session(agent: &mut AgentState, restore_seed: Option<&str>) -> bool 
 
 /// Create a brand-new session with a fresh seed, clearing all prior state.
 pub fn create_session(agent: &mut AgentState) {
-    agent.session.seed = SessionManager::generate_seed();
-    agent.session.created_at = SessionManager::now_epoch();
+    agent.session.seed = qaqh_session::generate_seed();
+    agent.session.created_at = qaqh_session::now_epoch();
     agent.session.reset_usage();
     agent.session.from_resume = false;
     agent.msg = if agent.ephemeral {
@@ -258,7 +257,10 @@ pub fn create_session_with_seed(agent: &mut AgentState) {
     // 此前不读 meta.json，导致会话级 tool_mode 丢失、工具回退全量。
     // 这里与 resume 路径（init_session L120-134）对齐，从 meta 恢复并 apply。
     // 提前到 push_system 之前，让系统提示能读到 tool_mode（minimal:dsh → 极简 prompt）。
-    if let Some(meta) = SessionManager::global().load_meta(&agent.session.seed) {
+    if let Some(meta) = agent
+        .session_manager
+        .and_then(|sm| sm.load_meta(&agent.session.seed))
+    {
         if !meta.tool_mode.is_empty() {
             agent.apply_tool_mode(&meta.tool_mode, &meta.custom_tools);
         }

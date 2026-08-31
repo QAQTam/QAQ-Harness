@@ -3,7 +3,7 @@
 //! 对齐主流 AI 工具行为：首次对话后总结用户大致需求生成标题，后续不再改。
 //! 时序设计（保证"立刻可见" + "质量优先"）：
 //! 1. **主线程**：turn 终态（Completed）挂点立即用**首条用户消息截断**生成
-//!    标题 → 写盘（`SessionManager::update_title`）→ 广播 `SessionMetaChanged`
+//!    标题 → MetaOp 队列写盘（update_title）→ 广播 `SessionMetaChanged`
 //!    → 前端瞬间可见（零等待、零成本）；
 //! 2. **后台线程**：`chat_sync` 一次小调用（≤64 tokens）做 LLM 总结，成功后
 //!    **覆盖**截断版（几秒内完成）；失败/超时保持截断版（降级路径）。
@@ -48,7 +48,11 @@ pub fn maybe_generate_title(ctx: &mut RingContext) {
 
     // ── ① 立即：截断标题（instant 可见）──
     let fallback = truncate_title(first_user);
-    qaqh_session::SessionManager::global().update_title(&seed, &fallback);
+    ctx.agent
+        .enqueue_meta_op(crate::state::agent::MetaOp::UpdateTitle {
+            seed: seed.clone(),
+            title: fallback.clone(),
+        });
     ctx.agent.session.title = Some(fallback.clone());
     ctx.emitter.emit_domain(qaqh_domain::DomainEvent::Control(
         qaqh_domain::ControlEvent::SessionMetaChanged {
@@ -61,6 +65,9 @@ pub fn maybe_generate_title(ctx: &mut RingContext) {
     let provider = build_provider(ctx);
     let event_tx = ctx.emitter.event_tx();
     let user_msg = first_user.to_string();
+    // 后台线程拿注入句柄写盘（&'static 可跨线程；不入 dispatch 线程的
+    // MetaOp 队列——标题覆盖发生在任意时刻，本就不参与写序，PR-1-5）。
+    let session_manager = ctx.agent.session_manager_handle();
     let spawned = std::thread::Builder::new()
         .name("session-title".into())
         .spawn(move || {
@@ -83,7 +90,9 @@ pub fn maybe_generate_title(ctx: &mut RingContext) {
                 return;
             }
             // 覆盖截断版（同一次生成流程，未冻结）。
-            qaqh_session::SessionManager::global().update_title(&seed, &title);
+            if let Some(sm) = session_manager {
+                sm.update_title(&seed, &title);
+            }
             if let Some(tx) = event_tx {
                 static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
                 let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

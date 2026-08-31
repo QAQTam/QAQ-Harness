@@ -9,6 +9,33 @@ use qaqh_workspace::registration::ToolRegistrar;
 use qaqh_workspace::runtime;
 use std::path::Path;
 
+/// Loop bookkeeping persistence instruction (PR-1-5 / B6). Mirrors
+/// `qaqh_message::PersistOp`: engines enqueue instead of calling the session
+/// manager inline; the queue is drained by the same host flush service
+/// (`AgentState::drain_persist_ops`) after each command dispatch. All
+/// payload types come from `qaqh_types` — the meta surface of the session
+/// store is data, not behaviour.
+#[derive(Debug, Clone)]
+pub enum MetaOp {
+    /// Title update (instant truncation path; the async LLM override writes
+    /// through the injected handle directly — it runs off-dispatch).
+    UpdateTitle { seed: String, title: String },
+    /// Context statistics merged into meta.json (dashboard surface).
+    SetContextStats { seed: String, stats: serde_json::Value },
+    /// Internal tool-mode code persisted to meta.json.
+    PersistMode { seed: String, mode: u8 },
+    /// Usage totals after a provider round.
+    PersistUsage {
+        seed: String,
+        totals: qaqh_types::UsageInfo,
+        last_usage: Option<qaqh_types::UsageInfo>,
+        requests: u32,
+        cache_reported_requests: u32,
+    },
+    /// Skills session state (TurnComplete / session switch).
+    PersistSkills { seed: String, skills: qaqh_types::SkillSessionStateV2 },
+}
+
 // 工具模式档位、白名单、模型面投影的唯一契约已收敛到 qaqh-types。
 // 这里的 re-export 仅为保持旧调用点（尤其是本模块测试）可读；新增档位
 // 只允许改 `qaqh_types::tool_mode`，不再维护本文件里的硬编码表。
@@ -160,6 +187,9 @@ pub struct AgentState {
     /// process-level singleton at construction; `None` only in unit tests
     /// that never init the session store (their ops simply never flush).
     pub session_manager: Option<&'static SessionManager>,
+    /// Loop bookkeeping queue (PR-1-5 / B6): title / context-stats / mode /
+    /// usage / skills writes, drained by [`Self::drain_persist_ops`].
+    pub pending_meta_ops: Vec<MetaOp>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -193,16 +223,31 @@ impl AgentState {
             auto_compact_blocked_revision: None,
             last_injected_epoch: 0,
             session_manager: SessionManager::try_global(),
+            pending_meta_ops: Vec::new(),
         }
     }
 
-    /// Drain the MessageStore's queued persistence ops and replay them
-    /// against the SessionManager in enqueue order (PR-1-6). Called by the
-    /// loop after each command dispatch — single-threaded replay keeps the
-    /// on-disk write order identical to the old synchronous flushes (Z5).
+    /// Queue a loop-bookkeeping write for the host flush service (PR-1-5).
+    pub fn enqueue_meta_op(&mut self, op: MetaOp) {
+        self.pending_meta_ops.push(op);
+    }
+
+    /// Injected session-manager handle for off-dispatch writers (e.g. the
+    /// async title-summary thread). Same object the global accessor would
+    /// return, but reached through the injection surface (PR-1-5).
+    pub fn session_manager_handle(&self) -> Option<&'static SessionManager> {
+        self.session_manager
+    }
+
+    /// Drain the MessageStore's queued persistence ops and the loop
+    /// bookkeeping queue, replaying both against the SessionManager in
+    /// enqueue order (PR-1-6 / PR-1-5). Called by the loop after each
+    /// command dispatch — single-threaded replay keeps the on-disk write
+    /// order identical to the old synchronous flushes (Z5).
     pub fn drain_persist_ops(&mut self) {
         let ops = self.msg.take_persist_ops();
-        if ops.is_empty() {
+        let meta_ops = std::mem::take(&mut self.pending_meta_ops);
+        if ops.is_empty() && meta_ops.is_empty() {
             return;
         }
         let Some(sm) = self.session_manager else {
@@ -212,6 +257,9 @@ impl AgentState {
         };
         for op in &ops {
             execute_persist_op(op, sm);
+        }
+        for op in &meta_ops {
+            execute_meta_op(op, sm);
         }
     }
 
@@ -654,6 +702,32 @@ impl AgentState {
         }
         self.msg
             .flush_meta(&self.config.model, &self.config.reasoning_effort);
+    }
+}
+
+/// The single op→session-manager mapping for loop bookkeeping (PR-1-5).
+/// Every variant must replay the exact call the engine used to make inline.
+fn execute_meta_op(op: &MetaOp, sm: &SessionManager) {
+    match op {
+        MetaOp::UpdateTitle { seed, title } => sm.update_title(seed, title),
+        MetaOp::SetContextStats { seed, stats } => sm.set_context_stats(seed, stats),
+        MetaOp::PersistMode { seed, mode } => sm.persist_mode(seed, *mode),
+        MetaOp::PersistUsage {
+            seed,
+            totals,
+            last_usage,
+            requests,
+            cache_reported_requests,
+        } => sm.persist_usage(
+            seed,
+            totals.clone(),
+            last_usage.clone(),
+            *requests,
+            *cache_reported_requests,
+        ),
+        MetaOp::PersistSkills { seed, skills } => {
+            sm.persist_skills(seed, skills.clone());
+        }
     }
 }
 

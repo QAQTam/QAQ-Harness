@@ -145,6 +145,16 @@ serve HTTP 后端（`HttpToolExecutionBackend` → `spawn_serve()` → `POST /ex
 
 ## 3. Phase 1 —— 搬家（含 message 纯度）
 
+> **✅ Phase 1 完成（2026-08-31，HEAD `508954b`）**：十连 grep 出口全部清零
+> （SessionManager@message、tool-exec 死链、global()@msgloop、authorization/permission/
+> TrustedFolderSet@msgloop、skill_context@msgloop、skills 依赖段 qaqh-*、
+> file_write_paths/services::conflict、project_turns/DocInfo/services::、
+> Config::load@msgloop、find_endpoint、Config::load@workspace 除外 main.rs 白名单——
+> 逐项 0）。出口门：55 targets / 794 passed / 0 failed，clippy 0 error；
+> Z1–Z8 契约锚点测试全绿无 diff。commit 链：5fc807c / 91b6aff / 3eebad0 /
+> fe26763 / b3281c1 / 9c73ca3 / c1f552b+0af311f / e059879+65bfe12 /
+> 6dfbefa+5b8a5c7 / 508954b（+ 各 PLAN 登记 commit）。Phase 2 解锁。
+
 > 出口 = 下表 10 条 grep 全空（白名单：各 crate `tests/` 目录与 `#[cfg(test)]` 模块，
 > 白名单明细见 §10.3）+ workspace lib / 关键集成全绿 + clippy 0 error + Z1–Z8 无 diff。
 
@@ -196,7 +206,7 @@ re-export 面删除。
 不扩大 message 域），与 PersistOp 同一 drain 服务；`set_context_stats` 两处
 （`&AgentState` 不可变借用 + 覆盖式快照写）与后台标题线程走注入句柄直调。
 
-### PR-1-1（B1）授权审批门面入 workspace（执行方案已定，待实施）
+### PR-1-1（B1）授权审批门面入 workspace ✅ `508954b`（GLOBAL_TRUSTED + authorize_call + 根 re-export）
 **现状复验（2026-08-31）**：审批**决策**已在 workspace（`authorization::admit`），engine_tool
 的"内联管线"实为：ToolInvocation 构造 + lookup_category 回退、`TrustedFolderSet::load("")`
 磁盘读（ToolEngine::new，:61,68）、challenge→域事件映射（category/risk match、

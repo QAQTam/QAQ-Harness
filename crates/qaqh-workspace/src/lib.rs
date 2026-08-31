@@ -58,6 +58,16 @@ pub use backend::{
     ToolPlacement, install_workspace_backend, use_local_workspace_backend,
 };
 pub use manager::{ToolExecMeta, ToolExecReport, ToolManager, ToolStats};
+// PR-1-1 / B1: authorization & permission vocabulary at the crate root —
+// loop-side references stay `qaqh_workspace::X` without naming submodules.
+pub use authorization::{
+    admit, authorize_call, trust_folder, Admission, ApprovalError, AuthorizedToolCall,
+    PermissionChallenge, ToolInvocation,
+};
+pub use permission::{
+    classify_risk, extract_target_paths, patch_target_paths, PermissionDecision, PermissionLevel,
+    PermissionRisk, ToolCategory, TrustedFolderSet,
+};
 pub use safety::SafetyVerdict;
 
 /// Return current time as "UTC+8 YYYY-MM-DD HH:MM" (matching the [timeis:] prefix convention).

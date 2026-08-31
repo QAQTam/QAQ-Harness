@@ -225,7 +225,7 @@ pub struct PendingTodoActivation {
 /// or awaiting user input. Restored via `TurnEngine.resume()`.
 pub struct AdmittedTool {
     pub call_id: String,
-    pub auth: Box<qaqh_workspace::authorization::AuthorizedToolCall>,
+    pub auth: Box<qaqh_workspace::AuthorizedToolCall>,
 }
 
 pub struct TurnState {

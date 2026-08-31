@@ -48,6 +48,19 @@ impl PermissionRisk {
 }
 
 /// Classify action impact from authoritative category and normalized resources.
+impl ToolCategory {
+    /// Stable lowercase tag used by timeline/UI payloads (was the loop's
+    /// private `category_str`, PR-1-1).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ToolCategory::Read => "read",
+            ToolCategory::Write => "write",
+            ToolCategory::Exec => "exec",
+            ToolCategory::Net => "net",
+        }
+    }
+}
+
 pub fn classify_risk(
     category: ToolCategory,
     paths: &[PathBuf],

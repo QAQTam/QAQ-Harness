@@ -1252,7 +1252,7 @@ mod tests {
 /// Holds the immutable challenge — only the stored fields are used for
 /// authorization; the approval response must not supply replacement values.
 pub struct PendingApproval {
-    pub challenge: qaqh_workspace::authorization::PermissionChallenge,
+    pub challenge: qaqh_workspace::PermissionChallenge,
     pub is_llm_tool: bool,
 }
 

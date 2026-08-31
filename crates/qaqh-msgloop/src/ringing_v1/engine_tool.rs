@@ -57,15 +57,12 @@ fn emit_timeline_tool_progress(
 pub struct ToolEngine {
     /// Pending permission approvals (keyed by tool_call_id).
     pub(crate) pending: HashMap<String, PendingApproval>,
-    /// Persisted trusted folders.
-    pub(crate) trusted: qaqh_workspace::permission::TrustedFolderSet,
 }
 
 impl ToolEngine {
     pub fn new() -> Self {
         Self {
             pending: HashMap::new(),
-            trusted: qaqh_workspace::permission::TrustedFolderSet::load(""),
         }
     }
 
@@ -146,57 +143,46 @@ impl ToolEngine {
         args: &serde_json::Value,
     ) {
         let effective_name = crate::util::resolve_effective_name(name, action, args);
-        let ws_root = Self::resolve_workspace();
 
         qaqh_workspace::runtime::set_context(
             &ctx.agent.session.seed,
             ctx.agent.config.permission_level,
         );
 
-        let inv = qaqh_workspace::authorization::ToolInvocation {
-            session_id: ctx.agent.session.seed.clone(),
-            call_id: id.to_string(),
-            tool_name: effective_name.clone(),
-            action: String::new(),
-            args: args.clone(),
-            // 能力类别来自 handler 声明（单一事实源）；查不到时保守回退 Write。
-            category: qaqh_workspace::runtime::lookup_category(&effective_name)
-                .unwrap_or(qaqh_workspace::permission::ToolCategory::Write),
-        };
-
-        match qaqh_workspace::authorization::admit(
-            inv,
+        match qaqh_workspace::authorize_call(
+            &ctx.agent.session.seed,
+            id,
+            &effective_name,
+            args,
             ctx.agent.config.permission_level,
-            &ws_root,
-            self.trusted.set(),
         ) {
-            qaqh_workspace::authorization::Admission::Authorized(authorized) => {
+            qaqh_workspace::Admission::Authorized(authorized) => {
                 self.execute_and_emit(ctx, id, &effective_name, args, authorized, false);
             }
-            qaqh_workspace::authorization::Admission::ApprovalRequired(challenge) => {
-                let cat_str = Self::category_str(challenge.category());
+            qaqh_workspace::Admission::ApprovalRequired(challenge) => {
+                let cat_str = challenge.category().as_str().to_string();
                 let cat_domain = match challenge.category() {
-                    qaqh_workspace::permission::ToolCategory::Read => {
+                    qaqh_workspace::ToolCategory::Read => {
                         qaqh_domain::PermissionCategory::Read
                     }
-                    qaqh_workspace::permission::ToolCategory::Write => {
+                    qaqh_workspace::ToolCategory::Write => {
                         qaqh_domain::PermissionCategory::Write
                     }
-                    qaqh_workspace::permission::ToolCategory::Exec => {
+                    qaqh_workspace::ToolCategory::Exec => {
                         qaqh_domain::PermissionCategory::Exec
                     }
-                    qaqh_workspace::permission::ToolCategory::Net => {
+                    qaqh_workspace::ToolCategory::Net => {
                         qaqh_domain::PermissionCategory::Net
                     }
                 };
                 let risk_domain = match challenge.risk() {
-                    qaqh_workspace::permission::PermissionRisk::Low => {
+                    qaqh_workspace::PermissionRisk::Low => {
                         qaqh_domain::PermissionRisk::Low
                     }
-                    qaqh_workspace::permission::PermissionRisk::Medium => {
+                    qaqh_workspace::PermissionRisk::Medium => {
                         qaqh_domain::PermissionRisk::Medium
                     }
-                    qaqh_workspace::permission::PermissionRisk::High => {
+                    qaqh_workspace::PermissionRisk::High => {
                         qaqh_domain::PermissionRisk::High
                     }
                 };
@@ -209,10 +195,7 @@ impl ToolEngine {
                         .map(|path| path.to_string_lossy().to_string())
                         .collect(),
                     category: cat_str.clone(),
-                    level: qaqh_workspace::permission::PermissionLevel::from_u8(
-                        ctx.agent.config.permission_level,
-                    )
-                    .to_u8(),
+                    level: ctx.agent.config.permission_level,
                     risk: match risk_domain {
                         qaqh_domain::PermissionRisk::Low => "low",
                         qaqh_domain::PermissionRisk::Medium => "medium",
@@ -259,10 +242,7 @@ impl ToolEngine {
                             .map(|p| p.to_string_lossy().to_string())
                             .collect(),
                         category: cat_domain,
-                        level: qaqh_workspace::permission::PermissionLevel::from_u8(
-                            ctx.agent.config.permission_level,
-                        )
-                        .to_u8(),
+                        level: ctx.agent.config.permission_level,
                         risk: risk_domain,
                         consequence: challenge.consequence().to_string(),
                     },
@@ -275,7 +255,7 @@ impl ToolEngine {
                     },
                 );
             }
-            qaqh_workspace::authorization::Admission::Denied(reason) => {
+            qaqh_workspace::Admission::Denied(reason) => {
                 let turn_id = format!("tc_{id}");
                 Self::emit_timeline_denied(ctx, id, name, &args.to_string(), &reason, false);
                 // Ringing 终态统一由 ToolFinished 承载，失败只由 result.status 表达。
@@ -324,7 +304,7 @@ impl ToolEngine {
             Ok(authorized) => {
                 if trust_folder {
                     for path in &resources {
-                        self.trusted.trust(path.parent().unwrap_or(path));
+                        qaqh_workspace::trust_folder(path.parent().unwrap_or(path));
                     }
                 }
                 if is_llm {
@@ -341,7 +321,7 @@ impl ToolEngine {
                     self.execute_and_emit(ctx, &call_id, &tool_name, &args, authorized, true);
                 }
             }
-            Err(qaqh_workspace::authorization::ApprovalError::Rejected) => {
+            Err(qaqh_workspace::ApprovalError::Rejected) => {
                 if is_llm {
                     ctx.agent.msg.push_tool_result_direct(
                         &call_id,
@@ -352,7 +332,7 @@ impl ToolEngine {
                     self.emit_denied(ctx, &call_id, &tool_name, "user denied permission");
                 }
             }
-            Err(qaqh_workspace::authorization::ApprovalError::Expired) => {
+            Err(qaqh_workspace::ApprovalError::Expired) => {
                 if is_llm {
                     ctx.agent.msg.push_tool_result_direct(
                         &call_id,
@@ -363,7 +343,7 @@ impl ToolEngine {
                     self.emit_denied(ctx, &call_id, &tool_name, "permission expired");
                 }
             }
-            Err(qaqh_workspace::authorization::ApprovalError::MissingOrReplayed) => {
+            Err(qaqh_workspace::ApprovalError::MissingOrReplayed) => {
                 log::warn!("[TOOL] replayed permission response: {call_id}");
                 if is_llm {
                     ctx.agent.msg.push_tool_result_direct(
@@ -400,7 +380,6 @@ impl ToolEngine {
         turn_id: &str,
         round_num: u32,
     ) -> BatchAdmission {
-        let ws_root = Self::resolve_workspace();
         let mut authorized = Vec::new();
         let mut pending_permission_ids = Vec::new();
         let mut pending_asks = VecDeque::new();
@@ -420,23 +399,14 @@ impl ToolEngine {
                 &ctx.agent.session.tool_mode,
                 &tool.name,
             );
-            let inv = qaqh_workspace::authorization::ToolInvocation {
-                session_id: ctx.agent.session.seed.clone(),
-                call_id: tool.id.clone(),
-                tool_name: effective_name.clone(),
-                action: String::new(),
-                args: tool.args.clone(),
-                // 与单工具路径一致：handler 声明为权威，未注册回退 Write。
-                category: qaqh_workspace::runtime::lookup_category(&effective_name)
-                    .unwrap_or(qaqh_workspace::permission::ToolCategory::Write),
-            };
-            match qaqh_workspace::authorization::admit(
-                inv,
+            match qaqh_workspace::authorize_call(
+                &ctx.agent.session.seed,
+                &tool.id,
+                &effective_name,
+                &tool.args,
                 ctx.agent.config.permission_level,
-                &ws_root,
-                self.trusted.set(),
             ) {
-                qaqh_workspace::authorization::Admission::Authorized(auth) => {
+                qaqh_workspace::Admission::Authorized(auth) => {
                     if auth.tool_name() == "ask" {
                         match qaqh_workspace::ask_user::normalize_ask_user(auth.args()) {
                             Ok(normalized) => pending_asks.push_back(PendingAsk {
@@ -478,13 +448,13 @@ impl ToolEngine {
                         });
                     }
                 }
-                qaqh_workspace::authorization::Admission::ApprovalRequired(challenge) => {
-                    let cat_str = Self::category_str(challenge.category());
+                qaqh_workspace::Admission::ApprovalRequired(challenge) => {
+                    let cat_str = challenge.category().as_str().to_string();
                     let call_id = challenge.call_id().to_string();
                     let risk = match challenge.risk() {
-                        qaqh_workspace::permission::PermissionRisk::Low => "low",
-                        qaqh_workspace::permission::PermissionRisk::Medium => "medium",
-                        qaqh_workspace::permission::PermissionRisk::High => "high",
+                        qaqh_workspace::PermissionRisk::Low => "low",
+                        qaqh_workspace::PermissionRisk::Medium => "medium",
+                        qaqh_workspace::PermissionRisk::High => "high",
                     }
                     .to_string();
                     ctx.emitter
@@ -510,10 +480,7 @@ impl ToolEngine {
                                         .map(|path| path.to_string_lossy().to_string())
                                         .collect(),
                                     category: cat_str.clone(),
-                                    level: qaqh_workspace::permission::PermissionLevel::from_u8(
-                                        ctx.agent.config.permission_level,
-                                    )
-                                    .to_u8(),
+                                    level: ctx.agent.config.permission_level,
                                     risk,
                                     consequence: challenge.consequence().to_string(),
                                 }),
@@ -522,27 +489,27 @@ impl ToolEngine {
                     // Ringing：LLM 工具轮权限请求（legacy PermissionRequest 的替代，
                     // 与 handle_ui_tool_call 路径一致）。
                     let cat_domain = match challenge.category() {
-                        qaqh_workspace::permission::ToolCategory::Read => {
+                        qaqh_workspace::ToolCategory::Read => {
                             qaqh_domain::PermissionCategory::Read
                         }
-                        qaqh_workspace::permission::ToolCategory::Write => {
+                        qaqh_workspace::ToolCategory::Write => {
                             qaqh_domain::PermissionCategory::Write
                         }
-                        qaqh_workspace::permission::ToolCategory::Exec => {
+                        qaqh_workspace::ToolCategory::Exec => {
                             qaqh_domain::PermissionCategory::Exec
                         }
-                        qaqh_workspace::permission::ToolCategory::Net => {
+                        qaqh_workspace::ToolCategory::Net => {
                             qaqh_domain::PermissionCategory::Net
                         }
                     };
                     let risk_domain = match challenge.risk() {
-                        qaqh_workspace::permission::PermissionRisk::Low => {
+                        qaqh_workspace::PermissionRisk::Low => {
                             qaqh_domain::PermissionRisk::Low
                         }
-                        qaqh_workspace::permission::PermissionRisk::Medium => {
+                        qaqh_workspace::PermissionRisk::Medium => {
                             qaqh_domain::PermissionRisk::Medium
                         }
-                        qaqh_workspace::permission::PermissionRisk::High => {
+                        qaqh_workspace::PermissionRisk::High => {
                             qaqh_domain::PermissionRisk::High
                         }
                     };
@@ -559,10 +526,7 @@ impl ToolEngine {
                                 .map(|path| path.to_string_lossy().to_string())
                                 .collect(),
                             category: cat_domain,
-                            level: qaqh_workspace::permission::PermissionLevel::from_u8(
-                                ctx.agent.config.permission_level,
-                            )
-                            .to_u8(),
+                            level: ctx.agent.config.permission_level,
                             risk: risk_domain,
                             consequence: challenge.consequence().to_string(),
                         },
@@ -576,7 +540,7 @@ impl ToolEngine {
                         },
                     );
                 }
-                qaqh_workspace::authorization::Admission::Denied(reason) => {
+                qaqh_workspace::Admission::Denied(reason) => {
                     ctx.agent.msg.push_tool_result_direct(
                         &tool.id,
                         &format!(
@@ -609,7 +573,7 @@ impl ToolEngine {
         id: &str,
         name: &str,
         args: &serde_json::Value,
-        authorized: qaqh_workspace::authorization::AuthorizedToolCall,
+        authorized: qaqh_workspace::AuthorizedToolCall,
         approved: bool,
     ) {
         let turn_id = format!("tc_{id}");
@@ -962,28 +926,6 @@ impl ToolEngine {
                 ),
             },
         ));
-    }
-
-    fn resolve_workspace() -> std::path::PathBuf {
-        let ws = qaqh_workspace::CURRENT_WORKSPACE
-            .read()
-            .expect("CURRENT_WORKSPACE lock")
-            .clone();
-        if ws.is_empty() || ws == "." {
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-        } else {
-            std::path::PathBuf::from(ws)
-        }
-    }
-
-    fn category_str(cat: &qaqh_workspace::permission::ToolCategory) -> String {
-        match cat {
-            qaqh_workspace::permission::ToolCategory::Read => "read",
-            qaqh_workspace::permission::ToolCategory::Write => "write",
-            qaqh_workspace::permission::ToolCategory::Exec => "exec",
-            qaqh_workspace::permission::ToolCategory::Net => "net",
-        }
-        .to_string()
     }
 
     pub fn cancel_current(&self) {

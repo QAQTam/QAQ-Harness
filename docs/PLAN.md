@@ -284,7 +284,15 @@ serve 存活期间随 config watch 重启策略维持一致（与 workspace_supe
 
 ## 4. Phase 2 —— 合并（msgloop 收编进 runtime/agent）
 
-### PR-2-1 机械搬家（两段 commit）
+> **✅ PR-2-1 / PR-2-2 / PR-2-4 完成（2026-08-31，HEAD `a4813cd`）**：
+> `qaqh-msgloop` crate 退役（f615367 纯移动 + c29689a 接线），`runtime/src/agent/`
+> 就位（engines 平铺 + state/turn_lap/util/wire）；5 集成测试随迁；
+> feature/memory 接管 + `cargo tree -e features` 验证 0（PR-2-2 随 2-1 落地）；
+> prompt/guard 归位 agent（a4813cd，config/gate 回归纯职责）。
+> 出口：53 targets / 794 passed / 0 failed，clippy 0 error，
+> `grep 'qaqh-msgloop|qaqh_msgloop'` → 0。**余项：PR-2-3（spawn_agent 入口收敛）。**
+
+### PR-2-1 机械搬家（两段 commit） ✅ f615367 + c29689a（wire 勘误见 §9）
 - `git mv crates/qaqh-msgloop/src crates/qaqh-runtime/src/agent`，模块映射：
   | msgloop 旧路径 | runtime 新路径 |
   |---|---|
@@ -303,7 +311,7 @@ serve 存活期间随 config watch 重启策略维持一致（与 workspace_supe
 - **验收**：`grep -rn "qaqh-msgloop\|qaqh_msgloop" crates --include=*.rs --include=*.toml` → 0
   （含 `qaqh-types/src/tool_mode.rs:4` 文档注释中的提及，随本 PR 更新）。
 
-### PR-2-2 feature 收敛
+### PR-2-2 feature 收敛 ✅（随 PR-2-1 落地，cargo tree 验证 0）
 - msgloop 的 `memory = []` 兼容 no-op 特性由 runtime 接管：`qaqh-runtime` `memory = []`；
   `qaqh-daemon` 的 `memory = ["qaqh-runtime/memory"]` 不变。
 - **验收**：`cargo tree -e features -p qaqh-daemon | grep -c msgloop` → 0。
@@ -320,7 +328,7 @@ serve 存活期间随 config watch 重启策略维持一致（与 workspace_supe
   3. 评审检查单：`grep -rn "crate::ringing::" crates/qaqh-runtime/src/agent/` 输出仅 handle 相关。
 - **验收**：上述 grep 合规 + 全绿。
 
-### PR-2-4 F1/F2 搭车
+### PR-2-4 F1/F2 搭车 ✅ a4813cd
 - `config/src/prompt.rs`（186 行，含 `detect_shells()` 与 `OS_INFO`/`TOOLS_INFO` OnceLock）
   → `agent/prompt.rs`；消费方改引：`agent/state/lifecycle.rs:198,229,267`（读）与
   `registry.rs:67,87`（写）——后者改为构造 agent 前经 `agent::prompt::init_env(os, tools)`。
@@ -448,6 +456,8 @@ workspace lib + serve 集成全绿（含 PR-0-3 修复的那批）。
 | PR-1-8 范围（engine_session reload + init/init_subagent 两处） | `init_subagent` **生产零调用**（唯一提及是 subagent 文档注释）；`init` 仅测试调用 | `init` 改收 `Config` 参数（调用方注入）；`init_subagent` 删除；config crate 新增 `watch::authoritative()`（磁盘权威 + 镜像回退，Option 语义兼容 bootstrap/reload 两端） |
 | PR-1-4："dashboard 移入 runtime（与 projection 同居）" | **依赖方向不可达**：runtime→msgloop，msgloop 5 处 engine 消费者无法反向引用；且 runtime 已存在同名 `ringing::projection`（SnapshotProjector） | 拆分归置：四个工作区状态组装函数（DocInfo/TaskInfo 面）入 `qaqh_workspace::dashboard`（状态属主）；`build_snapshot` 域映射留 msgloop `ringing_v1/dashboard`；project_turns 族并入既有 projection.rs；grep 门按标识执行（`services::|project_turns|DocInfo|file_write_paths` → 0） |
 | PR-1-2：R-5 CI grep `grep -c "qaqh-" skills/Cargo.toml → 0` | name 行 `name = "qaqh-skills"` 自名匹配为固有误报（基线时也非 0） | 门按依赖段执行（`grep -A6 '^\[dependencies\]' | grep -c qaqh-` → 0）；技能会话三类型迁 skills 后 types re-export 兼容，types→skills 单向无环 |
+| PR-2-1："wire 仅测试 harness 用，标 `#[cfg(test)]` 收缩" | wire 被 **3 个集成测试**消费（集成测试链接 lib 非 test 构建，cfg(test) 不可见） | wire 保持 `pub mod wire;`（测试 harness 语义） |
+| PR-2-1 连带：daemon `log::set_boxed_logger` 断供 | 原靠 msgloop 的 `log features=["std"]` unification 搭车；crate 退役后 daemon 自身 log 无 std | daemon Cargo 显式声明 `log features=["std"]`（依赖自声明原则） |
 
 实证复核通过（无修正）：A1 五处行号逐字命中；A2（store.rs:126,809,972 + agent.rs:628 注入）；
 C1（actor.rs 全部行号 + registry.rs 七处散点）；C2 唯一消费方；D1（supervisor Child 拉起 local/WSL 双模式）；

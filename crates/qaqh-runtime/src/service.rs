@@ -323,7 +323,7 @@ impl QaqhService {
                 }),
             ),
             "skills.list_tools" => Ok(json!(qaqh_workspace::runtime::process_all_tool_names())),
-            "workspace.get" => Ok(json!(workspace(&seed()?))),
+            "workspace.get" => Ok(json!(workspace(&self.sessions, &seed()?))),
             "workspace.set" => {
                 let seed = seed()?;
                 // 空 path 防护：canonical_cwd("") = "" 会把 meta.cwd 清空，
@@ -341,21 +341,25 @@ impl QaqhService {
                 Ok(Value::Null)
             }
             "git.diff" => git(
+                &self.sessions,
                 &seed()?,
                 |ws| qaqh_workspace::git::status_json(ws),
                 json!([]),
             ),
             "git.branch" => git(
+                &self.sessions,
                 &seed()?,
                 |ws| qaqh_workspace::git::current_branch(ws),
                 Value::Null,
             ),
             "git.branches" => git(
+                &self.sessions,
                 &seed()?,
                 |ws| qaqh_workspace::git::list_branches(ws),
                 json!([]),
             ),
             "git.switch_branch" => git(
+                &self.sessions,
                 &seed()?,
                 |ws| {
                     qaqh_workspace::git::switch_branch(
@@ -367,11 +371,13 @@ impl QaqhService {
                 Value::Null,
             ),
             "git.commit" => git(
+                &self.sessions,
                 &seed()?,
                 |ws| qaqh_workspace::git::commit_all(ws, &pstr(params, "message")?),
                 Value::Null,
             ),
             "git.file_diff" => git(
+                &self.sessions,
                 &seed()?,
                 |ws| qaqh_workspace::git::file_diff(ws, &pstr2(params, "file_path", "filePath")?),
                 Value::Null,
@@ -436,9 +442,10 @@ impl QaqhService {
             )?),
             "plan.context_stats" => context_stats(&self.sessions, &seed()?),
             "stats.token_usage" => token_stats(pu64(params, "days") as u32),
-            "plan.read" => read_plan(&seed()?),
+            "plan.read" => read_plan(&self.sessions, &seed()?),
             "plan.action" => {
                 plan_action(
+                    &self.sessions,
                     &seed()?,
                     &pstr2(params, "item_id", "itemId")?,
                     &pstr(params, "action")?,
@@ -808,19 +815,24 @@ fn parse_json_string(value: String) -> Result<Value, String> {
     serde_json::from_str(&value).map_err(err)
 }
 
-fn workspace(seed: &str) -> String {
+fn workspace(sessions: &qaqh_session::SessionManager, seed: &str) -> String {
     if seed.is_empty() {
         return String::new();
     }
     // 统一数据源：meta.cwd（workspace.txt 退役，读取侧惰性迁移）。
-    qaqh_session::workspace::session_workspace_cwd(seed).unwrap_or_default()
+    sessions.workspace_cwd(seed).unwrap_or_default()
 }
 
-fn git<F>(seed: &str, operation: F, empty: Value) -> Result<Value, String>
+fn git<F>(
+    sessions: &qaqh_session::SessionManager,
+    seed: &str,
+    operation: F,
+    empty: Value,
+) -> Result<Value, String>
 where
     F: FnOnce(&str) -> Result<String, String>,
 {
-    let workspace = workspace(seed);
+    let workspace = workspace(sessions, seed);
     if workspace.is_empty() {
         return Ok(empty);
     }
@@ -985,16 +997,19 @@ fn days_before_today(days: u32) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
-fn qaqh_dir(seed: &str) -> std::path::PathBuf {
-    let workspace = workspace(seed);
+fn qaqh_dir(sessions: &qaqh_session::SessionManager, seed: &str) -> std::path::PathBuf {
+    let workspace = workspace(sessions, seed);
     if workspace.is_empty() || workspace == "." {
         qaqh_types::platform::data_dir().join("workspace")
     } else {
         std::path::Path::new(&workspace).join(".qaqh")
     }
 }
-fn read_plan(seed: &str) -> Result<Value, String> {
-    let content = match std::fs::read_to_string(qaqh_dir(seed).join("PLAN.md")) {
+fn read_plan(
+    sessions: &qaqh_session::SessionManager,
+    seed: &str,
+) -> Result<Value, String> {
+    let content = match std::fs::read_to_string(qaqh_dir(sessions, seed).join("PLAN.md")) {
         Ok(value) => value,
         Err(_) => return Ok(json!([])),
     };
@@ -1014,8 +1029,14 @@ fn read_plan(seed: &str) -> Result<Value, String> {
         .collect();
     Ok(Value::Array(items))
 }
-fn plan_action(seed: &str, item_id: &str, action: &str, comment: &str) -> Result<(), String> {
-    let path = qaqh_dir(seed).join("PLAN.md");
+fn plan_action(
+    sessions: &qaqh_session::SessionManager,
+    seed: &str,
+    item_id: &str,
+    action: &str,
+    comment: &str,
+) -> Result<(), String> {
+    let path = qaqh_dir(sessions, seed).join("PLAN.md");
     let content = std::fs::read_to_string(&path).map_err(err)?;
     let mut found = false;
     let output = content

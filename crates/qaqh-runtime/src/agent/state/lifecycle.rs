@@ -3,6 +3,24 @@
 use super::agent::AgentState;
 use qaqh_workspace;
 
+/// cwd 宿主注入（PR-3-3 / D3）：宿主侧经注入句柄解析会话工作目录后注入
+/// workspace（`set_process_workspace`），workspace 侧不再直读 qaqh_session。
+/// 解析权威：meta.cwd（旧 workspace.txt 惰性迁移见
+/// `SessionManager::workspace_cwd`）；无句柄（单测）或解析为空时落 "."，
+/// 与旧 workspace 侧 `load_session_workspace` 行为一致。
+pub(crate) fn load_session_workspace(agent: &AgentState) {
+    let cwd = agent
+        .session_manager
+        .as_ref()
+        .and_then(|sm| sm.workspace_cwd(&agent.session.seed))
+        .unwrap_or_default();
+    qaqh_workspace::workspace::set_process_workspace(if cwd.is_empty() {
+        "."
+    } else {
+        &cwd
+    });
+}
+
 /// Load session from disk via the injected session-manager handle.
 ///
 /// On success, restores the message store and rebinds the workspace.
@@ -143,7 +161,7 @@ pub fn init_session(agent: &mut AgentState, restore_seed: Option<&str>) -> bool 
                     .remove_system_messages_by_prefix("Available skills");
 
                 qaqh_workspace::workspace::set_current_session(&agent.session.seed);
-                qaqh_workspace::workspace::load_session_workspace(&agent.session.seed);
+                load_session_workspace(agent);
                 let workspace = qaqh_workspace::CURRENT_WORKSPACE
                     .read()
                     .unwrap_or_else(|error| error.into_inner())
@@ -191,7 +209,7 @@ pub fn init_session(agent: &mut AgentState, restore_seed: Option<&str>) -> bool 
         qaqh_message::MessageStore::new(&seed)
     };
     qaqh_workspace::workspace::set_current_session(&agent.session.seed);
-    qaqh_workspace::workspace::load_session_workspace(&agent.session.seed);
+    load_session_workspace(agent);
     let workspace = qaqh_workspace::CURRENT_WORKSPACE
         .read()
         .unwrap_or_else(|error| error.into_inner())
@@ -222,7 +240,7 @@ pub fn create_session(agent: &mut AgentState) {
         qaqh_message::MessageStore::new(&agent.session.seed)
     };
     qaqh_workspace::workspace::set_current_session(&agent.session.seed);
-    qaqh_workspace::workspace::load_session_workspace(&agent.session.seed);
+    load_session_workspace(agent);
     let workspace = qaqh_workspace::CURRENT_WORKSPACE
         .read()
         .unwrap_or_else(|error| error.into_inner())
@@ -251,7 +269,7 @@ pub fn create_session_with_seed(agent: &mut AgentState) {
         qaqh_message::MessageStore::new(&agent.session.seed)
     };
     qaqh_workspace::workspace::set_current_session(&agent.session.seed);
-    qaqh_workspace::workspace::load_session_workspace(&agent.session.seed);
+    load_session_workspace(agent);
     let workspace = qaqh_workspace::CURRENT_WORKSPACE
         .read()
         .unwrap_or_else(|error| error.into_inner())

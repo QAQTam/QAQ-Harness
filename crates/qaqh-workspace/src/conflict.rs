@@ -36,7 +36,7 @@ pub fn file_write_paths(tool_name: &str, args: &serde_json::Value) -> Vec<String
             // model calls in one tool round still share one ordered ID stream.
             // A synthetic conflict key preserves model call order even when a
             // provider ignores the guidance to use one create(items=[...]).
-            paths.push("__qaqh_session_todo__".to_string());
+            paths.push("__qaqh_todo__".to_string());
         }
         "copy_range" => {
             // M1：写目标是 target_path（source_path 为读端，不参与写冲突）。

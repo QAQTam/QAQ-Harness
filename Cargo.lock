@@ -1978,7 +1978,6 @@ dependencies = [
  "log",
  "qaqh-config",
  "qaqh-proto",
- "qaqh-session",
  "qaqh-skills",
  "qaqh-types",
  "regex",

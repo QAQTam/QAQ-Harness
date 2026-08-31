@@ -85,10 +85,14 @@ struct GitFileMeta {
 }
 
 fn git_file_meta(file_path: &str) -> Option<GitFileMeta> {
-    let seed = crate::current_session()?;
-    // 无 SessionManager 环境（serve 进程）用只读版；meta.cwd 优先，
-    // 旧 workspace.txt 兜底（存量，不迁移）。
-    let workspace = qaqh_session::workspace::session_workspace_from_disk(&seed)?;
+    crate::current_session()?;
+    // PR-3-3：cwd 由宿主注入（daemon 会话初始化 / serve 请求体均已 set）。
+    // 读注入值本身：空 / "." 视为无有效工作区（与旧只读磁盘解析的
+    // “无 cwd → 无 git meta”语义对齐）。
+    let workspace = crate::current_workspace();
+    if workspace.is_empty() || workspace == "." {
+        return None;
+    }
     let repo = git2::Repository::open(workspace).ok()?;
     let head_tree = repo.head().ok()?.peel_to_tree().ok()?;
     let is_new = head_tree.get_path(std::path::Path::new(file_path)).is_err();

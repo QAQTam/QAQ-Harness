@@ -439,13 +439,30 @@ workspace lib + serve 集成全绿（含 PR-0-3 修复的那批）。
   全量传参不在本 PR（30+ handler，收益边际），验收 grep 按字面达成。
 - 出口：53 targets / 794 passed / 0 failed；clippy 0 error；验收 grep → 0。
 
-### PR-3-3（D3 搭车）cwd 由宿主注入
+### PR-3-3（D3 搭车）cwd 由宿主注入 ✅（2026-08-31 完成登记见节末）
 **现状**（勘误：引用在 `code_delta.rs:91` 与 `workspace.rs:35-36`，提案误记 file_query.rs:91）。
 **步骤**：宿主构造 `ToolCtx` 时解析 cwd 注入（解析权威见 PR-4-1 / Q2a）；workspace 不再
 直读 `qaqh_session::workspace`。serve 子进程模式下 cwd 随 `/execute` 请求体下发（现有
 `host_workspace` 字段通道，行为不变）。
 **验收**：`grep -rn "session_workspace\|qaqh_session" crates/qaqh-workspace/src` → 0
 （Cargo.toml 依赖移除）。
+**完成登记（2026-08-31）**：
+- 解析权威收敛为 session 实例方法 `SessionManager::workspace_cwd(&self, seed)`
+  （meta.cwd 优先 + workspace.txt 惰性迁移随迁）；`session_workspace_cwd` /
+  `session_workspace_from_disk` 自由函数零消费后删除。
+- 宿主侧：agent lifecycle 新增 `load_session_workspace(agent)`——经
+  `agent.session_manager` 注入句柄解析后 `set_process_workspace` 注入
+  （lifecycle ×4 + engine_session reload_config 共 5 处调用点改引）；
+  service 侧 `workspace()/git()/qaqh_dir()/read_plan()/plan_action()` 自由
+  函数全部加 `&SessionManager` 形参（handle() 各臂传 `&self.sessions`）。
+- workspace 侧：`load_session_workspace` 删除；`code_delta::git_file_meta`
+  改读宿主注入的 `current_workspace()`（空 / "." → 无 git meta，与旧只读
+  磁盘解析语义对齐）；conflict.rs 合成冲突键更名 `__qaqh_todo__`（消除
+  grep 命中）；Cargo.toml 移除 qaqh-session 依赖。
+- 附带收益：session crate 内部 `global()` 归零，§10.3 对应白名单条目撤销；
+  生产 `global()` 仅剩 daemon main 装配点。
+- 出口：验收 grep → 0（src + tests）；依赖移除；53 targets / 794 passed /
+  0 failed；clippy 0 error。
 
 ### PR-3-4 cancel 残留复查
 - 第一轮 PR-6 已修主路径；本项为结构性复查：全仓 grep 进程级 cancel flag，确保全部走
@@ -571,8 +588,8 @@ cargo clippy --workspace --all-targets 2>&1 | grep -c "^error"   # → 0
 - `#[cfg(test)]` 模块（含测试内装配点取 `global()` 注入被测对象）。
 - `qaqh-workspace/src/main.rs`（CLI 入口的 `Config::load()`，P1-10 白名单）。
 - `qaqh-session` 自身定义处；daemon main（P3-1 后）。
-- `qaqh-session` crate 内部对单例的调用（P3-1 勘误：`workspace.rs`
-  `session_workspace_cwd` 的惰性迁移读取；PR-4-3 随 workspace 侧解耦再收）。
+- （PR-3-3 后撤销：session crate 内部 `global()` 已随
+  `session_workspace_cwd` 自由函数删除而归零。）
 
 ### 10.4 WSL 走查清单（R-2，PR-4-3 归档；CI 无 WSL 时每阶段出口手动过一遍）
 1. daemon 以 WSL 模式拉起 serve（`workspace_supervisor.rs:246` wsl.exe 路径）→ `/health` 200。

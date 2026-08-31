@@ -358,50 +358,7 @@ mod tests {
 // ═══════════════════════════════════════════════════════
 // 运行环境工作目录统一数据源
 // ═══════════════════════════════════════════════════════
+//
+// PR-3-3：解析权威收敛为 `SessionManager::workspace_cwd`（实例方法，经注入
+// 句柄调用）；本模块不再持有会话 cwd 的读取入口。
 
-/// 会话运行环境工作目录（worker 启动 cwd / git 归属 / workspace.get 的权威
-/// 数据源）。统一存 `SessionMeta.cwd`。
-///
-/// 存量迁移：旧版本存 `sessions/{seed}/workspace.txt`。首次读到且
-/// `meta.cwd` 为空时，惰性迁移进 meta（atomic replace-write）并删除 txt；
-/// 两个进程（daemon/worker）竞争迁移时幂等——写 meta 原子、删 txt 幂等。
-///
-/// 调用方必须先 `SessionManager::init`。不需要 SessionManager 的环境
-/// （如 workspace serve 进程）用 [`session_workspace_from_disk`]（只读）。
-pub fn session_workspace_cwd(seed: &str) -> Option<String> {
-    let mgr = crate::SessionManager::global();
-    let meta = mgr.load_meta(seed)?;
-    if let Some(cwd) = meta.cwd.as_deref().filter(|c| !c.is_empty()) {
-        return Some(cwd.to_string());
-    }
-    // 惰性迁移：旧 workspace.txt → meta.cwd
-    let txt_path = qaqh_types::platform::sessions_dir()
-        .join(seed)
-        .join("workspace.txt");
-    let legacy = std::fs::read_to_string(&txt_path).ok()?;
-    let legacy = legacy.trim().to_string();
-    if legacy.is_empty() {
-        return None;
-    }
-    let canonical = canonical_cwd(std::path::Path::new(&legacy));
-    mgr.set_cwd(seed, &canonical, true);
-    let _ = std::fs::remove_file(&txt_path);
-    Some(canonical)
-}
-
-/// 只读版：meta.json `cwd` → 旧 `workspace.txt` fallback（不做迁移、不要求
-/// SessionManager init）。给 workspace serve / CLI 等无 session 环境的进程用。
-pub fn session_workspace_from_disk(seed: &str) -> Option<String> {
-    let dir = qaqh_types::platform::sessions_dir().join(seed);
-    if let Ok(text) = std::fs::read_to_string(dir.join("meta.json"))
-        && let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
-        && let Some(cwd) = value.get("cwd").and_then(|c| c.as_str())
-        && !cwd.is_empty()
-    {
-        return Some(cwd.to_string());
-    }
-    std::fs::read_to_string(dir.join("workspace.txt"))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}

@@ -11,7 +11,6 @@ path = "src/main.rs"
 [dependencies]
 qaqh-skills = { path = "../qaqh-skills" }
 qaqh-proto = { path = "../qaqh-proto" }
-qaqh-session = { path = "../qaqh-session" }
 qaqh-types = { path = "../qaqh-types" }
 qaqh-config = { path = "../qaqh-config" }
 similar = { version = "3.1", features = ["text"] }

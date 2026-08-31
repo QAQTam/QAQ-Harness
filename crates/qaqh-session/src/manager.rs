@@ -269,6 +269,29 @@ impl SessionManager {
         None
     }
 
+    /// 解析会话运行环境工作目录（PR-3-3 宿主注入的解析权威）：meta.cwd 优先，
+    /// 旧 `workspace.txt` 惰性迁移（原子写 meta + 删 txt，两进程竞争幂等）。
+    /// 宿主（agent loop / service）经注入句柄调用后把值注入 workspace。
+    pub fn workspace_cwd(&self, seed: &str) -> Option<String> {
+        let meta = self.load_meta(seed)?;
+        if let Some(cwd) = meta.cwd.as_deref().filter(|c| !c.is_empty()) {
+            return Some(cwd.to_string());
+        }
+        // 惰性迁移：旧 workspace.txt → meta.cwd
+        let txt_path = qaqh_types::platform::sessions_dir()
+            .join(seed)
+            .join("workspace.txt");
+        let legacy = std::fs::read_to_string(&txt_path).ok()?;
+        let legacy = legacy.trim().to_string();
+        if legacy.is_empty() {
+            return None;
+        }
+        let canonical = crate::workspace::canonical_cwd(std::path::Path::new(&legacy));
+        self.set_cwd(seed, &canonical, true);
+        let _ = std::fs::remove_file(&txt_path);
+        Some(canonical)
+    }
+
     /// Persist agent mode to meta.json without rewriting messages.
     /// Called when the user switches PLAN/CODE mode so it survives agent restart.
     pub fn persist_mode(&self, seed: &str, mode: u8) {
@@ -351,7 +374,7 @@ impl SessionManager {
 
     /// 设置会话运行环境工作目录（`workspace.set` / 子代理继承）。
     /// 统一数据源：`SessionMeta.cwd`——旧的 `sessions/{seed}/workspace.txt`
-    /// 已退役（读取侧惰性迁移，见 `workspace::session_workspace_cwd`）。
+    /// 已退役（读取侧惰性迁移，见 [`Self::workspace_cwd`]）。
     /// 仅改 meta.json（atomic replace-write）；`index` 控制是否同步会话索引
     /// （子代理 ephemeral，不进列表）。
     pub fn set_cwd(&self, seed: &str, cwd: &str, index: bool) {

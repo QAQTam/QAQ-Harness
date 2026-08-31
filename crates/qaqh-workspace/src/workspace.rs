@@ -28,19 +28,6 @@ pub fn set_current_session(seed: &str) {
     crate::set_current_session(seed);
 }
 
-/// Load and activate the workspace persisted for a session.
-///
-/// 统一数据源：`SessionMeta.cwd`（qaqh-session）——旧的
-/// `sessions/{seed}/workspace.txt` 由读取侧惰性迁移（零停机）。
-pub fn load_session_workspace(seed: &str) {
-    let workspace = qaqh_session::workspace::session_workspace_cwd(seed).unwrap_or_default();
-    set_process_workspace(if workspace.is_empty() {
-        "."
-    } else {
-        &workspace
-    });
-}
-
 /// Update tool path resolution and the process working directory together.
 pub fn set_process_workspace(path: &str) {
     // WSL serve 侧把 Windows 路径转 /mnt 后再落盘 + cd（Linux 下才能真实 cd 成功）。

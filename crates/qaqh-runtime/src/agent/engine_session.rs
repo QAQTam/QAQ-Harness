@@ -69,7 +69,7 @@ impl SessionEngine {
         // 权威读收敛到 config crate 单入口（PR-1-8）。
         if let Some(cfg) = qaqh_config::watch::authoritative() {
             Self::apply_config(cfg, agent);
-            qaqh_workspace::workspace::load_session_workspace(&agent.session.seed);
+            crate::agent::state::lifecycle::load_session_workspace(agent);
         }
     }
 

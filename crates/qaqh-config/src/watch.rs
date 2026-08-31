@@ -87,7 +87,7 @@ mod tests {
 /// 广播的最新镜像。返回 `None` = 两条路径都没有配置——调用方自行决定
 /// `unwrap_or_default()`（启动装配）还是跳过 apply（reload）。
 ///
-/// msgloop 内禁止直接 `Config::load()`；所有权威读经本函数收敛，
+/// agent loop（runtime/agent）内禁止直接 `Config::load()`；所有权威读经本函数收敛，
 /// 与 config-revamp P2-D1 单写口同向。
 pub fn authoritative() -> Option<Config> {
     match crate::Config::load() {

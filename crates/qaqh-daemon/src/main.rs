@@ -3,8 +3,8 @@ mod server;
 
 use std::io::{Read, Write};
 
-/// 诊断日志 sink：daemon 此前无任何 logger 初始化，msgloop 的
-/// [COMPACT]/[TURN] 等 log::error/warn 全部丢弃，压缩失败等原因无从追查。
+/// 诊断日志 sink：daemon 此前无任何 logger 初始化，agent loop（前 msgloop crate，现
+/// runtime/agent）的 [COMPACT]/[TURN] 等 log::error/warn 全部丢弃，压缩失败等原因无从追查。
 /// 追加写入 `<数据目录>/qaqh-daemon.log`（Windows: `%USERPROFILE%\.qaqh`）。
 fn init_file_logging() {
     struct FileLogger(std::sync::Mutex<std::fs::File>);

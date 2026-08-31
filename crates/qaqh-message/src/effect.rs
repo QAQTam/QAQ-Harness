@@ -28,7 +28,7 @@ pub struct PendingTool {
 /// against an injected the session manager singleton. Single-threaded replay keeps the
 /// on-disk byte order identical to the old synchronous writes (Z5 red line).
 ///
-/// The op→the session manager singleton mapping lives on the consumer side (msgloop /
+/// The op→the session manager singleton mapping lives on the consumer side (runtime/agent /
 /// runtime): this crate must not re-introduce a `qaqh-session` dependency
 /// just to execute persistence.
 #[derive(Debug, Clone)]

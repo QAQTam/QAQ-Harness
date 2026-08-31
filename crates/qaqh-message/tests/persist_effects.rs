@@ -5,7 +5,7 @@
 //!    `SessionManager` calls the old `flush_meta` / `snapshot_full` bodies
 //!    made (see git history of store.rs pre-PR-1-6).
 //! 2. `shadow_flush_jsonl_bytes_identical` — replaying the ops against the
-//!    session manager (the same mapping msgloop's `execute_persist_op`
+//!    session manager (the same mapping the agent loop's `execute_persist_op`
 //!    performs) on one seed produces a `messages.jsonl` byte-identical to
 //!    driving the legacy inline call sequence on a twin seed.
 //! 3. `legacy_session_dir_replays_and_appends_byte_identical` — a directory
@@ -59,7 +59,7 @@ fn stamped(mut msg: Message, id: u64) -> Message {
     msg
 }
 
-/// Test-side replay executor: mirrors msgloop's `execute_persist_op`
+/// Test-side replay executor: mirrors the agent loop's `execute_persist_op`
 /// (agent.rs) one-to-one. If that mapping drifts from this one, the shadow
 /// test below fails and both must be re-reviewed together.
 fn drain(store: &mut MessageStore) {

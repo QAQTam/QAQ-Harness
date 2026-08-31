@@ -489,6 +489,15 @@ workspace lib + serve 集成全绿（含 PR-0-3 修复的那批）。
 
 ## 6. Phase 4 —— 周边归位（激进扫尾）
 
+> **✅ Phase 4 全部完成（2026-08-31，PR-4-4 收口）**：grouping 更名（69c13f4）→
+> legacy fallback 删除 + subagent→client 解耦（7347692）→ serve 形态三项确认
+> （ccecfdc，无代码改动）→ 卫生项（msgloop 注释清零 / util 复核无死代码 /
+> agent/mod.rs 模块表对齐）。
+> 终态出口：**53 targets / 795 passed / 0 failed，clippy 0 error**（795 较
+> §0.1 基线 794 +1：PR-3-4 新增跨会话 cancel 隔离契约用例）。
+> **PLAN 四阶段全部完成**：Phase 0（4/4）→ Phase 1（10/10）→ Phase 2（4/4）→
+> Phase 3（4/4）→ Phase 4（4/4）。
+
 ### PR-4-1（E1）会话工作区单一属主 ✅ 69c13f4
 - `session/src/workspace.rs`（407 行，`WorkspaceStore`，OnceLock 单例，写
   `{data_dir}/workspaces.json`）——**Q2a**：留在 session 但模块更名 `session::grouping`，
@@ -537,9 +546,25 @@ workspace lib + serve 集成全绿（含 PR-0-3 修复的那批）。
   Z 面无涉及。
 - §10.4 走查清单已含跨版本抽查项（第 5 条），CI 无 WSL 时按阶段出口手动过一遍。
 
-### PR-4-4 卫生项
+### PR-4-4 卫生项 ✅（2026-08-31 完成登记见节末）
 - msgloop 残留引用清零复核；`agent/util` 瘦身；各 crate lib.rs 模块表与实际对齐；
   `tool_mode.rs:4` 等历史注释中的 crate 名更新（若 PR-2-1 未覆盖）。
+**完成登记（2026-08-31）**：
+- msgloop 残留复核：代码级引用为零（PR-2-1 已清）；注释级消费方表述更新
+  7 处（config/watch.rs、message/effect.rs、agent/state/agent.rs、
+  config-api/lib.rs、daemon/main.rs、message/tests/persist_effects.rs ×2）；
+  渊源注释加"前 msgloop crate"限定（ringing/projection.rs）。
+  **保留**：`L-msgloop①②③` 审计标签不动（docs/STEP0-verification.md 交叉引用）。
+- `agent/util` 瘦身复核：10 个函数全部有消费方（`has_xml` /
+  `format_tool_args_display` 为 util 内部 parse/build 路径自用），**无死代码，
+  不动**。
+- 模块表对齐：agent/mod.rs 架构文档修正——`ringing_v1/` 平铺后路径勘误
+  （engines → `engine_*.rs` 平级、services → `dashboard.rs`、入口补
+  `spawn.rs` PR-2-3），worker 进程描述更新为 in-process actor 线程。
+- **勘误**：`tool_mode.rs` 已不存在于 qaqh-types（tool-mode 逻辑位于
+  `agent/state/agent.rs::apply_tool_mode`），提案所指 `tool_mode.rs:4` 无对象；
+  其余 crate 名陈旧注释经上项覆盖。
+- 出口：53 targets / 795 passed / 0 failed；clippy 0 error。
 
 ---
 

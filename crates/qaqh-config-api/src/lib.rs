@@ -2,7 +2,7 @@
 //!
 //! 前后端共享的**唯一真相**（PLAN docs/config-revamp-plan.md §2 约束 K1-K4）：
 //!
-//! - K1 叶子 crate：只依赖 serde，不依赖 runtime/msgloop/daemon/config 引擎；
+//! - K1 叶子 crate：只依赖 serde，不依赖 runtime/daemon/config 引擎；
 //!   winui / ratatui / web(axum) 三端只依赖本 crate 即可参与配置读写。
 //! - K2 键风格定死 camelCase（`rename_all`），snake/camel 双键 shim 就此终结。
 //! - K3 写语义 = JSON Merge Patch（RFC 7386 风格）：[`ConfigPatch`] 只含

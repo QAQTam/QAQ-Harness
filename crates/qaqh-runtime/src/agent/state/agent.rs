@@ -412,7 +412,7 @@ impl AgentState {
 
     /// Assemble an agent from a caller-supplied config (PR-1-8 / B5): the
     /// config authority lives in the config crate (watch::authoritative /
-    /// daemon assembly); msgloop never reads the disk itself.
+    /// daemon assembly); the agent loop never reads the disk itself.
     pub fn init(caller: &str, config: Config) -> Self {
         runtime::init_tools(caller, &agent_tool_registrars(), vec![]);
         let mut agent = Self::new(config);

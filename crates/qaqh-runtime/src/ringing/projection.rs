@@ -372,7 +372,7 @@ mod tests {
     }
 }
 
-// ── Persisted-history UI projection (moved verbatim from msgloop util, PR-1-4) ──
+// ── Persisted-history UI projection (moved verbatim from the former msgloop crate's util, PR-1-4) ──
 
 /// Build the same UI turn projection directly from persisted messages.
 ///

@@ -230,7 +230,7 @@ skills 单测随迁并全绿。
 依赖）；grep 门按代码标识执行（`file_write_paths|services::conflict` → 0），
 `qaqh_workspace::conflict::*` 为合法消费路径，英文注释中的 conflict 一词不回收。
 
-### PR-1-4（B4）投影入 runtime/ringing
+### PR-1-4（B4）投影入 runtime/ringing ✅（projection 并入既有模块 + dashboard 拆分归置，勘误见 §9）
 **现状**：`util/mod.rs:151` `project_turns_from_messages`（及 `:141,163` 两个同族函数）；
 消费方实测**三处**（提案只列一处）：`runtime/src/ringing/conversation_snapshot.rs:21`、
 `runtime/src/ringing/timeline_rebuild.rs:24`、`runtime/tests/timeline_rebuild.rs`；
@@ -429,6 +429,7 @@ workspace lib + serve 集成全绿（含 PR-0-3 修复的那批）。
 | PR-1-7 预想"execute_tools_batch 编排移至 loop 驱动" | **全仓零调用方**（真实路径 = engine_tool 的 push_tool_result_direct 面）；`rebind_store` 唯一职责是向死链注入执行器 | 处置改为删除死链（`ToolExecutorFn`/`ToolExecRequest`/`ToolExecReport`/`rebind_store` ×6 调用点）；store 保留 `pending_tools()` 视图 |
 | PR-1-5 验收 `grep "SessionManager" msgloop → 0` | 与自身步骤 2"注入 `&'static SessionManager`"矛盾（字段/参数必含类型名） | 执行口径 = `SessionManager::global()` 调用清零；注入句柄的类型引用保留至 Phase 3 收敛 |
 | PR-1-8 范围（engine_session reload + init/init_subagent 两处） | `init_subagent` **生产零调用**（唯一提及是 subagent 文档注释）；`init` 仅测试调用 | `init` 改收 `Config` 参数（调用方注入）；`init_subagent` 删除；config crate 新增 `watch::authoritative()`（磁盘权威 + 镜像回退，Option 语义兼容 bootstrap/reload 两端） |
+| PR-1-4："dashboard 移入 runtime（与 projection 同居）" | **依赖方向不可达**：runtime→msgloop，msgloop 5 处 engine 消费者无法反向引用；且 runtime 已存在同名 `ringing::projection`（SnapshotProjector） | 拆分归置：四个工作区状态组装函数（DocInfo/TaskInfo 面）入 `qaqh_workspace::dashboard`（状态属主）；`build_snapshot` 域映射留 msgloop `ringing_v1/dashboard`；project_turns 族并入既有 projection.rs；grep 门按标识执行（`services::|project_turns|DocInfo|file_write_paths` → 0） |
 
 实证复核通过（无修正）：A1 五处行号逐字命中；A2（store.rs:126,809,972 + agent.rs:628 注入）；
 C1（actor.rs 全部行号 + registry.rs 七处散点）；C2 唯一消费方；D1（supervisor Child 拉起 local/WSL 双模式）；

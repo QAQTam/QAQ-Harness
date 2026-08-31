@@ -28,11 +28,8 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use qaqh_client::{
-    ActionRequest, Client, ClientError, ClientHandlers, ClientOptions, CommandOptions,
-    ControlEvent, ConversationCommand, ConversationEvent, RingingCommand, RingingCommandAck,
-    RingingCommandAckStatus, RingingEvent,
-};
+use qaqh_domain::{ControlEvent, ConversationCommand, ConversationEvent};
+use qaqh_ringing::{RingingCommand, RingingEvent};
 // `ContentRef` / `EventBatch`（trait 签名 + transport 事件流）经下方
 // `pub use host::{ContentRef, EventBatch, ..}` 引入。
 use qaqh_workspace::{ToolCallCtx, ToolHandler, ToolManager, ToolResult, ToolRisk};
@@ -40,11 +37,6 @@ use qaqh_workspace::{ToolCallCtx, ToolHandler, ToolManager, ToolResult, ToolRisk
 mod host;
 pub use host::{ContentRef, EventBatch, SubagentHost, host, install_host};
 
-/// Run a future on the shared qaqh-client tokio runtime. Safe from any
-/// non-tokio thread (tool handlers and collector threads are std threads).
-fn rt_block_on<F: std::future::Future>(fut: F) -> F::Output {
-    qaqh_client::runtime_handle().block_on(fut)
-}
 
 /// 子代理固定身份提示：注入到子代理任务文本的 `[SYSTEM]` 段。
 /// 子代理的 base system prompt（`backend_prompt.md`）与主代理同源（同 config
@@ -330,15 +322,11 @@ fn register_subagent_process(name: &str) -> RegistryRef {
     RegistryRef::Local { id }
 }
 
-/// 命令 ACK 是否被 daemon 接受（Accepted）。
-fn ack_accepted(result: &Result<RingingCommandAck, ClientError>) -> bool {
-    matches!(result, Ok(ack) if matches!(ack.status, RingingCommandAckStatus::Accepted))
-}
 
 /// 子代理命令/事件传输抽象：宿主直连与 HTTP/SSE 回连共用同一套 collect 流程。
+/// 子代理命令/事件传输抽象（PR-4-2：legacy HTTP/SSE 回连已删除，仅宿主直连）。
 ///
-/// - [`HostTransport`]：进程内直连（无 lease / 无 HTTP），由 daemon 装配宿主；
-/// - [`HttpTransport`]：旧 daemon HTTP/SSE 回连（宿主不可用时的降级路径）。
+/// - [`HostTransport`]：进程内直连（无 lease / 无 HTTP），由 daemon 装配宿主。
 trait SubagentTransport: Send {
     /// 向某 seed 发送命令。返回是否被 accepted。
     fn send_command(&self, seed: &str, command: RingingCommand) -> Result<bool, String>;
@@ -364,7 +352,7 @@ impl SubagentTransport for HostTransport {
         // 进程内宿主直接执行 close（registry + 临时会话清理），语义一致。
         if matches!(
             &command,
-            RingingCommand::Control(qaqh_client::ControlCommand::SessionClose { .. })
+            RingingCommand::Control(qaqh_domain::ControlCommand::SessionClose { .. })
         ) {
             self.host.close(seed)?;
             return Ok(true);
@@ -382,44 +370,6 @@ impl SubagentTransport for HostTransport {
     }
 
     fn close(&self) {}
-
-    fn events(&self) -> &mpsc::Receiver<EventBatch> {
-        &self.batch_rx
-    }
-}
-
-/// HTTP/SSE 回连传输（降级路径）：包装 `qaqh_client::Client`。
-struct HttpTransport {
-    client: Client,
-    batch_rx: mpsc::Receiver<EventBatch>,
-}
-
-impl SubagentTransport for HttpTransport {
-    fn send_command(&self, seed: &str, command: RingingCommand) -> Result<bool, String> {
-        let result = rt_block_on(self.client.send_command(
-            Some(seed),
-            command,
-            CommandOptions::default(),
-        ));
-        Ok(ack_accepted(&result))
-    }
-
-    fn download_content(&self, seed: &str, reference: &ContentRef) -> Result<Vec<u8>, String> {
-        rt_block_on(self.client.download_content(seed, reference)).map_err(|e| e.to_string())
-    }
-
-    fn attach(&self, seed: &str) -> Result<(), String> {
-        let result = rt_block_on(self.client.attach(seed));
-        if ack_accepted(&result) {
-            Ok(())
-        } else {
-            Err(format!("{:?}", result.map(|a| (a.status, a.code))))
-        }
-    }
-
-    fn close(&self) {
-        self.client.close();
-    }
 
     fn events(&self) -> &mpsc::Receiver<EventBatch> {
         &self.batch_rx
@@ -543,18 +493,13 @@ fn handle_spawn_subagent(ctx: ToolCallCtx) -> ToolResult {
             Box::new(HostTransport { host, batch_rx }) as Box<dyn SubagentTransport>,
         )
     } else {
-        log::warn!(
-            "[SUBAGENT] '{name}' no in-process host — falling back to daemon HTTP/SSE loopback"
-        );
-        let (seed, client, batch_rx) =
-            match spawn_via_http(&tools, model, base_url, max_tokens_opt, workspace) {
-                Ok(spawned) => spawned,
-                Err(err) => return err,
-            };
-        (
-            seed,
-            Box::new(HttpTransport { client, batch_rx }) as Box<dyn SubagentTransport>,
-        )
+        // PR-4-2（Q4a）：legacy daemon HTTP/SSE 回连降级路径已删除——宿主未装配
+        // （非 daemon 进程 / 未 install_host）即失败，不再回连。
+        return ToolResult::error(qaqh_workspace::json_err(
+            "HOST_UNAVAILABLE",
+            "spawn_subagent: no in-process subagent host installed",
+            "Subagent spawning requires the daemon host (install_host).",
+        ));
     };
     log::info!("[SUBAGENT] '{name}' worker seed={seed}");
 
@@ -623,78 +568,6 @@ fn handle_spawn_subagent(ctx: ToolCallCtx) -> ToolResult {
     })))
 }
 
-/// HTTP/SSE 回退路径：连 daemon → `subagent.spawn` action → 返回
-/// `(seed, client, batch_rx)`。宿主不可用（非 daemon 进程 / 单元测试）时走此。
-fn spawn_via_http(
-    tools: &[String],
-    model: Option<&str>,
-    base_url: Option<&str>,
-    max_tokens: Option<u32>,
-    workspace: Option<String>,
-) -> Result<(String, Client, mpsc::Receiver<EventBatch>), ToolResult> {
-    let (batch_tx, batch_rx) = mpsc::channel::<EventBatch>();
-    let handlers = ClientHandlers {
-        on_batch: Arc::new(move |batch| {
-            let _ = batch_tx.send(batch);
-        }),
-        ..Default::default()
-    };
-    let client = match Client::connect(ClientOptions {
-        handlers,
-        launch_daemon_if_missing: false,
-        daemon_path: None,
-        start_timeout: Duration::from_secs(8),
-        remote: None,
-    }) {
-        Ok(c) => c,
-        Err(e) => {
-            return Err(ToolResult::error(qaqh_workspace::json_err(
-                "DAEMON_CONNECT",
-                &format!("spawn_subagent: cannot connect to daemon: {e}"),
-                "Ensure the QAQ-Harness daemon is running.",
-            )));
-        }
-    };
-    let request = ActionRequest::SubagentSpawn {
-        tools: tools.to_vec(),
-        model: model.map(str::to_string),
-        base_url: base_url.map(str::to_string),
-        max_tokens,
-        workspace,
-    };
-    let seed: String = match rt_block_on(client.action(request)) {
-        Ok(value) => match value.get("seed").and_then(|v| v.as_str()) {
-            Some(seed) if !seed.is_empty() => seed.to_string(),
-            _ => {
-                client.close();
-                return Err(ToolResult::error(qaqh_workspace::json_err(
-                    "SPAWN_ERROR",
-                    "spawn_subagent: daemon returned no seed",
-                    "Check daemon logs.",
-                )));
-            }
-        },
-        Err(e) => {
-            client.close();
-            return Err(ToolResult::error(qaqh_workspace::json_err(
-                "SPAWN_ERROR",
-                &format!("spawn_subagent: daemon rejected spawn: {e}"),
-                "Check that the daemon can start agent workers.",
-            )));
-        }
-    };
-    // attach the sub-seed (HTTP/lease 语义)。
-    if let Err(e) = rt_block_on(client.attach(&seed)) {
-        client.close();
-        return Err(ToolResult::error(qaqh_workspace::json_err(
-            "ATTACH_ERROR",
-            &format!("spawn_subagent: attach {seed}: {e}"),
-            "Check daemon lease state.",
-        )));
-    }
-    Ok((seed, client, batch_rx))
-}
-
 /// Background collector: watches the sub-seed's event stream (process-local or
 /// HTTP/SSE, depending on the transport) until a terminal event, a kill
 /// request, or the timeout — mirroring the old stdout-frame collector, but over
@@ -722,7 +595,7 @@ fn collect_subagent_result(
         if registry_ref.killed() {
             log::info!("[SUBAGENT] '{name}' kill requested via process registry — cancelling");
             let cancel = RingingCommand::Conversation(
-                qaqh_client::ConversationCommand::ConversationCancel { turn_id: None },
+                qaqh_domain::ConversationCommand::ConversationCancel { turn_id: None },
             );
             if let Err(e) = transport.send_command(seed, cancel) {
                 log::warn!("[SUBAGENT] '{name}' cancel send failed: {e}");
@@ -808,7 +681,7 @@ fn collect_subagent_result(
                         "[SUBAGENT] '{name}' timeout after {timeout_secs}s (first_event={first_event_logged}) — cancelling sub turn"
                     );
                     let cancel = RingingCommand::Conversation(
-                        qaqh_client::ConversationCommand::ConversationCancel { turn_id: None },
+                        qaqh_domain::ConversationCommand::ConversationCancel { turn_id: None },
                     );
                     if let Err(e) = transport.send_command(seed, cancel) {
                         log::warn!("[SUBAGENT] '{name}' timeout cancel send failed: {e}");
@@ -856,7 +729,7 @@ fn collect_subagent_result(
         // seed 发命令需先建立 owns 关系（SessionResume）。每次重试前重新 attach
         // （SessionResume 幂等），覆盖 lease 过期后的恢复。
         let inject = RingingCommand::Conversation(
-            qaqh_client::ConversationCommand::ConversationSendMessage {
+            qaqh_domain::ConversationCommand::ConversationSendMessage {
                 text: format!(
                     "<qaqh_subagent_result name=\"{name}\" state=\"{state_tag}\" exit=\"{exit_code}\">\n{header}\n{final_answer}\n</qaqh_subagent_result>"
                 ),
@@ -917,7 +790,7 @@ fn collect_subagent_result(
     // 失败仅告警：结果已注入主会话 + 终态已回写注册表，残留不丢数据。
     if let Err(e) = transport.send_command(
         seed,
-        RingingCommand::Control(qaqh_client::ControlCommand::SessionClose {
+        RingingCommand::Control(qaqh_domain::ControlCommand::SessionClose {
             seed: seed.to_string(),
         }),
     ) {

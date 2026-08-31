@@ -489,15 +489,19 @@ workspace lib + serve 集成全绿（含 PR-0-3 修复的那批）。
 
 ## 6. Phase 4 —— 周边归位（激进扫尾）
 
-### PR-4-1（E1）会话工作区单一属主
+### PR-4-1（E1）会话工作区单一属主 ✅ 69c13f4
 - `session/src/workspace.rs`（407 行，`WorkspaceStore`，OnceLock 单例，写
   `{data_dir}/workspaces.json`）——**Q2a**：留在 session 但模块更名 `session::grouping`，
   消除与 `qaqh-workspace` crate 的命名冲突；PR-3-3 之后它成为 cwd 解析唯一权威
   （workspace 不再直读）。
 - 行为不变，仅归属与命名；`qaqh-session` 对外 re-export 同步更名（旧路径 `pub use` 别名
   过渡一个版本）。
+- **完成登记（2026-08-31）**：git mv 纯移动 + lib.rs re-export 更名 +
+  manager.rs 内部引用 ×7 接线；出口 53 targets / 795 passed / 0 failed，
+  clippy 0 error。**勘误**：旧模块路径 `qaqh_session::workspace::` 经 PR-3-3
+  后实测零外部消费方，别名过渡无对象，直接切换。
 
-### PR-4-2（F3）删 subagent legacy fallback
+### PR-4-2（F3）删 subagent legacy fallback ✅（2026-08-31 完成登记见节末）
 - **Q4a**：实测生产唯一宿主是 runtime（`registry.rs:239,251` 全走 `spawn_subagent_inprocess`；
   `host.rs:12` 确认 daemon 装配 `install_host` 一次）。删除 `lib.rs` 内 legacy HTTP/SSE
   fallback（`Client::connect` 直连分支，~`lib.rs:600-680` 区段）；`SubagentHost` trait 的
@@ -505,6 +509,18 @@ workspace lib + serve 集成全绿（含 PR-0-3 修复的那批）。
   domain/ringing 类型，**解除 subagent→client 依赖**。
 - 验收：`grep -n "qaqh-client\|qaqh_client" crates/qaqh-subagent/Cargo.toml` → 0；
   `subagent_inprocess` 全绿。
+**完成登记（2026-08-31）**：
+- 删除 `spawn_via_http`（~70 行）、`HttpTransport` struct+impl、`ack_accepted`、
+  `rt_block_on`（client tokio runtime 借道入口）与宿主缺失时的回退分支——宿主未
+  装配即返回 `HOST_UNAVAILABLE` 错误。
+- 类型直取规范源：`ContentRef` ← qaqh-domain；`EventBatch` ←
+  `qaqh_ringing::RingingEventBatch`（alias 保持 subagent 公开 API 名不变）；
+  `ControlCommand`/`ConversationCommand`/`ControlEvent`/`ConversationEvent` ←
+  qaqh-domain；`RingingCommand`/`RingingEvent` ← qaqh-ringing。Cargo 增
+  domain/ringing 显式依赖、删 qaqh-client。
+- 保留：ureq（serve 模式 /subagent ask/permission 应答转发，非 legacy spawn）。
+- 出口：Cargo grep → 0；`subagent_inprocess` 全绿（53 targets / 795 passed /
+  0 failed）；clippy 0 error。
 
 ### PR-4-3（D1 收尾）serve 形态确认
 - **Q1a**：维持 `[[bin]] name = "qaqh-workspace"`（实测现状，`workspace_supervisor.rs:227`

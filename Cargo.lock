@@ -1942,8 +1942,9 @@ name = "qaqh-subagent"
 version = "1.0.0"
 dependencies = [
  "log",
- "qaqh-client",
  "qaqh-config",
+ "qaqh-domain",
+ "qaqh-ringing",
  "qaqh-workspace",
  "serde",
  "serde_json",

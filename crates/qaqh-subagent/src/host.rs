@@ -5,21 +5,24 @@
 //! 回连自己——直接调用宿主（daemon 进程内 AgentRegistry + RingingHub +
 //! SessionManager）提供的 actor 句柄即可。
 //!
-//! 本 trait 只依赖 `qaqh_client` 已 re-export 的 wire 类型（`RingingCommand`、
-//! `EventBatch` 等），不引用 qaqh-runtime 任何类型，保证依赖方向
-//! `runtime → msgloop → subagent` 不回环。
+//! 本 trait 只依赖 domain/ringing 规范 wire 类型（`RingingCommand`、
+//! `ContentRef`、`EventBatch` 等，PR-4-2 起直接取自 qaqh-domain /
+//! qaqh-ringing），不引用 qaqh-runtime 任何类型，保证依赖方向
+//! `runtime → subagent` 不回环。
 //!
 //! 安装：daemon 装配（`QaqhService::init`）时调用 [`install_host`]；工具
-//! handler 通过 [`host`] 探测。宿主不可用时（如单元测试 / 非 daemon 进程）
-//! 回退旧 HTTP/SSE 路径，保持行为兼容。
+//! handler 通过 [`host`] 探测。宿主不可用（非 daemon 进程 / 单元测试）即
+//! spawn 失败——legacy HTTP/SSE 回连降级路径已随 PR-4-2 删除。
 
 use std::sync::{Arc, Mutex, OnceLock};
 
-use qaqh_client::RingingCommand;
+use qaqh_ringing::RingingCommand;
 
 /// 大内容引用与事件批次（宿主实现 `download_content` / 事件流需要；与 trait
 /// 签名同类型），re-export 供 qaqh-runtime 消费。
-pub use qaqh_client::{ContentRef, EventBatch};
+pub use qaqh_domain::ContentRef;
+// PR-4-2：`EventBatch` 即 ringing 规范类型（此前经 qaqh-client 转手）。
+pub use qaqh_ringing::RingingEventBatch as EventBatch;
 
 /// 进程内子代理宿主演进接口。所有方法都是同步阻塞语义（与工具 worker
 /// 线程的 std 线程模型匹配），由 qaqh-runtime 的 `QaqhService` 提供实现。

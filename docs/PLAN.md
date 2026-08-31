@@ -148,7 +148,7 @@ serve HTTP 后端（`HttpToolExecutionBackend` → `spawn_serve()` → `POST /ex
 > 出口 = 下表 10 条 grep 全空（白名单：各 crate `tests/` 目录与 `#[cfg(test)]` 模块，
 > 白名单明细见 §10.3）+ workspace lib / 关键集成全绿 + clippy 0 error + Z1–Z8 无 diff。
 
-### PR-1-6（A1）message 持久化 Effect 化 —— Phase 1 首个 PR
+### PR-1-6（A1）message 持久化 Effect 化 —— Phase 1 首个 PR ✅ `5fc807c`
 **现状**（实证）：`crates/qaqh-message/src/store.rs:260,270,273,985,987` 五处直接调
 `SessionManager::global()`（save_append / update_compact_context / update_meta /
 save_compact_context / save_full）；`Effect` 枚举仅 `None | CallGate | TurnComplete`。
@@ -168,7 +168,7 @@ save_compact_context / save_full）；`Effect` 枚举仅 `None | CallGate | Turn
    逐字节一致的 JSONL。
 **验收**：`grep -rn "SessionManager" crates/qaqh-message/src` → 0（含 `use` 行）。
 
-### PR-1-7（A2）工具执行编排移出 message
+### PR-1-7（A2）工具执行编排移出 message ✅ `91b6aff`（处置勘误：死代码删除）
 **现状**：`store.rs:126` 持有 `tool_executor: Option<ToolExecutorFn>`；`store.rs:809`
 `execute_tools_batch()`；`store.rs:972` `set_tool_executor()`；执行器在
 `msgloop/src/state/agent.rs:628` 注入。
@@ -419,6 +419,7 @@ workspace lib + serve 集成全绿（含 PR-0-3 修复的那批）。
 | flush 调用面（提案未量化） | flush_meta 17 处 / snapshot_full 3 处调用（+ message 内部各 1 处） | 决定 PersistOp 队列而非逐点改签名 |
 | V3 初判"serve `/execute` 404 回归"（9c946e7/86625a7 嫌疑） | **不成立**：实为 `0946afe` exec 拆分后测试未同步（词表含 exec + 测试载体 exec）；`process_kill_preempts` 已自行回绿 | PR-0-3 处置从"修回归"改为"测试追认" |
 | Z8 词表（登记时 19 工具含 exec） | **18 工具**（exec 拆分退役，`register_exec_for_compat` 不注册） | `default_registry_exposes_the_formal_tool_vocabulary` 期望 vec 已按 18 追认 |
+| PR-1-7 预想"execute_tools_batch 编排移至 loop 驱动" | **全仓零调用方**（真实路径 = engine_tool 的 push_tool_result_direct 面）；`rebind_store` 唯一职责是向死链注入执行器 | 处置改为删除死链（`ToolExecutorFn`/`ToolExecRequest`/`ToolExecReport`/`rebind_store` ×6 调用点）；store 保留 `pending_tools()` 视图 |
 
 实证复核通过（无修正）：A1 五处行号逐字命中；A2（store.rs:126,809,972 + agent.rs:628 注入）；
 C1（actor.rs 全部行号 + registry.rs 七处散点）；C2 唯一消费方；D1（supervisor Child 拉起 local/WSL 双模式）；

@@ -88,7 +88,7 @@ impl SessionManager {
         // Migrate old TOML sessions on first startup of v0.4.0
         crate::migrate::run(&mgr.sessions_dir);
         // Workspace 注册表与 session 存储同根（组织语义，与运行环境 workspace 解耦）。
-        crate::workspace::WorkspaceStore::init(data_dir);
+        crate::grouping::WorkspaceStore::init(data_dir);
         INSTANCE
             .set(Arc::new(mgr))
             .expect("SessionManager already initialized");
@@ -150,7 +150,7 @@ impl SessionManager {
 
         store::remove_from_index(&self.sessions_dir, seed);
         // 同步清理 workspace 账户（会话删除后不留悬空引用）。
-        crate::workspace::WorkspaceStore::global().remove_session(seed);
+        crate::grouping::WorkspaceStore::global().remove_session(seed);
 
         log::info!("SessionManager: deleted session {seed}");
         Ok(())
@@ -286,7 +286,7 @@ impl SessionManager {
         if legacy.is_empty() {
             return None;
         }
-        let canonical = crate::workspace::canonical_cwd(std::path::Path::new(&legacy));
+        let canonical = crate::grouping::canonical_cwd(std::path::Path::new(&legacy));
         self.set_cwd(seed, &canonical, true);
         let _ = std::fs::remove_file(&txt_path);
         Some(canonical)
@@ -391,7 +391,7 @@ impl SessionManager {
         if meta.seed.is_empty() {
             meta.seed = seed.to_string();
         }
-        meta.cwd = Some(crate::workspace::canonical_cwd(std::path::Path::new(cwd)));
+        meta.cwd = Some(crate::grouping::canonical_cwd(std::path::Path::new(cwd)));
         // 非索引会话（子代理继承 workspace 等临时场景）= 临时会话：关闭时
         // 整个目录删除（用完即走）；正规会话（index=true）恒为 false。
         meta.ephemeral = !index;
@@ -406,7 +406,7 @@ impl SessionManager {
         // `index=false` 为子代理临时会话，不进组织归属。
         if index {
             if let Some(cwd) = meta.cwd.as_deref() {
-                crate::workspace::WorkspaceStore::global().attach_by_cwd(seed, cwd);
+                crate::grouping::WorkspaceStore::global().attach_by_cwd(seed, cwd);
             }
         }
     }
@@ -460,14 +460,14 @@ impl SessionManager {
         meta.seed = seed.to_string();
         meta.created_at = now;
         meta.updated_at = now;
-        meta.cwd = cwd.map(|c| crate::workspace::canonical_cwd(std::path::Path::new(c)));
+        meta.cwd = cwd.map(|c| crate::grouping::canonical_cwd(std::path::Path::new(c)));
         if !dir.join("messages.jsonl").exists() {
             let _ = store::append_messages(&dir, &[]);
         }
         let _ = store::write_meta(&dir, &meta);
         store::upsert_index(&self.sessions_dir, &meta);
         if let Some(cwd) = meta.cwd.as_deref() {
-            crate::workspace::WorkspaceStore::global().attach_by_cwd(seed, cwd);
+            crate::grouping::WorkspaceStore::global().attach_by_cwd(seed, cwd);
         }
     }
 

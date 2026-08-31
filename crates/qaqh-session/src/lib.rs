@@ -6,10 +6,10 @@ pub mod manager;
 mod migrate;
 pub mod session_meta;
 pub mod store;
-pub mod workspace;
+pub mod grouping;
 pub use manager::{CompactContext, SessionManager};
 pub use session_meta::SessionMeta;
-pub use workspace::{WorkspaceMeta, WorkspaceStore};
+pub use grouping::{WorkspaceMeta, WorkspaceStore};
 
 /// Free-function seed generator (PR-1-5 / B6): loop crates consume the
 /// helpers without naming the [`SessionManager`] type. Delegates to the

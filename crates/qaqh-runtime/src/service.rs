@@ -1059,14 +1059,15 @@ mod tool_mode_tests {
     }
 
     #[test]
-    fn optional_tool_mode_parses_minimal_dsh() {
-        let (mode, tools) = optional_tool_mode(&serde_json::json!({
-            "tool_mode": "minimal:dsh",
-        }))
-        .unwrap()
-        .unwrap();
-        assert_eq!(mode, "minimal:dsh");
-        assert!(tools.is_empty());
+    fn optional_tool_mode_rejects_deprecated_minimal_dsh() {
+        // minimal:dsh 已随 bash/pwsh 拆分下线：废弃模式必须被 KNOWN_MODES
+        // 白名单拒绝，不得回流。
+        assert!(optional_tool_mode(
+            &serde_json::json!({
+                "tool_mode": "minimal:dsh",
+            })
+        )
+        .is_err());
     }
 
     #[test]

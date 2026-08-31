@@ -57,8 +57,9 @@ pub fn full_system_prompt_with_env(os_info: &str) -> String {
 /// 当前仅保留常量供旧测试兼容，实际不再触发最大化思考。
 pub const MINIMAL_DSH_PROMPT: &str = "You are a helpful software engineer assistant.";
 
-/// 按工具模式选择系统提示。`minimal:dsh` 用极简那一句，其余用完整 prompt。
-/// 模式判定使用 qaqh-types 的单一工具模式契约（BUG-013）。
+/// 按工具模式选择系统提示。minimal:dsh 已下线（is_minimal_dsh 恒 false），
+/// 一切模式（含已废弃名）都走完整 prompt；模式判定使用 qaqh-types 的
+/// 单一工具模式契约（BUG-013）。
 pub fn system_prompt_for_mode(tool_mode: &str) -> String {
     if qaqh_types::is_minimal_dsh(tool_mode) {
         MINIMAL_DSH_PROMPT.to_string()
@@ -146,13 +147,14 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_for_mode_minimal_dsh_is_verbatim() {
-        // 极简模式必须逐字等于 minimal preset 的那一句。
+    fn system_prompt_for_mode_minimal_dsh_falls_back_to_full() {
+        // minimal:dsh 已随 bash/pwsh 拆分下线（is_minimal_dsh 恒 false）：
+        // 废弃模式必须走与 standard 相同的完整 prompt，极简特例不得复活。
         assert_eq!(
             system_prompt_for_mode("minimal:dsh"),
-            "You are a helpful software engineer assistant."
+            system_prompt_for_mode("standard")
         );
-        // 非极简模式仍走完整 prompt（更长）。
+        // 完整 prompt 显著长于已退役的极简句（长度守卫双保险）。
         assert!(system_prompt_for_mode("standard").len() > MINIMAL_DSH_PROMPT.len());
         assert!(system_prompt_for_mode("").len() > MINIMAL_DSH_PROMPT.len());
     }

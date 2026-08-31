@@ -209,7 +209,7 @@ re-export 面删除。
 **验收**：`grep -rn "authorization::\|permission::" crates/qaqh-msgloop/src` → 0；
 `grep -rn "TrustedFolderSet" crates/qaqh-msgloop/src` → 0。
 
-### PR-1-2（B2）技能状态机入 skills
+### PR-1-2（B2）技能状态机入 skills ✅（6dfbefa 类型归位 + 5b8a5c7 状态机搬家）
 **现状**：`state/skill_context.rs` 实测 **830 行**（提案记 ~600）：catalog 快照、激活/去激活、
 token 预算 `MAX_TOTAL_SKILL_TOKENS`。
 **步骤**：整体移入 `qaqh-skills` 新增 `runtime` 子模块；msgloop 只在注入点调用。
@@ -430,6 +430,7 @@ workspace lib + serve 集成全绿（含 PR-0-3 修复的那批）。
 | PR-1-5 验收 `grep "SessionManager" msgloop → 0` | 与自身步骤 2"注入 `&'static SessionManager`"矛盾（字段/参数必含类型名） | 执行口径 = `SessionManager::global()` 调用清零；注入句柄的类型引用保留至 Phase 3 收敛 |
 | PR-1-8 范围（engine_session reload + init/init_subagent 两处） | `init_subagent` **生产零调用**（唯一提及是 subagent 文档注释）；`init` 仅测试调用 | `init` 改收 `Config` 参数（调用方注入）；`init_subagent` 删除；config crate 新增 `watch::authoritative()`（磁盘权威 + 镜像回退，Option 语义兼容 bootstrap/reload 两端） |
 | PR-1-4："dashboard 移入 runtime（与 projection 同居）" | **依赖方向不可达**：runtime→msgloop，msgloop 5 处 engine 消费者无法反向引用；且 runtime 已存在同名 `ringing::projection`（SnapshotProjector） | 拆分归置：四个工作区状态组装函数（DocInfo/TaskInfo 面）入 `qaqh_workspace::dashboard`（状态属主）；`build_snapshot` 域映射留 msgloop `ringing_v1/dashboard`；project_turns 族并入既有 projection.rs；grep 门按标识执行（`services::|project_turns|DocInfo|file_write_paths` → 0） |
+| PR-1-2：R-5 CI grep `grep -c "qaqh-" skills/Cargo.toml → 0` | name 行 `name = "qaqh-skills"` 自名匹配为固有误报（基线时也非 0） | 门按依赖段执行（`grep -A6 '^\[dependencies\]' | grep -c qaqh-` → 0）；技能会话三类型迁 skills 后 types re-export 兼容，types→skills 单向无环 |
 
 实证复核通过（无修正）：A1 五处行号逐字命中；A2（store.rs:126,809,972 + agent.rs:628 注入）；
 C1（actor.rs 全部行号 + registry.rs 七处散点）；C2 唯一消费方；D1（supervisor Child 拉起 local/WSL 双模式）；

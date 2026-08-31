@@ -6,10 +6,10 @@ use std::collections::HashSet;
 
 use qaqh_types::UsageInfo;
 
-use crate::ringing_v1::engine_tool::ToolEngine;
-use crate::ringing_v1::turn_lap::gate::{abort_running_turn, seal_timeline_terminal_round};
-use crate::ringing_v1::types::*;
-use crate::ringing_v1::dashboard;
+use crate::agent::engine_tool::ToolEngine;
+use crate::agent::turn_lap::gate::{abort_running_turn, seal_timeline_terminal_round};
+use crate::agent::types::*;
+use crate::agent::dashboard;
 
 // ── helpers (from engine_turn.rs, duplicated for phase decoupling) ──
 

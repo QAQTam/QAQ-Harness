@@ -29,7 +29,7 @@ use std::sync::atomic::AtomicBool;
 use qaqh_domain::{AskMode, AskQuestion};
 use qaqh_types::UsageInfo;
 
-use crate::state::agent::AgentState;
+use crate::agent::state::agent::AgentState;
 
 // ═══════════════════════════════════════════════════════
 // CancelToken — shared abort flag
@@ -453,7 +453,7 @@ impl SessionBundle {
             let skills = self.agent.session.skills.clone();
             let seed = self.agent.session.seed.clone();
             self.agent
-                .enqueue_meta_op(crate::state::agent::MetaOp::PersistSkills { seed, skills });
+                .enqueue_meta_op(crate::agent::state::agent::MetaOp::PersistSkills { seed, skills });
         }
         self.agent.msg.flush_meta(
             &self.agent.config.model,

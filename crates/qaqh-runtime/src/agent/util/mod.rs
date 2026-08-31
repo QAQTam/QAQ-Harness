@@ -2,7 +2,7 @@
 //! TODO: split into `datetime.rs` (chrono_local_date, chrono_local_datetime, epoch_to_date)
 //! and `format.rs` (resolve_effective_name, has_xml, format_tool_args_display).
 
-use crate::state::agent::AgentState;
+use crate::agent::state::agent::AgentState;
 use qaqh_proto;
 use qaqh_types;
 
@@ -204,7 +204,7 @@ pub(crate) fn build_assistant_message(
 
 /// Emitter-trait version of emit_round_complete for the new Loop architecture.
 pub(crate) fn emit_round_complete_via_emitter(
-    emitter: &dyn crate::ringing_v1::types::Emitter,
+    emitter: &dyn crate::agent::types::Emitter,
     turn_id: &str,
     round_num: u32,
     assistant_msg: &qaqh_types::Message,

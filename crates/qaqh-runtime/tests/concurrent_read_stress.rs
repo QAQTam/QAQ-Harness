@@ -11,7 +11,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use qaqh_domain::{ControlCommand, ControlEvent, ConversationEvent, SessionState, ToolCommand};
-use qaqh_msgloop::state::agent::AgentState;
+use qaqh_runtime::agent::state::agent::AgentState;
 use qaqh_ringing::{
     RingingCommand, RingingEvent, RingingWorkerCommandEnvelope, RingingWorkerEventEnvelope,
 };

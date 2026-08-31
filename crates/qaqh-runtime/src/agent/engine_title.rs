@@ -49,7 +49,7 @@ pub fn maybe_generate_title(ctx: &mut RingContext) {
     // ── ① 立即：截断标题（instant 可见）──
     let fallback = truncate_title(first_user);
     ctx.agent
-        .enqueue_meta_op(crate::state::agent::MetaOp::UpdateTitle {
+        .enqueue_meta_op(crate::agent::state::agent::MetaOp::UpdateTitle {
             seed: seed.clone(),
             title: fallback.clone(),
         });

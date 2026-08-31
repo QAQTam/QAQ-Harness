@@ -10,7 +10,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use super::dashboard;
-use crate::state::agent::PendingApproval;
+use crate::agent::state::agent::PendingApproval;
 use qaqh_domain::{AskMode, AskQuestion};
 
 use super::types::*;
@@ -142,7 +142,7 @@ impl ToolEngine {
         action: &str,
         args: &serde_json::Value,
     ) {
-        let effective_name = crate::util::resolve_effective_name(name, action, args);
+        let effective_name = crate::agent::util::resolve_effective_name(name, action, args);
 
         qaqh_workspace::runtime::set_context(
             &ctx.agent.session.seed,
@@ -395,7 +395,7 @@ impl ToolEngine {
         for tool in tools {
             // 已移除 minimal:dsh PTY（bash_v2 下线），当前恒等。
             // 让权限准入 / prepare_req / handler 全部走内部 key，原生 bash 不参与。
-            let effective_name = crate::state::agent::AgentState::normalize_tool_name_for_mode(
+            let effective_name = crate::agent::state::agent::AgentState::normalize_tool_name_for_mode(
                 &ctx.agent.session.tool_mode,
                 &tool.name,
             );
@@ -545,7 +545,7 @@ impl ToolEngine {
                         &tool.id,
                         &format!(
                             "[timeis: {}]\n[DENIED] {}",
-                            crate::util::chrono_local_datetime(),
+                            crate::agent::util::chrono_local_datetime(),
                             reason
                         ),
                         false,

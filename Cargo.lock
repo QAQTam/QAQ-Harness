@@ -1868,29 +1868,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "qaqh-msgloop"
-version = "1.0.0"
-dependencies = [
- "log",
- "os_pipe",
- "qaqh-config",
- "qaqh-domain",
- "qaqh-gate",
- "qaqh-message",
- "qaqh-proto",
- "qaqh-ringing",
- "qaqh-session",
- "qaqh-skills",
- "qaqh-subagent",
- "qaqh-types",
- "qaqh-workspace",
- "serde_json",
- "tempfile",
- "tiny_http",
- "windows",
-]
-
-[[package]]
 name = "qaqh-proto"
 version = "1.0.0"
 dependencies = [
@@ -1914,22 +1891,27 @@ version = "1.0.0"
 dependencies = [
  "chrono",
  "log",
+ "os_pipe",
  "qaqh-config",
  "qaqh-config-api",
  "qaqh-domain",
+ "qaqh-gate",
  "qaqh-message",
- "qaqh-msgloop",
  "qaqh-proto",
  "qaqh-ringing",
  "qaqh-session",
+ "qaqh-skills",
  "qaqh-subagent",
  "qaqh-types",
  "qaqh-workspace",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
+ "tiny_http",
  "tokio",
  "ureq",
+ "windows",
 ]
 
 [[package]]

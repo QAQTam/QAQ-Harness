@@ -7,8 +7,8 @@ use std::collections::HashSet;
 use qaqh_message::Effect;
 use qaqh_types::{ContentBlock, Message, ToolCall};
 
-use crate::ringing_v1::types::RingContext;
-use crate::util;
+use crate::agent::types::RingContext;
+use crate::agent::util;
 
 /// 一次 parse 阶段的聚合结果（knife-7 A2 step4：从 run_lap 收敛出的贯穿状态）。
 ///

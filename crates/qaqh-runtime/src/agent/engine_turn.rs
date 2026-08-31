@@ -12,9 +12,9 @@ use qaqh_types::UsageInfo;
 
 use super::engine_tool::ToolEngine;
 use super::types::*;
-use crate::ringing_v1::turn_lap::admit as turn_admit;
-use crate::ringing_v1::turn_lap::backfill as turn_backfill;
-use crate::ringing_v1::turn_lap::gate::{
+use crate::agent::turn_lap::admit as turn_admit;
+use crate::agent::turn_lap::backfill as turn_backfill;
+use crate::agent::turn_lap::gate::{
     GateRequestResult, abort_running_turn, gate_request, provider_for, seal_timeline_terminal_round,
 };
 
@@ -894,7 +894,7 @@ impl TurnEngine {
         ctx: &mut RingContext,
     ) -> (
         Vec<qaqh_types::Message>,
-        crate::state::token_calibration::RequestTokenEstimate,
+        crate::agent::state::token_calibration::RequestTokenEstimate,
         String,
         String,
     ) {
@@ -1190,11 +1190,11 @@ impl TurnEngine {
             }
 
             // ── Parse + push assistant message (turn_lap::parse) ──
-            let crate::ringing_v1::turn_lap::parse::ParseOutput {
+            let crate::agent::turn_lap::parse::ParseOutput {
                 parsed,
                 assistant_msg,
                 effect,
-            } = crate::ringing_v1::turn_lap::parse::parse_and_ingest(
+            } = crate::agent::turn_lap::parse::parse_and_ingest(
                 ctx,
                 &turn_id,
                 round_num,
@@ -1278,7 +1278,7 @@ mod tests {
         timeline: RefCell<Vec<(String, String)>>,
     }
 
-    impl crate::ringing_v1::types::Emitter for RecordingEmitter {
+    impl crate::agent::types::Emitter for RecordingEmitter {
         fn emit_domain(&self, event: qaqh_domain::DomainEvent) {
             if let qaqh_domain::DomainEvent::Conversation(
                 qaqh_domain::ConversationEvent::BlockCheckpoint { kind, text, .. },
@@ -1302,7 +1302,7 @@ mod tests {
         first_delta: &str,
         second_delta: &str,
     ) {
-        use crate::ringing_v1::turn_lap::gate::{
+        use crate::agent::turn_lap::gate::{
             CHECKPOINT_TOKEN_INTERVAL, emit_stream_block_checkpoint, reset_stream_block_checkpoint,
         };
         let emitter = RecordingEmitter::default();

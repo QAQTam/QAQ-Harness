@@ -29,7 +29,7 @@ impl InputEngine {
         // Auto-create session on first input
         if ctx.agent.session.seed.is_empty() {
             log::info!("[INPUT] auto-creating session on first user input");
-            crate::state::lifecycle::create_session(ctx.agent);
+            crate::agent::state::lifecycle::create_session(ctx.agent);
             // 新 seed 生成后立即同步，后续 Ringing 事件（TurnStarted 双发、
             // RoundDelta 流式等）才能携带正确路由键。
             ctx.emitter.set_seed(&ctx.agent.session.seed);
@@ -240,7 +240,7 @@ impl InputEngine {
         // Auto-create session on first input (same as user path).
         if ctx.agent.session.seed.is_empty() {
             log::info!("[INPUT] auto-creating session on system injection");
-            crate::state::lifecycle::create_session(ctx.agent);
+            crate::agent::state::lifecycle::create_session(ctx.agent);
             ctx.emitter.set_seed(&ctx.agent.session.seed);
         }
 

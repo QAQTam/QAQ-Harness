@@ -1,5 +1,6 @@
 mod activity;
 mod actor;
+pub mod agent;
 mod host_impl;
 mod lease;
 mod registry;

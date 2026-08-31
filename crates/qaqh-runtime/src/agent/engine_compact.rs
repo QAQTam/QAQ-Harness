@@ -7,7 +7,7 @@
 //! 3. `apply_result()` — synchronous, fast (apply on main thread)
 
 use super::types::*;
-use crate::util;
+use crate::agent::util;
 
 /// Result produced by the background compact thread.
 pub(crate) struct CompactMeta {
@@ -448,7 +448,7 @@ pub(crate) fn run_compact_worker(
     kept_user_count: usize,
     head_user_count: usize,
     context_revision: u64,
-    event_tx: std::sync::mpsc::SyncSender<crate::ringing_v1::types::WriterEvent>,
+    event_tx: std::sync::mpsc::SyncSender<crate::agent::types::WriterEvent>,
     causation_id: Option<String>,
 ) -> CompactMeta {
     let msgs_vec = vec![qaqh_types::Message::user(&prompt)];
@@ -475,7 +475,7 @@ pub(crate) fn run_compact_worker(
                 Some(command_id) => env.with_causation(command_id),
                 None => env,
             };
-            let _ = event_tx.send(crate::ringing_v1::types::WriterEvent::Ringing(env));
+            let _ = event_tx.send(crate::agent::types::WriterEvent::Ringing(env));
         }
         qaqh_gate::StreamEvent::ReasoningDelta(delta) => {
             // legacy CompactDelta reasoning 透传已退役：Ringing 无 reasoning 专用事件，

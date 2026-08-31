@@ -4,10 +4,10 @@
 
 use qaqh_types::UsageInfo;
 
-use crate::ringing_v1::engine_tool::ToolEngine;
-use crate::ringing_v1::types::{Outcome, RingContext};
-use crate::ringing_v1::dashboard;
-use crate::util;
+use crate::agent::engine_tool::ToolEngine;
+use crate::agent::types::{Outcome, RingContext};
+use crate::agent::dashboard;
+use crate::agent::util;
 
 // ── helpers (from engine_turn.rs, duplicated for phase decoupling) ──
 

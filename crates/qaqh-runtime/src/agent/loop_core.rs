@@ -65,7 +65,7 @@ use super::injection::{
 };
 use super::paced_emitter::PacedEmitter;
 use super::types::*;
-use crate::state::agent::AgentState;
+use crate::agent::state::agent::AgentState;
 
 pub fn ringing_command_is_interrupt(env: &qaqh_ringing::RingingWorkerCommandEnvelope) -> bool {
     matches!(

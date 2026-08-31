@@ -1,4 +1,4 @@
-//! qaqh-msgloop: message-loop driver for the agent child process.
+//! qaqh-runtime::agent — agent loop, engines and session state (merged from the former message-loop crate, PR-2-1).
 //!
 //! The primary production Loop is [`ringing_v1::loop_core::Loop`] (Ringing V1 architecture).
 //! It reads Ringing worker command envelopes (`RingingWorkerCommandEnvelope`) via an mpsc channel fed by a background I/O
@@ -30,6 +30,20 @@
 //! Ringing V1 引擎模块：`ringing_v1/engine_*.rs`（固定模块集合，无独立
 //! `Engine` trait；命令经 `dispatch_ringing_one` 直接路由到各引擎方法）。
 
-pub mod ringing_v1;
+
+pub(crate) mod dashboard;
+pub mod engine_compact;
+pub mod engine_input;
+pub mod engine_misc;
+pub mod engine_session;
+pub mod engine_title;
+pub mod engine_tool;
+pub mod engine_turn;
+pub mod injection;
+pub mod loop_core;
+pub mod paced_emitter;
+pub(crate) mod turn_lap;
+pub mod types;
+pub mod wire;
 pub mod state;
 pub mod util;

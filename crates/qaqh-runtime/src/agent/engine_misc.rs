@@ -11,7 +11,7 @@
 //! BEFORE calling `handle_undo()`.
 
 use super::dashboard;
-use crate::state::agent::{AgentState, MetaOp};
+use crate::agent::state::agent::{AgentState, MetaOp};
 
 use super::types::Emitter;
 

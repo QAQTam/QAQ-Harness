@@ -1,7 +1,7 @@
 //! Single source of truth for per-session tool modes.
 //!
 //! BUG-013 / REFACTOR-ROADMAP 刀6: the preset table used to live in
-//! `qaqh-msgloop`, the daemon validation whitelist lived in `qaqh-runtime`,
+//! `qaqh-runtime::agent`, the daemon validation whitelist lived in `qaqh-runtime`,
 //! the prompt special-case lived in `qaqh-config`, and every shell invented
 //! its own `minimal:dsh` literal. Adding or changing a preset therefore
 //! touched four crates.

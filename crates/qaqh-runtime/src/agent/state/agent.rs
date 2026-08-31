@@ -517,7 +517,7 @@ impl AgentState {
             // prompt would break the provider prefix cache once per day.
             parts.push(format!(
                 "<today>{}</today>",
-                crate::util::chrono_local_date()
+                crate::agent::util::chrono_local_date()
             ));
             let fs = qaqh_workspace::file_state::summary();
             if !fs.is_empty() {

@@ -4,7 +4,7 @@
 //! Delegates to: lifecycle.rs for core session operations.
 
 use super::types::*;
-use crate::state::lifecycle;
+use crate::agent::state::lifecycle;
 
 /// Number of recent turns sent on session restore.
 const INITIAL_LOAD_COUNT: usize = 20;
@@ -17,7 +17,7 @@ impl SessionEngine {
     }
 
     /// Create a new session with a fresh seed.
-    pub fn create(&self, agent: &mut crate::state::agent::AgentState, _cancel: &CancelToken) {
+    pub fn create(&self, agent: &mut crate::agent::state::agent::AgentState, _cancel: &CancelToken) {
         lifecycle::create_session(agent);
         qaqh_workspace::runtime::set_context(&agent.session.seed, agent.config.permission_level);
     }
@@ -25,7 +25,7 @@ impl SessionEngine {
     /// Create a new session with a pre-set seed (from CLI --seed).
     pub fn create_with_seed(
         &self,
-        agent: &mut crate::state::agent::AgentState,
+        agent: &mut crate::agent::state::agent::AgentState,
         _cancel: &CancelToken,
     ) {
         lifecycle::create_session_with_seed(agent);
@@ -35,7 +35,7 @@ impl SessionEngine {
     /// Resume an existing session. Returns false if the session doesn't exist.
     pub fn resume(
         &self,
-        agent: &mut crate::state::agent::AgentState,
+        agent: &mut crate::agent::state::agent::AgentState,
         seed: &str,
         _cancel: &CancelToken,
     ) -> bool {
@@ -69,7 +69,7 @@ impl SessionEngine {
     /// Reload config from disk and apply to agent.
     pub fn reload_config(
         &self,
-        agent: &mut crate::state::agent::AgentState,
+        agent: &mut crate::agent::state::agent::AgentState,
         _cancel: &CancelToken,
     ) {
         // P2-D1：磁盘为权威源；磁盘读失败时回退单写口广播的最新镜像。
@@ -92,7 +92,7 @@ impl SessionEngine {
     /// （P2-D1 落地 watch + `From<&Config>` 后本函数将被整体快照赋值取代。）
     pub(crate) fn apply_config(
         cfg: qaqh_config::Config,
-        agent: &mut crate::state::agent::AgentState,
+        agent: &mut crate::agent::state::agent::AgentState,
     ) {
         agent.config.api_key = cfg.api_key;
         agent.config.model = cfg.model;
@@ -132,7 +132,7 @@ mod tests {
             permission_level: 3,
             ..Default::default()
         };
-        let mut agent = crate::state::agent::AgentState::new(qaqh_config::Config {
+        let mut agent = crate::agent::state::agent::AgentState::new(qaqh_config::Config {
             api_key: "sk-old".into(),
             model: "model-old".into(),
             base_url: "https://old.example/v1".into(),

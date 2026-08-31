@@ -9,12 +9,13 @@ qaqh-config = { path = "../qaqh-config" }
 qaqh-config-api = { path = "../qaqh-config-api" }
 qaqh-domain = { path = "../qaqh-domain" }
 qaqh-message = { path = "../qaqh-message" }
-qaqh-msgloop = { path = "../qaqh-msgloop" }
 qaqh-proto = { path = "../qaqh-proto" }
 qaqh-ringing = { path = "../qaqh-ringing" }
 qaqh-session = { path = "../qaqh-session" }
 qaqh-subagent = { path = "../qaqh-subagent" }
 qaqh-workspace = { path = "../qaqh-workspace" }
+qaqh-gate = { path = "../qaqh-gate" }
+qaqh-skills = { path = "../qaqh-skills" }
 qaqh-types = { path = "../qaqh-types" }
 log = "0.4"
 chrono = { version = "0.4", features = ["clock"] }
@@ -26,7 +27,16 @@ tokio = { version = "1", features = ["sync", "time"] }
 
 [features]
 default = ["memory"]
-memory = ["qaqh-msgloop/memory"]
+# Kept as a compatibility no-op after removing the experimental vector backend.
+memory = []
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Registry", "Win32_System_WinRT", "Win32_Security", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "UI_Notifications", "Data_Xml_Dom", "Foundation_Collections"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+os_pipe = "1"
+tiny_http = "0.12"

@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use qaqh_types::UsageInfo;
 
-use crate::ringing_v1::types::{Emitter, LoopPhase, Outcome, RingContext};
-use crate::util;
+use crate::agent::types::{Emitter, LoopPhase, Outcome, RingContext};
+use crate::agent::util;
 
 // ── 流式节流常量（原 engine_turn.rs） ──
 
@@ -235,7 +235,7 @@ pub(crate) fn seal_timeline_terminal_round(
     // 标题生成挂点：仅 Completed 终态触发（取消/失败不生成）；幂等由
     // engine_title 内部冻结守卫保证（首 turn 后一次）。
     if state == qaqh_domain::TimelineTurnState::Completed {
-        crate::ringing_v1::engine_title::maybe_generate_title(ctx);
+        crate::agent::engine_title::maybe_generate_title(ctx);
     }
 }
 
@@ -445,7 +445,7 @@ pub(crate) fn gate_request(
                     ctx.agent.session.record_usage(u);
                     if !ctx.agent.ephemeral {
                         ctx.agent
-                            .enqueue_meta_op(crate::state::agent::MetaOp::PersistUsage {
+                            .enqueue_meta_op(crate::agent::state::agent::MetaOp::PersistUsage {
                                 seed: ctx.agent.session.seed.clone(),
                                 totals: ctx.agent.session.usage_totals.clone(),
                                 last_usage: ctx.agent.session.last_usage.clone(),

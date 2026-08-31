@@ -37,7 +37,7 @@ pub(crate) enum ActorKind {
 /// Shared by the legacy process worker and the in-process actor so the two
 /// paths cannot drift. Explicit overrides win over settings defaults.
 pub(crate) fn apply_subagent_config(
-    agent: &mut qaqh_msgloop::state::agent::AgentState,
+    agent: &mut crate::agent::state::agent::AgentState,
     model: Option<&str>,
     base_url: Option<&str>,
     max_tokens: Option<u32>,
@@ -72,7 +72,7 @@ fn short_seed(seed: &str) -> String {
 
 /// Channel-side Ringing event consumer for an in-process actor.
 pub(crate) fn run_inprocess_event_reader(
-    event_rx: Receiver<qaqh_msgloop::ringing_v1::types::WriterEvent>,
+    event_rx: Receiver<crate::agent::types::WriterEvent>,
     seed: String,
     generation: u64,
     activity: SessionActivityTracker,
@@ -100,18 +100,18 @@ fn publish_worker_event(
     activity: &SessionActivityTracker,
     seed: &str,
     generation: u64,
-    event: qaqh_msgloop::ringing_v1::types::WriterEvent,
+    event: crate::agent::types::WriterEvent,
 ) {
     let Some(hub) = hub else {
         return;
     };
     match event {
-        qaqh_msgloop::ringing_v1::types::WriterEvent::Timeline(env) => {
+        crate::agent::types::WriterEvent::Timeline(env) => {
             if let Err(error) = hub.publish_timeline(&env.seed, env.intent) {
                 log::error!("[timeline] rejected intent for {}: {error}", env.seed);
             }
         }
-        qaqh_msgloop::ringing_v1::types::WriterEvent::Ringing(env) => {
+        crate::agent::types::WriterEvent::Ringing(env) => {
             let domain: qaqh_domain::DomainEvent = env.event.into();
             let domain = crate::registry::externalize_large_content(hub, &env.seed, domain);
             let _ =
@@ -130,9 +130,9 @@ fn publish_worker_event(
 pub(crate) fn run_actor(
     seed: String,
     kind: ActorKind,
-    cmd_rx: Receiver<qaqh_msgloop::ringing_v1::types::WorkerCommand>,
-    event_tx: SyncSender<qaqh_msgloop::ringing_v1::types::WriterEvent>,
-    cancel: qaqh_msgloop::ringing_v1::types::CancelToken,
+    cmd_rx: Receiver<crate::agent::types::WorkerCommand>,
+    event_tx: SyncSender<crate::agent::types::WriterEvent>,
+    cancel: crate::agent::types::CancelToken,
     writer_dead: Arc<std::sync::atomic::AtomicBool>,
     workspace_mode: String,
     workspace_env: Option<(String, String)>,
@@ -163,13 +163,13 @@ pub(crate) fn run_actor(
         // 权威配置读收敛 config 单入口（PR-1-8 同向）；图片能力快照
         // 就地注入（PR-1-10：actor 进程的工具调用路径零磁盘读）。
         let agent_config = qaqh_config::watch::authoritative().unwrap_or_default();
-        let mut agent = qaqh_msgloop::state::agent::AgentState::new(agent_config);
+        let mut agent = crate::agent::state::agent::AgentState::new(agent_config);
         agent.refresh_image_capability();
 
         // Both session actors and subagent actors use an actor-private
         // ToolManager so daemon-side `skills.list_tools` stays stable while a
         // loop is running.
-        let registrars = qaqh_msgloop::state::agent::agent_tool_registrars();
+        let registrars = crate::agent::state::agent::agent_tool_registrars();
         let mut manager = qaqh_workspace::registration::build_tool_manager(&registrars);
         let allowed_tools: Vec<String> = match &kind {
             ActorKind::Subagent(spec) => {
@@ -228,7 +228,7 @@ pub(crate) fn run_actor(
             }
         }
 
-        let mut loop_ = qaqh_msgloop::ringing_v1::loop_core::Loop::from_channels(
+        let mut loop_ = crate::agent::loop_core::Loop::from_channels(
             agent,
             cmd_rx,
             event_tx,
@@ -255,9 +255,9 @@ pub(crate) fn run_actor(
 pub(crate) fn run_subagent_actor(
     seed: String,
     spec: SubagentSpawnSpec,
-    cmd_rx: Receiver<qaqh_msgloop::ringing_v1::types::WorkerCommand>,
-    event_tx: SyncSender<qaqh_msgloop::ringing_v1::types::WriterEvent>,
-    cancel: qaqh_msgloop::ringing_v1::types::CancelToken,
+    cmd_rx: Receiver<crate::agent::types::WorkerCommand>,
+    event_tx: SyncSender<crate::agent::types::WriterEvent>,
+    cancel: crate::agent::types::CancelToken,
     writer_dead: Arc<std::sync::atomic::AtomicBool>,
     workspace_mode: String,
     workspace_env: Option<(String, String)>,
@@ -281,9 +281,9 @@ pub(crate) fn run_session_actor(
     resume_seed: Option<String>,
     new_seed: Option<String>,
     timeline_turn_count: u64,
-    cmd_rx: Receiver<qaqh_msgloop::ringing_v1::types::WorkerCommand>,
-    event_tx: SyncSender<qaqh_msgloop::ringing_v1::types::WriterEvent>,
-    cancel: qaqh_msgloop::ringing_v1::types::CancelToken,
+    cmd_rx: Receiver<crate::agent::types::WorkerCommand>,
+    event_tx: SyncSender<crate::agent::types::WriterEvent>,
+    cancel: crate::agent::types::CancelToken,
     writer_dead: Arc<std::sync::atomic::AtomicBool>,
     workspace_mode: String,
     workspace_env: Option<(String, String)>,

@@ -522,10 +522,20 @@ workspace lib + serve 集成全绿（含 PR-0-3 修复的那批）。
 - 出口：Cargo grep → 0；`subagent_inprocess` 全绿（53 targets / 795 passed /
   0 failed）；clippy 0 error。
 
-### PR-4-3（D1 收尾）serve 形态确认
+### PR-4-3（D1 收尾）serve 形态确认 ✅（2026-08-31 确认登记，无代码改动）
 - **Q1a**：维持 `[[bin]] name = "qaqh-workspace"`（实测现状，`workspace_supervisor.rs:227`
   以同目录 `Child` 拉起）。本 PR 只补 Z6 跨版本走查清单（§10.4）并确认 `[[bin]]` 依赖 lib
   的构建边界无泄漏。不新增 crate。
+**确认登记（2026-08-31）**：
+- `[[bin]] name = "qaqh-workspace"` 现状确认（workspace Cargo.toml:7-8）。
+- 拉起链确认：supervisor `current_exe().parent()/qaqh-workspace(.exe)` → 缺失回退
+  PATH；token 经环境变量注入（防命令行泄露）；`serve --port 0` 随机端口；本地
+  二进制经 daemon-manifest.json SHA-256 完整性校验；WSL 模式经 wsl.exe bash -lc
+  （发行版内 PATH 可达）。
+- 构建边界确认：`main.rs` 仅消费 lib 公开面（runtime/workspace/journal/serve/
+  execution 模块），无 pub(crate) 泄漏；serve 集成测试经 lib API（axum_server），
+  Z 面无涉及。
+- §10.4 走查清单已含跨版本抽查项（第 5 条），CI 无 WSL 时按阶段出口手动过一遍。
 
 ### PR-4-4 卫生项
 - msgloop 残留引用清零复核；`agent/util` 瘦身；各 crate lib.rs 模块表与实际对齐；

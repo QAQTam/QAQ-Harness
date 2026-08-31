@@ -15,6 +15,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+pub mod session_state;
+pub use session_state::{
+    SkillSessionEntry, SkillSessionEntryState, SkillSessionStateV2,
+};
+
 /// Magic marker that identifies a SKILL.md file as an active skill definition.
 pub const ACTIVATION_MARKER: &str = "[QAQH_SKILL_V1]";
 /// Maximum skill body size in bytes (512 KB). Larger files are rejected.

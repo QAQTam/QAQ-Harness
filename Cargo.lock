@@ -1971,6 +1971,7 @@ dependencies = [
 name = "qaqh-types"
 version = "1.0.0"
 dependencies = [
+ "qaqh-skills",
  "serde",
  "serde_json",
  "tokenizers",

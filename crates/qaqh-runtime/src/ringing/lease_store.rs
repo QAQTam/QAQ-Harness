@@ -163,22 +163,40 @@ mod tests {
 
     #[test]
     fn sse_replay_is_scoped_to_session_seed_leases() {
-        use std::sync::{Arc, Mutex};
+        use crate::ringing::hub::ChannelReplay;
         use qaqh_domain::RingingChannel;
         use qaqh_ringing::{RingingEvent, RingingEventEnvelope, RingingResetRequired};
-        use crate::ringing::hub::ChannelReplay;
+        use std::sync::{Arc, Mutex};
 
         let leases = Arc::new(Mutex::new(RingingLeaseStore::new()));
         leases.lock().unwrap().open("cs-1".into(), "ci-1".into());
         assert!(leases.lock().unwrap().attach_seed("cs-1", "seed-a"));
 
         let event_a = RingingEventEnvelope::new(
-            "seed-a", 1, 1, 1, "event-a",
-            RingingEvent::Tool(qaqh_domain::ToolEvent::ToolStarted { tool_call_id: "call-a".into(), turn_id: "turn-a".into(), round_num: 0, name: "exec".into() }),
+            "seed-a",
+            1,
+            1,
+            1,
+            "event-a",
+            RingingEvent::Tool(qaqh_domain::ToolEvent::ToolStarted {
+                tool_call_id: "call-a".into(),
+                turn_id: "turn-a".into(),
+                round_num: 0,
+                name: "exec".into(),
+            }),
         );
         let event_b = RingingEventEnvelope::new(
-            "seed-b", 2, 1, 1, "event-b",
-            RingingEvent::Tool(qaqh_domain::ToolEvent::ToolStarted { tool_call_id: "call-b".into(), turn_id: "turn-b".into(), round_num: 0, name: "exec".into() }),
+            "seed-b",
+            2,
+            1,
+            1,
+            "event-b",
+            RingingEvent::Tool(qaqh_domain::ToolEvent::ToolStarted {
+                tool_call_id: "call-b".into(),
+                turn_id: "turn-b".into(),
+                round_num: 0,
+                name: "exec".into(),
+            }),
         );
         let replay = ChannelReplay {
             events: vec![event_a, event_b],
@@ -190,8 +208,12 @@ mod tests {
         // replicate filter_replay_for_session logic (owns_seed)
         let mut leases_guard = leases.lock().unwrap();
         let mut filtered = replay;
-        filtered.events.retain(|e| leases_guard.owns_seed("cs-1", &e.seed));
-        filtered.resets.retain(|r| leases_guard.owns_seed("cs-1", &r.seed));
+        filtered
+            .events
+            .retain(|e| leases_guard.owns_seed("cs-1", &e.seed));
+        filtered
+            .resets
+            .retain(|r| leases_guard.owns_seed("cs-1", &r.seed));
         assert_eq!(filtered.events.len(), 1);
         assert_eq!(filtered.events[0].seed, "seed-a");
         assert_eq!(filtered.resets.len(), 1);

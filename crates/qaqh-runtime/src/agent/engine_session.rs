@@ -17,7 +17,11 @@ impl SessionEngine {
     }
 
     /// Create a new session with a fresh seed.
-    pub fn create(&self, agent: &mut crate::agent::state::agent::AgentState, _cancel: &CancelToken) {
+    pub fn create(
+        &self,
+        agent: &mut crate::agent::state::agent::AgentState,
+        _cancel: &CancelToken,
+    ) {
         lifecycle::create_session(agent);
     }
 

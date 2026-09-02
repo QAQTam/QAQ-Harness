@@ -4,8 +4,8 @@
 
 pub mod confirm_apply;
 pub mod conflict;
-pub mod dashboard;
 pub mod copy_range;
+pub mod dashboard;
 pub mod exec;
 pub mod grep_tool;
 pub mod pending;
@@ -61,12 +61,12 @@ pub use manager::{ToolExecMeta, ToolExecReport, ToolManager, ToolStats};
 // PR-1-1 / B1: authorization & permission vocabulary at the crate root —
 // loop-side references stay `qaqh_workspace::X` without naming submodules.
 pub use authorization::{
-    admit, authorize_call, trust_folder, Admission, ApprovalError, AuthorizedToolCall,
-    PermissionChallenge, ToolInvocation,
+    Admission, ApprovalError, AuthorizedToolCall, PermissionChallenge, ToolInvocation, admit,
+    authorize_call, trust_folder,
 };
 pub use permission::{
-    classify_risk, extract_target_paths, patch_target_paths, PermissionDecision, PermissionLevel,
-    PermissionRisk, ToolCategory, TrustedFolderSet,
+    PermissionDecision, PermissionLevel, PermissionRisk, ToolCategory, TrustedFolderSet,
+    classify_risk, extract_target_paths, patch_target_paths,
 };
 pub use safety::SafetyVerdict;
 
@@ -290,6 +290,17 @@ static SESSION_CANCELS: LazyLock<Mutex<HashMap<String, bool>>> =
 pub fn set_session_cancel(session: &str, value: bool) {
     let mut guard = SESSION_CANCELS.lock().unwrap_or_else(|e| e.into_inner());
     guard.insert(session.to_string(), value);
+}
+
+/// Remove the session's cancel entry entirely（会话关闭后的规范清理入口）。
+/// `set_session_cancel(_, false)` 只把值置假、表项仍在——种子频繁进出的
+/// 场景（临时子代理、idle unload）会让 SESSION_CANCELS 无界增长；关闭
+/// 路径整项移除，保证键控表规模与活跃会话数同阶。
+pub fn remove_session_cancel(session: &str) {
+    SESSION_CANCELS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(session);
 }
 
 fn session_cancelled(session: &str) -> bool {

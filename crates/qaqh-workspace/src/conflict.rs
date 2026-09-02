@@ -73,7 +73,9 @@ fn collect_paths(args: &serde_json::Value, paths: &mut Vec<String>) {
 
 /// Detect same-file write conflicts among pending tools and group them
 /// into serial execution sets. Returns (serial_groups, serial_after_indices).
-pub fn resolve_write_conflicts(pending: &[(String, serde_json::Value)]) -> (Vec<Vec<usize>>, HashSet<usize>) {
+pub fn resolve_write_conflicts(
+    pending: &[(String, serde_json::Value)],
+) -> (Vec<Vec<usize>>, HashSet<usize>) {
     let mut file_writers: HashMap<String, Vec<usize>> = HashMap::new();
     for (i, (name, args)) in pending.iter().enumerate() {
         for path in file_write_paths(name, args) {
@@ -183,10 +185,7 @@ mod tests {
 
     #[test]
     fn independent_file_mutations_remain_parallel() {
-        let pending = vec![
-            tool("write", "src/a.rs"),
-            tool("edit_file", "src/b.rs"),
-        ];
+        let pending = vec![tool("write", "src/a.rs"), tool("edit_file", "src/b.rs")];
 
         let (groups, serial_after) = resolve_write_conflicts(&pending);
 

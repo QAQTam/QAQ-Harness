@@ -6,10 +6,10 @@ use std::collections::HashSet;
 
 use qaqh_types::UsageInfo;
 
+use crate::agent::dashboard;
 use crate::agent::engine_tool::ToolEngine;
 use crate::agent::turn_lap::gate::{abort_running_turn, seal_timeline_terminal_round};
 use crate::agent::types::*;
-use crate::agent::dashboard;
 
 // ── helpers (from engine_turn.rs, duplicated for phase decoupling) ──
 
@@ -81,6 +81,10 @@ pub(crate) fn execute_admitted_batch(
     round_num: u32,
 ) -> bool {
     const MAX_PARALLEL_TOOL_WORKERS: usize = 4;
+    // L3 outbox: execution facts are recorded inside the tool worker thread,
+    // right after the tool returns, so a kill between "tool ran" and "result
+    // persisted" is still distinguishable from "tool never ran".
+    let outbox_seed = ctx.agent.session.seed.clone();
     admitted.sort_by_key(|item| {
         tool_call_order
             .iter()
@@ -110,6 +114,8 @@ pub(crate) fn execute_admitted_batch(
                 .spawn({
                     let auth = admitted.auth;
                     let id = call_id.clone();
+                    let outbox_seed = outbox_seed.clone();
+                    let tool_label = auth.tool_name().to_string();
                     // Tool workers run on spawned threads: reinstall the
                     // actor thread's per-actor tool scope (context /
                     // manager / mode / sandbox) so concurrent actors each
@@ -118,6 +124,12 @@ pub(crate) fn execute_admitted_batch(
                     move || {
                         let _scope = actor_scope.install();
                         let result = qaqh_workspace::execution::execute_authorized(*auth, Some(tx));
+                        crate::agent::tool_outbox::record(
+                            &outbox_seed,
+                            &id,
+                            &tool_label,
+                            result.success,
+                        );
                         (
                             id,
                             result.content,
@@ -211,19 +223,30 @@ pub(crate) fn execute_admitted_batch(
         let actor_scope = qaqh_workspace::runtime::ActorToolScope::capture();
         let handle = std::thread::Builder::new()
             .stack_size(4 * 1024 * 1024)
-            .spawn(move || {
-                let _scope = actor_scope.install();
-                let result = qaqh_workspace::execution::execute_authorized(
-                    *admitted.auth,
-                    Some(progress_tx),
-                );
-                (
-                    result.content,
-                    result.success,
-                    result.result,
-                    result.code_delta,
-                    result.skill_effects,
-                )
+            .spawn({
+                let outbox_seed = outbox_seed.clone();
+                let cid = call_id.clone();
+                let tool_label = tool_name.clone();
+                move || {
+                    let _scope = actor_scope.install();
+                    let result = qaqh_workspace::execution::execute_authorized(
+                        *admitted.auth,
+                        Some(progress_tx),
+                    );
+                    crate::agent::tool_outbox::record(
+                        &outbox_seed,
+                        &cid,
+                        &tool_label,
+                        result.success,
+                    );
+                    (
+                        result.content,
+                        result.success,
+                        result.result,
+                        result.code_delta,
+                        result.skill_effects,
+                    )
+                }
             })
             .expect("tool thread spawn");
         tool.drain_progress_external(ctx, progress_rx, turn_id, round_num);
@@ -486,6 +509,7 @@ pub(crate) fn admit_and_dispatch(
     }
 
     // ── Inline admitted-batch execution (verbatim from run_lap) ──
+    let outbox_seed = ctx.agent.session.seed.clone();
     let mut ordered_skill_effects = Vec::new();
     let (mut parallel_authorized, serial_authorized): (Vec<_>, Vec<_>) = admission
         .authorized
@@ -502,7 +526,7 @@ pub(crate) fn admit_and_dispatch(
         let batch_len = parallel_authorized.len().min(MAX_PARALLEL_TOOL_WORKERS);
         let batch: Vec<_> = parallel_authorized.drain(..batch_len).collect();
         let (progress_tx, progress_rx) = qaqh_workspace::bounded_exec_progress_channel();
-        let mut handles: Vec<(String, std::thread::JoinHandle<_>)> = Vec::new();
+        let mut handles: Vec<(String, String, std::thread::JoinHandle<_>)> = Vec::new();
 
         for admitted in batch {
             let tx = progress_tx.clone();
@@ -517,10 +541,18 @@ pub(crate) fn admit_and_dispatch(
                 .spawn({
                     let auth = admitted.auth;
                     let cid = call_id.clone();
+                    let outbox_seed = outbox_seed.clone();
+                    let tool_label = auth.tool_name().to_string();
                     let actor_scope = qaqh_workspace::runtime::ActorToolScope::capture();
                     move || {
                         let _scope = actor_scope.install();
                         let result = qaqh_workspace::execution::execute_authorized(*auth, Some(tx));
+                        crate::agent::tool_outbox::record(
+                            &outbox_seed,
+                            &cid,
+                            &tool_label,
+                            result.success,
+                        );
                         (
                             cid,
                             result.content,
@@ -532,7 +564,7 @@ pub(crate) fn admit_and_dispatch(
                     }
                 })
                 .expect("tool thread spawn");
-            handles.push((call_id, handle));
+            handles.push((call_id, tool_name, handle));
         }
         drop(progress_tx);
 
@@ -541,7 +573,7 @@ pub(crate) fn admit_and_dispatch(
 
         // Collect results
         let cancelled = ctx.cancel.is_set();
-        for (call_id, h) in handles {
+        for (call_id, tool_name, h) in handles {
             if cancelled {
                 let _ = h.join(); // reap
             } else {
@@ -568,6 +600,26 @@ pub(crate) fn admit_and_dispatch(
                                     files_created: delta.files_created,
                                     files_deleted: delta.files_deleted,
                                     file: delta.file.clone(),
+                                },
+                            ));
+                        }
+                        // Instant refresh for todo tools（与 execute_admitted_batch 保持一致）
+                        if matches!(tool_name.as_str(), "todo") {
+                            ctx.emitter.emit_domain(qaqh_domain::DomainEvent::Control(
+                                qaqh_domain::ControlEvent::DashboardUpdated {
+                                    hp_connected: true,
+                                    session_seed: ctx.agent.session.seed.clone(),
+                                    tool_calls_total: 0,
+                                    tool_failures: 0,
+                                    current_phase: "single".into(),
+                                    streaming: false,
+                                },
+                            ));
+                            ctx.emitter.emit_domain(qaqh_domain::DomainEvent::Control(
+                                qaqh_domain::ControlEvent::DashboardSnapshot {
+                                    snapshot: dashboard::build_snapshot(
+                                        ctx.agent.session.seed.clone(),
+                                    ),
                                 },
                             ));
                         }
@@ -601,11 +653,20 @@ pub(crate) fn admit_and_dispatch(
             .stack_size(4 * 1024 * 1024)
             .spawn({
                 let auth = admitted.auth;
+                let outbox_seed = outbox_seed.clone();
+                let cid = call_id.clone();
+                let tool_label = auth.tool_name().to_string();
                 let actor_scope = qaqh_workspace::runtime::ActorToolScope::capture();
                 move || {
                     let _scope = actor_scope.install();
                     let result =
                         qaqh_workspace::execution::execute_authorized(*auth, Some(progress_tx));
+                    crate::agent::tool_outbox::record(
+                        &outbox_seed,
+                        &cid,
+                        &tool_label,
+                        result.success,
+                    );
                     (
                         result.content,
                         result.success,
@@ -640,6 +701,24 @@ pub(crate) fn admit_and_dispatch(
                             files_created: delta.files_created,
                             files_deleted: delta.files_deleted,
                             file: delta.file.clone(),
+                        },
+                    ));
+                }
+                // Instant refresh for todo tools（与 execute_admitted_batch 保持一致）
+                if matches!(tool_name.as_str(), "todo") {
+                    ctx.emitter.emit_domain(qaqh_domain::DomainEvent::Control(
+                        qaqh_domain::ControlEvent::DashboardUpdated {
+                            hp_connected: true,
+                            session_seed: ctx.agent.session.seed.clone(),
+                            tool_calls_total: 0,
+                            tool_failures: 0,
+                            current_phase: "single".into(),
+                            streaming: false,
+                        },
+                    ));
+                    ctx.emitter.emit_domain(qaqh_domain::DomainEvent::Control(
+                        qaqh_domain::ControlEvent::DashboardSnapshot {
+                            snapshot: dashboard::build_snapshot(ctx.agent.session.seed.clone()),
                         },
                     ));
                 }

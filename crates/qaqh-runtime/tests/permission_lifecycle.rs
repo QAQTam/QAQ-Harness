@@ -17,10 +17,10 @@ use qaqh_domain::{
     ControlCommand, ControlEvent, ConversationCommand, ConversationEvent, SessionState,
     ToolCommand, ToolEvent,
 };
-use qaqh_runtime::agent::state::agent::AgentState;
 use qaqh_ringing::{
     RingingCommand, RingingEvent, RingingWorkerCommandEnvelope, RingingWorkerEventEnvelope,
 };
+use qaqh_runtime::agent::state::agent::AgentState;
 use serde_json::json;
 use tiny_http::{Header, Response, Server};
 
@@ -601,7 +601,10 @@ fn llm_four_pending_bash_calls_defer_execution_until_all_resolved() {
     run_case(
         1,
         temp.path(),
-        vec![tool_round(&call_refs), final_round("all bash calls finished")],
+        vec![
+            tool_round(&call_refs),
+            final_round("all bash calls finished"),
+        ],
         2,
         move |writer, receiver| {
             send_cmd(writer, "", cmd_user_input("run four commands"));

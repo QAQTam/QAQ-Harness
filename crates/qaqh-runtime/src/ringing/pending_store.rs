@@ -330,23 +330,47 @@ mod tests {
     #[test]
     fn command_receipts_are_scoped_to_the_owning_client_session() {
         let mut store = PendingCommandStore::new();
-        assert!(store.record_fingerprint_for_session("cmd-owner", "fp", "session-a").expect("first accept"));
+        assert!(
+            store
+                .record_fingerprint_for_session("cmd-owner", "fp", "session-a")
+                .expect("first accept")
+        );
         assert!(store.status_for_session("cmd-owner", "session-a").is_some());
         assert!(store.status_for_session("cmd-owner", "session-b").is_none());
-        assert!(store.record_fingerprint_for_session("cmd-owner", "fp", "session-b").is_err());
+        assert!(
+            store
+                .record_fingerprint_for_session("cmd-owner", "fp", "session-b")
+                .is_err()
+        );
     }
 
     #[test]
     fn causally_linked_terminal_event_completes_receipt_without_running_downgrade() {
         let mut store = PendingCommandStore::new();
-        assert!(store.record_fingerprint_for_session("cmd-1", "fp", "session-a").expect("accept"));
+        assert!(
+            store
+                .record_fingerprint_for_session("cmd-1", "fp", "session-a")
+                .expect("accept")
+        );
         let envelope = RingingEventEnvelope::new(
-            "seed", 1, 1, 1, "event-1",
-            RingingEvent::Tool(ToolEvent::ToolFinished { tool_call_id: "call".into(), turn_id: "turn".into(), round_num: 0, result: ToolResult::ok("ok") }),
-        ).with_causation("cmd-1");
+            "seed",
+            1,
+            1,
+            1,
+            "event-1",
+            RingingEvent::Tool(ToolEvent::ToolFinished {
+                tool_call_id: "call".into(),
+                turn_id: "turn".into(),
+                round_num: 0,
+                result: ToolResult::ok("ok"),
+            }),
+        )
+        .with_causation("cmd-1");
         store.observe_terminal_event(&envelope);
         store.mark_running("cmd-1");
-        let status = store.status_for_session("cmd-1", "session-a").expect("status");
+        let status = store
+            .status_for_session("cmd-1", "session-a")
+            .expect("status");
         assert_eq!(status.state, RingingCommandState::Succeeded);
         assert_eq!(status.terminal_event_id.as_deref(), Some("event-1"));
     }

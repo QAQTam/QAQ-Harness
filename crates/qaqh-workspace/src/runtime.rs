@@ -339,9 +339,9 @@ pub fn set_image_capability(endpoint_enabled: bool, model_supported: bool) {
     *IMAGE_CAPS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(ImageCaps {
-    endpoint: endpoint_enabled,
-    model: model_supported,
-});
+        endpoint: endpoint_enabled,
+        model: model_supported,
+    });
 }
 
 fn image_caps() -> Option<ImageCaps> {

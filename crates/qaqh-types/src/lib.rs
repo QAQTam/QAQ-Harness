@@ -8,6 +8,7 @@
 
 pub mod api_types;
 pub mod config;
+pub mod image_store;
 pub mod message;
 pub mod provider;
 pub mod session;

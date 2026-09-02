@@ -162,6 +162,10 @@ pub struct Config {
     /// triggered before the next user message is processed. 0.0 disables.
     /// Default: 0.75 (compact at 75% capacity).
     pub auto_compact_threshold: f64,
+    /// 空闲会话 worker 自动卸载阈值（秒）。0 = 禁用（缺省）。
+    /// daemon 周期任务消费；运行时 Config 承载该值以保证 save 往返不丢
+    /// 用户手写配置（save_with 从运行时 Config 全量重构 PersistentConfig）。
+    pub session_idle_unload_secs: u64,
     /// 工具套件运行环境："local"（默认）| "wsl"（仅 Windows）。
     pub workspace: WorkspaceConfig,
 }
@@ -221,6 +225,7 @@ impl Default for Config {
             permission_level: 4, // Unrestricted — backward compat
             tokenizer_path: None,
             auto_compact_threshold: 0.75,
+            session_idle_unload_secs: 0,
             workspace: WorkspaceConfig::default(),
         }
     }
@@ -476,6 +481,11 @@ impl Config {
                 cfg.auto_compact_threshold = act;
             }
 
+            // ── Idle unload（daemon 级会话策略；0 = 禁用）──
+            if let Some(v) = pc.session_idle_unload_secs {
+                cfg.session_idle_unload_secs = v;
+            }
+
             // ── 工具套件运行环境 ──
             if let Some(ref ws) = pc.workspace {
                 if let Some(ref mode) = ws.mode {
@@ -678,6 +688,8 @@ impl Config {
             permission_level: Some(self.permission_level),
             tokenizer_path: self.tokenizer_path.clone(),
             auto_compact_threshold: Some(self.auto_compact_threshold),
+            session_idle_unload_secs: (self.session_idle_unload_secs > 0)
+                .then_some(self.session_idle_unload_secs),
             workspace: Some(PersistentWorkspaceConfig {
                 mode: Some(self.workspace.mode.clone()),
             }),

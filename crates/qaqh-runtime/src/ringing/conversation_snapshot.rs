@@ -20,8 +20,7 @@ pub fn persisted_conversation_state(
         .as_ref()
         .map(|context| context.messages.as_slice())
         .unwrap_or(archive_messages.as_slice());
-    let (total, turns) =
-        super::projection::project_turns_from_messages(seed, messages, None, None);
+    let (total, turns) = super::projection::project_turns_from_messages(seed, messages, None, None);
     // 恢复 Info 面板所需元数据：model 以会话实际使用过的为准（meta.json 持久化），
     // 老会话可能为空，回退到当前配置；context_limit 未持久化，取当前配置。
     let config = qaqh_config::Config::load().unwrap_or_default();

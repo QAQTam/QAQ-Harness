@@ -1,5 +1,13 @@
+use std::path::Path;
+
 use crate::effect::{Effect, PendingTool, PersistOp};
 use qaqh_types::{Message, ToolDef};
+
+/// Prefix of the synthetic result `from_messages` injects for an orphan
+/// tool_use (assistant ToolUse without a persisted ToolResult — crash or kill
+/// between the tool call and the next flush). The outbox reconciliation uses
+/// it to recognize (and refine) these placeholders.
+pub const SYNTHETIC_RESTORE_PREFIX: &str = "[RESTORE] Tool \"";
 
 /// Tool results are finalized exactly once, at storage time — but the shaping
 /// itself (truncation / folding) now happens at the TOOL side
@@ -124,6 +132,15 @@ pub struct MessageStore {
     cancelled: bool,
     /// Number of earliest turns that have been compacted (skipped in LLM context).
     compact_skip: usize,
+    /// B（Tier C）：已从内存驱逐的逻辑压缩前缀 turn 数。磁盘（messages.jsonl）
+    /// 仍是真源——驱逐只影响常驻内存。语义约束：
+    /// 1. 活跃窗口的全局 seq 起点 = `evicted_prefix + 1`（undo 映射依赖）；
+    /// 2. 持久化 meta 的 `compact_skip` 保持 = `evicted_prefix`（见
+    ///    [`Self::persisted_compact_skip`]）——归档里前缀仍在，重启重放
+    ///    `from_messages(archive, N)` 后视图一致；
+    /// 3. 驱逐同时把持久化模式翻转为 compact-checkpoint（`has_compact_context`
+    ///    = true）：内存里已没有前缀字节，任何 SaveFull 都无法重建完整归档。
+    evicted_prefix: usize,
     /// True once the store is backed by a separate compact checkpoint instead
     /// of treating `messages.jsonl` as its active context.
     has_compact_context: bool,
@@ -146,6 +163,11 @@ pub struct MessageStore {
     pending_persist: Vec<PersistOp>,
     /// If true, skip all disk persistence. Used by subagents (disposable workers).
     ephemeral: bool,
+    /// L2 WAL (optional, host opt-in via [`Self::enable_wal`]): logs
+    /// message-bearing persist ops at enqueue time so a process death between
+    /// `flush_meta` and the host-side drain loses nothing. `None` for
+    /// ephemeral stores and clones (background compaction snapshots).
+    wal: Option<crate::wal::WalWriter>,
 }
 
 impl std::fmt::Debug for MessageStore {
@@ -171,6 +193,7 @@ impl Clone for MessageStore {
             turns: self.turns.clone(),
             cancelled: self.cancelled,
             compact_skip: self.compact_skip,
+            evicted_prefix: self.evicted_prefix,
             has_compact_context: self.has_compact_context,
             next_msg_id: self.next_msg_id,
             next_turn_seq: self.next_turn_seq,
@@ -179,6 +202,7 @@ impl Clone for MessageStore {
             pending_save: Vec::new(),
             pending_persist: Vec::new(),
             ephemeral: self.ephemeral,
+            wal: None,
         }
     }
 }
@@ -194,6 +218,7 @@ impl MessageStore {
             turns: Vec::new(),
             cancelled: false,
             compact_skip: 0,
+            evicted_prefix: 0,
             has_compact_context: false,
             next_msg_id: 1,
             next_turn_seq: 1,
@@ -202,6 +227,7 @@ impl MessageStore {
             pending_save: Vec::new(),
             pending_persist: Vec::new(),
             ephemeral: false,
+            wal: None,
         }
     }
 
@@ -263,30 +289,185 @@ impl MessageStore {
             return;
         }
         let turn_count = self.turns.len();
+        let mut ops: Vec<PersistOp> = Vec::new();
         if !self.pending_save.is_empty() {
             let batch = std::mem::take(&mut self.pending_save);
-            self.pending_persist.push(PersistOp::Append {
+            ops.push(PersistOp::Append {
                 seed: self.seed.clone(),
                 messages: batch,
                 model: model.to_string(),
                 effort: Some(effort.to_string()),
-                compact_skip: self.compact_skip,
+                compact_skip: self.persisted_compact_skip(),
                 turn_count,
             });
             if self.has_compact_context {
-                self.pending_persist.push(PersistOp::UpdateCompactContext {
+                ops.push(PersistOp::UpdateCompactContext {
                     seed: self.seed.clone(),
                     messages: self.to_vec(),
                 });
             }
         } else {
-            self.pending_persist.push(PersistOp::UpdateMeta {
+            ops.push(PersistOp::UpdateMeta {
                 seed: self.seed.clone(),
                 model: model.to_string(),
                 effort: Some(effort.to_string()),
-                compact_skip: self.compact_skip,
+                compact_skip: self.persisted_compact_skip(),
                 turn_count,
             });
+        }
+        // L2 WAL: log message-bearing ops BEFORE they enter the drain queue,
+        // so a process death between this flush and the host-side drain loses
+        // nothing (recovery replays the log; SaveFull / compact-context ops
+        // are deliberately not logged — see crate::wal module docs). fsync
+        // policy is round-boundary: flushes carrying Appends happen at lap
+        // boundaries, so syncing here bounds the power-loss window to one
+        // round while keeping meta-only flushes cheap.
+        if let Some(wal) = &mut self.wal {
+            let mut logged_message_op = false;
+            for op in &ops {
+                match op {
+                    PersistOp::Append { .. } => logged_message_op = true,
+                    PersistOp::UpdateMeta { .. } => {}
+                    // Derived checkpoints are regenerated after recovery.
+                    _ => continue,
+                }
+                if let Err(error) = wal.log_op(op) {
+                    log::error!("MessageStore: WAL log_op failed for {}: {error}", self.seed);
+                }
+            }
+            if logged_message_op && let Err(error) = wal.sync() {
+                log::error!("MessageStore: WAL sync failed for {}: {error}", self.seed);
+            }
+        }
+        self.pending_persist.extend(ops);
+    }
+
+    /// Opt in to enqueue-time WAL persistence for this store. `session_dir`
+    /// is the session's on-disk directory (the WAL file lives next to
+    /// `messages.jsonl`). No-op for ephemeral stores and double-enable.
+    pub fn enable_wal(&mut self, session_dir: &Path) {
+        if self.ephemeral || self.wal.is_some() {
+            return;
+        }
+        match crate::wal::WalWriter::open(session_dir) {
+            Ok(writer) => self.wal = Some(writer),
+            Err(error) => {
+                log::error!("MessageStore: WAL open failed for {}: {error}", self.seed)
+            }
+        }
+    }
+
+    /// Reset the WAL after a successful host-side drain: every op logged so
+    /// far has been applied to messages.jsonl. If the process dies before the
+    /// next checkpoint, replay re-applies the ops and msg_id dedupe converges.
+    pub fn wal_checkpoint(&mut self) {
+        if let Some(wal) = &mut self.wal
+            && let Err(error) = wal.checkpoint()
+        {
+            log::error!(
+                "MessageStore: WAL checkpoint failed for {}: {error}",
+                self.seed
+            );
+        }
+    }
+
+    /// Call ids of orphan tool_use entries repaired by [`Self::from_messages`]
+    /// with a synthetic `[RESTORE]` result (see [`SYNTHETIC_RESTORE_PREFIX`]).
+    pub fn synthetic_repair_call_ids(&self) -> Vec<String> {
+        let mut ids = Vec::new();
+        for turn in &self.turns {
+            for step in &turn.steps {
+                for result in &step.tool_results {
+                    for block in &result.content {
+                        if let qaqh_types::ContentBlock::ToolResult {
+                            tool_use_id,
+                            result,
+                        } = block
+                            && result.model.text.starts_with(SYNTHETIC_RESTORE_PREFIX)
+                        {
+                            ids.push(tool_use_id.clone());
+                        }
+                    }
+                }
+            }
+        }
+        ids
+    }
+
+    /// Refine a synthetic `[RESTORE]` placeholder with richer recovery
+    /// semantics (used by the tool outbox reconciliation: "executed but the
+    /// result was lost" instead of the default "not executed"). Returns
+    /// whether a placeholder for `call_id` was found and rewritten.
+    pub fn amend_synthetic_repair(&mut self, call_id: &str, note: &str) -> bool {
+        for turn in &mut self.turns {
+            for step in &mut turn.steps {
+                for result in &mut step.tool_results {
+                    for block in &mut result.content {
+                        if let qaqh_types::ContentBlock::ToolResult {
+                            tool_use_id,
+                            result,
+                        } = block
+                            && tool_use_id == call_id
+                            && result.model.text.starts_with(SYNTHETIC_RESTORE_PREFIX)
+                        {
+                            result.model.text = note.to_string();
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// B（Tier C，docs/memory-governance-plan.md）：驱逐逻辑压缩前缀
+    /// （`compact_skip > 0` 且无 compact checkpoint）出常驻内存。
+    ///
+    /// 前缀 turn 在 LLM 视图（`flat_in_write_order(compact_skip)`）与 token
+    /// 统计中均被跳过——运行时零依赖，驻留纯属意外。驱逐语义：
+    /// - `turns.drain(0..n)`，`compact_skip` 归零（剩余 turn 全部活跃）；
+    /// - `evicted_prefix = n`（seq 水位：undo 的 `t{seq}` → 窗口索引映射、
+    ///   持久化 meta 的 compact_skip 都以它为准）；
+    /// - **持久化模式物理化**：翻转为 `has_compact_context = true` 并立即
+    ///   排队 `UpdateCompactContext`。此后所有整写走 compact checkpoint，
+    ///   `messages.jsonl` 归档不再被 SaveFull 触碰——内存里已没有前缀
+    ///   字节，无法重建完整归档。
+    ///
+    /// 崩溃安全（WAL 不记录 compact 类 op）：checkpoint 落盘前崩溃则磁盘
+    /// 仍是「全量归档 + meta.compact_skip=N」（驱逐未产生任何已 drain 的
+    /// 磁盘变更），重启重放后视图一致；checkpoint 落盘后崩溃则重启直接走
+    /// compact_context 活跃视图。两个方向都不会让被压缩前缀「复活」。
+    ///
+    /// 返回驱逐的 turn 数（0 = 无可驱逐）。
+    pub fn evict_compacted_prefix(&mut self) -> usize {
+        if self.compact_skip == 0 || self.has_compact_context || self.ephemeral {
+            return 0;
+        }
+        let n = self.compact_skip.min(self.turns.len());
+        if n == 0 {
+            self.compact_skip = 0;
+            return 0;
+        }
+        self.turns.drain(0..n);
+        self.compact_skip = 0;
+        self.evicted_prefix = n;
+        self.has_compact_context = true;
+        self.pending_persist.push(PersistOp::UpdateCompactContext {
+            seed: self.seed.clone(),
+            messages: self.to_vec(),
+        });
+        self.context_revision = self.context_revision.saturating_add(1);
+        n
+    }
+
+    /// 持久化到 meta 的 compact_skip。驱逐后必须保持水位 N 而非 0：归档里
+    /// 前缀仍在，重启 `from_messages(archive, N)` 才能还原同一视图；一旦
+    /// compact checkpoint 存在，该值被生命周期强制无效化（不影响正确性）。
+    fn persisted_compact_skip(&self) -> usize {
+        if self.evicted_prefix > 0 {
+            self.evicted_prefix
+        } else {
+            self.compact_skip
         }
     }
 
@@ -488,11 +669,25 @@ impl MessageStore {
 
     /// Add an image block to the last user message (the most recent turn's user message).
     pub fn push_image_to_last_user(&mut self, mime_type: &str, data: &str) {
-        if let Some(turn) = self.turns.last_mut() {
-            turn.user.content.push(qaqh_types::ContentBlock::Image {
+        // A-2 L0：图片字节外置磁盘（内容寻址，见 qaqh_types::image_store），
+        // 消息内只留 ImageRef 索引——daemon 常驻内存不再随图片数线性膨胀。
+        // 落盘失败（IO 异常）回退 inline Image：宁可内存膨胀也不丢用户图。
+        let block = match qaqh_types::image_store::store_image_b64(data, mime_type) {
+            Ok(sha256) => qaqh_types::ContentBlock::ImageRef {
+                sha256,
                 mime_type: mime_type.to_string(),
-                data: data.to_string(),
-            });
+                bytes_len: data.len(),
+            },
+            Err(e) => {
+                log::warn!("[store] user image externalization failed, keeping inline: {e}");
+                qaqh_types::ContentBlock::Image {
+                    mime_type: mime_type.to_string(),
+                    data: data.to_string(),
+                }
+            }
+        };
+        if let Some(turn) = self.turns.last_mut() {
+            turn.user.content.push(block);
             self.context_revision = self.context_revision.saturating_add(1);
         }
     }
@@ -603,13 +798,29 @@ impl MessageStore {
                 result.diff = Some(diff);
             }
         }
-        // 工具附着的图片（read_image）：追加为 Image block。gate 投影时
-        // 降级为紧随 tool 结果的合成 user 消息（image_url / input_image）。
+        // 工具附着的图片（read_image）：字节外置磁盘后以 ImageRef 追加。
+        // gate 投影时按需读盘，降级为紧随 tool 结果的合成 user 消息
+        // （image_url / input_image / anthropic base64 source）。落盘失败
+        // 回退 inline Image。
         for image in images {
-            tool_msg.content.push(qaqh_types::ContentBlock::Image {
-                mime_type: image.mime_type.clone(),
-                data: image.data.clone(),
-            });
+            let block =
+                match qaqh_types::image_store::store_image_b64(&image.data, &image.mime_type) {
+                    Ok(sha256) => qaqh_types::ContentBlock::ImageRef {
+                        sha256,
+                        mime_type: image.mime_type.clone(),
+                        bytes_len: image.data.len(),
+                    },
+                    Err(e) => {
+                        log::warn!(
+                            "[store] tool image externalization failed, keeping inline: {e}"
+                        );
+                        qaqh_types::ContentBlock::Image {
+                            mime_type: image.mime_type.clone(),
+                            data: image.data.clone(),
+                        }
+                    }
+                };
+            tool_msg.content.push(block);
         }
 
         for turn in self.turns.iter_mut().rev() {
@@ -960,7 +1171,7 @@ impl MessageStore {
                 messages: msgs,
                 model: model.to_string(),
                 effort: Some(effort.to_string()),
-                compact_skip: self.compact_skip,
+                compact_skip: self.persisted_compact_skip(),
                 turn_count,
             });
         }
@@ -1201,14 +1412,19 @@ impl MessageStore {
             _ => return false,
         };
         // 活跃 turns 数组起点的全局序号：无 compact 时 = 1；物理 compact 后
-        // turns[0] 是合成摘要（占一个数组位），起点 = 被压缩 turn 数 + 1。
-        let (first_seq, summary_offset) = match self
-            .turns
-            .first()
-            .and_then(|t| Self::compacted_turn_count(&t.user))
-        {
-            Some(skip) => (skip + 1, 1),
-            None => (1, 0),
+        // turns[0] 是合成摘要（占一个数组位），起点 = 被压缩 turn 数 + 1；
+        // B 驱逐后（逻辑压缩窗口化）turns[0] 是真实 turn，起点 = 水位 + 1。
+        let (first_seq, summary_offset) = if self.evicted_prefix > 0 {
+            (self.evicted_prefix + 1, 0)
+        } else {
+            match self
+                .turns
+                .first()
+                .and_then(|t| Self::compacted_turn_count(&t.user))
+            {
+                Some(skip) => (skip + 1, 1),
+                None => (1, 0),
+            }
         };
         if seq < first_seq {
             // 撤回已被压缩的 turn：清空全部（含摘要——它正是这些 turn 的替身）。
@@ -1411,7 +1627,8 @@ impl MessageStore {
                         qaqh_types::ContentBlock::ToolResult { result, .. } => {
                             tool_results += qaqh_types::count_tokens(&result.model.text) as u64;
                         }
-                        qaqh_types::ContentBlock::Image { .. } => {
+                        qaqh_types::ContentBlock::Image { .. }
+                        | qaqh_types::ContentBlock::ImageRef { .. } => {
                             // Image token count uses the MiMo formula (roughly ~256-1024 tokens depending on resolution).
                             // Use a conservative estimate of 512 tokens per image.
                             chat_text += 512;
@@ -1542,6 +1759,54 @@ mod tests {
                 _ => None,
             })
             .expect("tool result must be present in gate context")
+    }
+
+    #[test]
+    fn push_image_externally_stores_image_ref_with_disk_backing() {
+        let prev = std::env::var("QAQH_DATA_DIR").ok();
+        let tmp = std::env::temp_dir().join(format!("qaqh-store-img-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        unsafe { std::env::set_var("QAQH_DATA_DIR", &tmp) };
+
+        let b64 = "aGVsbG8gaW1hZ2U=";
+        let mut store = MessageStore::new_ephemeral("img-test");
+        store.push_user("look at this");
+        store.push_image_to_last_user("image/png", b64);
+
+        // 消息内只留 ImageRef 索引，bytes_len 与 base64 文本长度一致。
+        let turn = store.turns.last().expect("turn");
+        let sha = qaqh_types::image_store::sha256_hex(b64.as_bytes());
+        match &turn.user.content[1] {
+            ContentBlock::ImageRef {
+                sha256,
+                mime_type,
+                bytes_len,
+            } => {
+                assert_eq!(mime_type, "image/png");
+                assert_eq!(*bytes_len, b64.len());
+                assert_eq!(sha256, &sha);
+            }
+            other => panic!("expected ImageRef, got {other:?}"),
+        }
+        // 字节确实落盘（同一 data root，内容寻址可读回）。
+        assert_eq!(
+            qaqh_types::image_store::load_image_b64(&sha, "image/png").expect("disk read"),
+            b64
+        );
+
+        // 空载荷：store_image_b64 拒绝 → 回退 inline Image（不丢数据）。
+        store.push_image_to_last_user("image/png", "");
+        let turn = store.turns.last().expect("turn");
+        assert!(
+            matches!(&turn.user.content[2], ContentBlock::Image { .. }),
+            "empty payload must fall back to inline Image"
+        );
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("QAQH_DATA_DIR", v) },
+            None => unsafe { std::env::remove_var("QAQH_DATA_DIR") },
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -2259,6 +2524,145 @@ mod tests {
                 .any(|block| matches!(block, ContentBlock::Text { text } if text == skill))
         }));
         assert_eq!(repairs.len(), 2);
+    }
+
+    /// B：构造 5 个 turn（msg_id 1..10），逻辑 compact_skip=2。
+    fn evict_fixture() -> MessageStore {
+        let mut msgs: Vec<Message> = Vec::new();
+        let mut id = 1u64;
+        for i in 0..5 {
+            msgs.push(Message {
+                msg_id: Some(id),
+                role: "user".into(),
+                name: None,
+                content: vec![ContentBlock::Text {
+                    text: format!("u{i}"),
+                }],
+            });
+            id += 1;
+            msgs.push(Message {
+                msg_id: Some(id),
+                role: "assistant".into(),
+                name: None,
+                content: vec![ContentBlock::Text {
+                    text: format!("a{i}"),
+                }],
+            });
+            id += 1;
+        }
+        let (store, repairs) = MessageStore::from_messages("evict-test", &msgs, 2);
+        assert!(repairs.is_empty());
+        assert_eq!(store.turn_count(), 5);
+        store
+    }
+
+    #[test]
+    fn evict_compacted_prefix_frees_memory_and_physicalizes_persistence() {
+        let mut store = evict_fixture();
+        let view_before = store.build_context_for_gate(&[]);
+        assert_eq!(store.turn_count(), 5);
+
+        let evicted = store.evict_compacted_prefix();
+        assert_eq!(evicted, 2);
+        assert_eq!(store.turn_count(), 3, "prefix turns must leave memory");
+        assert_eq!(store.compact_skip, 0, "remaining turns are all live");
+
+        // LLM 视图逐字节不变（前缀本就被 skip）。
+        let view_after = store.build_context_for_gate(&[]);
+        assert_eq!(
+            serde_json::to_value(&view_before).unwrap(),
+            serde_json::to_value(&view_after).unwrap()
+        );
+
+        // 驱逐即物理化：队列里有 UpdateCompactContext；后续整写走
+        // SaveCompactContext 而非 SaveFull（归档不被触碰）。
+        let ops = store.take_persist_ops();
+        assert!(ops.iter().any(
+            |op| matches!(op, PersistOp::UpdateCompactContext { messages, .. } if messages.len() == 6)
+        ));
+        store.snapshot_full("m", "high");
+        let ops = store.take_persist_ops();
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, PersistOp::SaveCompactContext { .. })),
+            "snapshot must go through the compact checkpoint after eviction"
+        );
+        assert!(
+            !ops.iter()
+                .any(|op| matches!(op, PersistOp::SaveFull { .. }))
+        );
+
+        // 持久化 meta 的 compact_skip 保持水位 2（归档里前缀仍在）。
+        store.flush_meta("m", "high");
+        let ops = store.take_persist_ops();
+        assert!(ops.iter().any(|op| match op {
+            PersistOp::UpdateMeta { compact_skip, .. } => *compact_skip == 2,
+            _ => false,
+        }));
+    }
+
+    #[test]
+    fn evict_is_idempotent_and_noop_without_logical_compact() {
+        let mut store = evict_fixture();
+        assert_eq!(store.evict_compacted_prefix(), 2);
+        let _ = store.take_persist_ops();
+        // 幂等：水位已建立，再次驱逐 = 0。
+        assert_eq!(store.evict_compacted_prefix(), 0);
+        // 无逻辑压缩的 store：no-op。
+        let mut plain = MessageStore::new_ephemeral("plain");
+        plain.push_user("hi");
+        assert_eq!(plain.evict_compacted_prefix(), 0);
+        assert_eq!(plain.turn_count(), 1);
+    }
+
+    #[test]
+    fn truncate_before_turn_uses_evicted_watermark() {
+        let mut store = evict_fixture();
+        let _ = store.evict_compacted_prefix();
+        // live turns 全局 seq 为 3/4/5。
+        // 撤回 t4：保留 t3，丢弃 t4/t5。
+        assert!(store.truncate_before_turn("t4"));
+        assert_eq!(store.turn_count(), 1);
+        // turn seq 按回合编号：t1=u0, t2=u1（被驱逐），t3=u2, t4=u3, t5=u4。
+        // undo t4 → 保留 t3（u2 的回合），丢弃 t4/t5。
+        let view = store.build_context_for_gate(&[]);
+        assert!(view.iter().any(|m| {
+            m.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text } if text == "u2"))
+        }));
+        assert!(!view.iter().any(|m| {
+            m.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text } if text == "u3"))
+        }));
+        assert!(!view.iter().any(|m| {
+            m.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text } if text == "u4"))
+        }));
+        // 撤回未来 turn：no-op。
+        assert!(!store.truncate_before_turn("t9"));
+    }
+
+    #[test]
+    fn undo_across_evicted_boundary_clears_live_view() {
+        // 撤回点落在被驱逐前缀内（seq < 水位+1）：与物理 compact 的「清空」
+        // 语义一致——活跃视图清空，归档（真源）不动。
+        let mut store = evict_fixture();
+        let _ = store.evict_compacted_prefix();
+        assert!(store.truncate_before_turn("t2"));
+        assert_eq!(store.turn_count(), 0);
+        store.snapshot_full("m", "high");
+        let ops = store.take_persist_ops();
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, PersistOp::SaveCompactContext { .. }))
+        );
+        assert!(
+            !ops.iter()
+                .any(|op| matches!(op, PersistOp::SaveFull { .. }))
+        );
     }
 
     #[test]

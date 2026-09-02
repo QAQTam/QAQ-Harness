@@ -15,7 +15,9 @@ pub fn hydrate_attachment_previews(
     command: &mut qaqh_ringing::RingingCommand,
 ) -> Result<(), String> {
     let qaqh_ringing::RingingCommand::Conversation(
-        qaqh_domain::ConversationCommand::ConversationSendMessage { text, attachments, .. },
+        qaqh_domain::ConversationCommand::ConversationSendMessage {
+            text, attachments, ..
+        },
     ) = command
     else {
         return Ok(());

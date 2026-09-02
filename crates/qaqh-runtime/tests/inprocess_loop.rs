@@ -9,10 +9,10 @@ use std::sync::{Mutex, Once};
 use std::time::{Duration, Instant};
 
 use qaqh_domain::{ControlCommand, ControlEvent, SessionState};
-use qaqh_runtime::agent::loop_core::{Loop, LoopChannels};
-use qaqh_runtime::agent::types::{WorkerCommand, WriterEvent};
-use qaqh_runtime::agent::state::agent::AgentState;
 use qaqh_ringing::{RingingCommand, RingingEvent, RingingWorkerCommandEnvelope};
+use qaqh_runtime::agent::loop_core::{Loop, LoopChannels};
+use qaqh_runtime::agent::state::agent::AgentState;
+use qaqh_runtime::agent::types::{WorkerCommand, WriterEvent};
 
 static SESSION_INIT: Once = Once::new();
 static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -122,6 +122,7 @@ fn inprocess_channels_run_the_same_session_lifecycle_as_pipes() {
         channels.event_tx,
         channels.cancel,
         channels.writer_dead,
+        std::sync::Arc::new(qaqh_runtime::agent::liveness::WorkerLiveness::new()),
     );
     lp.run();
 

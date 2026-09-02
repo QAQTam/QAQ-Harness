@@ -6,6 +6,7 @@
 pub mod context_flow;
 pub mod effect;
 pub mod store;
+pub mod wal;
 
 pub use context_flow::{
     CompactBehavior, ContextFlow, ContextSource, FlowError, FlowRole, IngestReceipt,
@@ -14,3 +15,4 @@ pub use context_flow::{
 };
 pub use effect::{Effect, PendingTool, PersistOp};
 pub use store::{MessageStore, Turn};
+pub use wal::WalWriter;

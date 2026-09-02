@@ -17,9 +17,9 @@ pub mod lease_store;
 pub mod outbox;
 pub mod pending_store;
 pub mod projection;
-pub mod service_methods;
 pub mod router;
 pub mod sequencer;
+pub mod service_methods;
 pub(crate) mod timeline_rebuild;
 
 pub use attachment::hydrate_attachment_previews;

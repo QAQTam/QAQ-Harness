@@ -453,7 +453,10 @@ impl SessionBundle {
             let skills = self.agent.session.skills.clone();
             let seed = self.agent.session.seed.clone();
             self.agent
-                .enqueue_meta_op(crate::agent::state::agent::MetaOp::PersistSkills { seed, skills });
+                .enqueue_meta_op(crate::agent::state::agent::MetaOp::PersistSkills {
+                    seed,
+                    skills,
+                });
         }
         self.agent.msg.flush_meta(
             &self.agent.config.model,

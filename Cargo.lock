@@ -1890,6 +1890,7 @@ name = "qaqh-runtime"
 version = "1.0.0"
 dependencies = [
  "chrono",
+ "libc",
  "log",
  "os_pipe",
  "qaqh-config",
@@ -1921,10 +1922,12 @@ version = "1.0.0"
 dependencies = [
  "hex",
  "log",
+ "qaqh-message",
  "qaqh-types",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "toml",
 ]
 
@@ -1958,6 +1961,7 @@ dependencies = [
  "qaqh-skills",
  "serde",
  "serde_json",
+ "sha2",
  "tokenizers",
  "toml",
 ]

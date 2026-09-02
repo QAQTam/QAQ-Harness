@@ -9,9 +9,9 @@
 //! boundaries.  The clippy `string_slice` lint is allowed at the crate
 //! level (see Cargo.toml).
 
-mod anthropic;
-mod openai;
-mod responses;
+mod chat_completions_api;
+mod message_api;
+mod responses_api;
 #[cfg(test)]
 mod rt_test;
 mod sse;
@@ -42,7 +42,7 @@ pub fn chat_stream(
     on_event: &mut dyn FnMut(StreamEvent),
 ) -> anyhow::Result<()> {
     match provider.kind {
-        ProviderKind::Responses => responses::chat_stream_responses(
+        ProviderKind::Responses => responses_api::chat_stream_responses(
             provider,
             &provider.model,
             messages,
@@ -53,7 +53,7 @@ pub fn chat_stream(
             cancel,
             on_event,
         ),
-        ProviderKind::Anthropic => anthropic::chat_stream_anthropic(
+        ProviderKind::Anthropic => message_api::chat_stream_anthropic(
             provider,
             &provider.model,
             messages,
@@ -64,7 +64,7 @@ pub fn chat_stream(
             cancel,
             on_event,
         ),
-        ProviderKind::OpenAi => openai::chat_stream_openai(
+        ProviderKind::OpenAi => chat_completions_api::chat_stream_openai(
             provider,
             &provider.model,
             messages,
@@ -86,13 +86,13 @@ pub fn chat_sync(
 ) -> Result<String, String> {
     match provider.kind {
         ProviderKind::Responses => {
-            responses::chat_sync_responses(provider, &provider.model, messages, max_tokens)
+            responses_api::chat_sync_responses(provider, &provider.model, messages, max_tokens)
         }
         ProviderKind::Anthropic => {
-            anthropic::chat_sync_anthropic(provider, &provider.model, messages, max_tokens)
+            message_api::chat_sync_anthropic(provider, &provider.model, messages, max_tokens)
         }
         ProviderKind::OpenAi => {
-            openai::chat_sync_openai(provider, &provider.model, messages, max_tokens)
+            chat_completions_api::chat_sync_openai(provider, &provider.model, messages, max_tokens)
         }
     }
 }

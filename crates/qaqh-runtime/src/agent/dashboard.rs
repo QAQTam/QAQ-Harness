@@ -8,7 +8,7 @@
 /// `Agent2Ui::Dashboard` schema to new consumers.
 pub fn build_snapshot(seed: String) -> qaqh_domain::DashboardSnapshot {
     qaqh_domain::DashboardSnapshot {
-        seed,
+        seed: seed.clone(),
         documents: qaqh_workspace::dashboard::build_documents()
             .into_iter()
             .map(|doc| qaqh_domain::DashboardDocument {
@@ -19,7 +19,7 @@ pub fn build_snapshot(seed: String) -> qaqh_domain::DashboardSnapshot {
             })
             .collect(),
         recent_edits: qaqh_workspace::dashboard::build_recent_edits(),
-        tasks: qaqh_workspace::dashboard::build_tasks()
+        tasks: qaqh_workspace::dashboard::build_tasks_for(&seed)
             .into_iter()
             .map(|task| qaqh_domain::DashboardTask {
                 id: task.id,
@@ -29,6 +29,6 @@ pub fn build_snapshot(seed: String) -> qaqh_domain::DashboardSnapshot {
                 evidence: task.evidence,
             })
             .collect(),
-        current_todo_id: qaqh_workspace::dashboard::build_current_todo_id(),
+        current_todo_id: qaqh_workspace::dashboard::build_current_todo_id_for(&seed),
     }
 }

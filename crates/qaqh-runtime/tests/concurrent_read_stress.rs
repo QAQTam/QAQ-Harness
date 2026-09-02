@@ -11,10 +11,10 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use qaqh_domain::{ControlCommand, ControlEvent, ConversationEvent, SessionState, ToolCommand};
-use qaqh_runtime::agent::state::agent::AgentState;
 use qaqh_ringing::{
     RingingCommand, RingingEvent, RingingWorkerCommandEnvelope, RingingWorkerEventEnvelope,
 };
+use qaqh_runtime::agent::state::agent::AgentState;
 
 #[test]
 fn ten_parallel_reads_same_file() {

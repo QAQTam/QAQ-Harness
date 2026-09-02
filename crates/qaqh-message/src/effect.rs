@@ -31,7 +31,7 @@ pub struct PendingTool {
 /// The op→the session manager singleton mapping lives on the consumer side (runtime/agent /
 /// runtime): this crate must not re-introduce a `qaqh-session` dependency
 /// just to execute persistence.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum PersistOp {
     /// Append new messages to messages.jsonl and refresh meta/index
     /// (was `the session manager's save_append`).
@@ -53,9 +53,15 @@ pub enum PersistOp {
     },
     /// Refresh the live-context projection of the compact checkpoint
     /// (was `update_compact_context`).
-    UpdateCompactContext { seed: String, messages: Vec<Message> },
+    UpdateCompactContext {
+        seed: String,
+        messages: Vec<Message>,
+    },
     /// Full rewrite of the compact checkpoint (was `save_compact_context`).
-    SaveCompactContext { seed: String, messages: Vec<Message> },
+    SaveCompactContext {
+        seed: String,
+        messages: Vec<Message>,
+    },
     /// Full rewrite of messages.jsonl — undo / compact aftermath
     /// (was `save_full`).
     SaveFull {

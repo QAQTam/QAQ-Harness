@@ -349,6 +349,24 @@ pub enum PermissionDecision {
 /// - `trusted_dirs`: set of previously trusted directories
 /// - `declared_category`: capability category from the handler declaration
 ///   （单一事实源；`process` 等按 action 细分的工具在内部覆盖）
+fn is_sensitive_session_path(path: &Path) -> bool {
+    // Block the agent from reading its own persistent history / credentials.
+    // These live under the platform data dir (e.g. ~/.config/qaqh/sessions/…/messages.jsonl,
+    // meta.json, compact-context.json, token_stats.jsonl, secrets.toml) and are
+    // outside any workspace. At Level 4 they'd otherwise auto-approve, allowing
+    // the model to exfiltrate prior turns via a normal `read` tool call and then
+    // replay that content into the gateway (messages.jsonl → gateway leak).
+    let s = path.to_string_lossy().to_ascii_lowercase();
+    s.contains("messages.jsonl")
+        || s.contains("meta.json")
+        || s.contains("compact-context.json")
+        || s.contains("token_stats.jsonl")
+        || s.contains("secrets.toml")
+        || s.contains("/sessions/")
+        || s.contains("\\sessions\\")
+        || s.contains(".qaqh/sessions")
+}
+
 pub fn needs_permission(
     level: PermissionLevel,
     tool_name: &str,
@@ -363,6 +381,27 @@ pub fn needs_permission(
     // repeated prompts without protecting a user-controlled resource.
     if matches!(tool_name, "todo") {
         return PermissionDecision::AutoApprove;
+    }
+
+    // Sensitive session files are never auto-approved, even at Level 4.
+    // The paths are outside the workspace already, but Level 4 would otherwise
+    // bypass the outside-workspace check. Treat them as High risk and force a
+    // dialog so the user sees "read messages.jsonl" before it happens.
+    let early_paths = extract_target_paths(tool_name, args);
+    if early_paths.iter().any(|p| is_sensitive_session_path(p)) {
+        let risk = PermissionRisk::High;
+        return PermissionDecision::AskUser {
+            reason: format!(
+                "Sensitive session file access requires confirmation: '{}'",
+                tool_name
+            ),
+            paths: early_paths,
+            category: ToolCategory::Read,
+            risk,
+            consequence:
+                "May expose prior conversation history or credentials to the model/gateway."
+                    .to_string(),
+        };
     }
 
     // Level 4: everything auto-approved
@@ -739,6 +778,49 @@ mod tests {
             matches!(decision, PermissionDecision::AskUser { .. }),
             "parent traversal to a missing file outside the workspace must not auto-approve"
         );
+    }
+
+    #[test]
+    fn sensitive_session_files_require_approval_even_at_unrestricted() {
+        // messages.jsonl / meta.json live outside any workspace but at Level 4
+        // they'd otherwise auto-approve. This must be forced to AskUser to avoid
+        // the model silently reading prior turns and feeding them into the gateway.
+        let ws = std::env::temp_dir().join("qaqh-ws-sensitive");
+        let session_file = dirs_next();
+        for path in [
+            "/home/test/.config/qaqh/sessions/abc/messages.jsonl",
+            "/home/test/.config/qaqh/sessions/abc/meta.json",
+            "/home/test/.config/qaqh/sessions/abc/compact-context.json",
+            "/home/test/.config/qaqh/token_stats.jsonl",
+        ] {
+            let decision = needs_permission(
+                PermissionLevel::Unrestricted,
+                "read",
+                &serde_json::json!({"path": path}),
+                &ws,
+                &HashSet::new(),
+                ToolCategory::Read,
+            );
+            assert!(
+                matches!(decision, PermissionDecision::AskUser { .. }),
+                "sensitive path {path} must require approval even at Level 4, got {decision:?}"
+            );
+        }
+        // Normal workspace file at Level 4 still auto-approves.
+        let normal = needs_permission(
+            PermissionLevel::Unrestricted,
+            "read",
+            &serde_json::json!({"path": ws.join("src/main.rs")}),
+            &ws,
+            &HashSet::new(),
+            ToolCategory::Read,
+        );
+        assert!(matches!(normal, PermissionDecision::AutoApprove));
+        let _ = session_file;
+    }
+
+    fn dirs_next() -> PathBuf {
+        PathBuf::from("/tmp")
     }
 
     #[test]

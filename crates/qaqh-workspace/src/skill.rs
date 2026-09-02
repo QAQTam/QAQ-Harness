@@ -173,22 +173,22 @@ fn handle_skills(ctx: crate::ToolCallCtx) -> ToolResult {
 pub fn register(mgr: &mut crate::ToolManager) {
     mgr.register_with_placement(ToolHandler {
         key: "skills".to_string(),
-        description: "Manage Agent Skills through one fixed interface. Use activate before acting when a task matches the catalog — the full instructions are injected as a trailing skill_context_envelope system message; resource reads bundled files on demand; list for catalog diagnostics; validate for portability checks. Skill metadata never bypasses QAQ-Harness permissions.",
+        description: "Skills: activate/list/resource/validate. activate injects envelope as trailing system message.",
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
                     "enum": ["activate", "list", "resource", "validate"],
-                    "description": "activate: load instructions and return the full body; list: inspect catalog diagnostics; resource: read a bundled resource; validate: validate one SKILL.md"
+                    "description": "Action"
                 },
                 "name": {
                     "type": "string",
-                    "description": "Exact skill name from the injected catalog. Required for activate, resource, and validate; forbidden for list"
+                    "description": "Skill name"
                 },
                 "path": {
                     "type": "string",
-                    "description": "Skill-directory-relative resource path from the activation manifest. Required only for resource; absolute paths and parent traversal are rejected"
+                    "description": "Resource path (for resource)"
                 }
             },
             "required": ["action"],

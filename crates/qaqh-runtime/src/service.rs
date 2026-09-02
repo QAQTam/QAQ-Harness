@@ -73,6 +73,10 @@ impl QaqhService {
     /// causation 挂命令 id。会话不存在同样返回 Ok（幂等关闭）。
     pub fn close_session(&self, seed: &str, causation_id: Option<&str>) -> Result<(), String> {
         self.registry()?.close(seed);
+        // D-3：关闭即终止该会话的取消标记。worker 优雅收尾可能已把它置假
+        // （actor 线程 clear_cancel），但整项移除才能让 SESSION_CANCELS 与
+        // 活跃会话同阶（种子频繁进出的 daemon 长期运行不无界增长）。
+        qaqh_workspace::remove_session_cancel(seed);
         // 临时会话（子代理）用完即走：关闭后删除会话目录，磁盘零残留。
         // 目录已不存在（重复 close / 已被清理）时静默跳过，保持幂等。
         if self.sessions.is_ephemeral(seed) {
@@ -92,7 +96,62 @@ impl QaqhService {
                 causation_id,
             );
         }
+        self.release_seed_resident_state(seed);
+        release_freed_heap_memory();
         Ok(())
+    }
+
+    /// D-1：会话关闭后的 per-seed 常驻内存清理（修复 IMAGE_REGISTRY 与 hub
+    /// channels 的 per-seed 残留——诊断结论②③）。必须在 worker join 之后、
+    /// 终态（Closed）发布之后调用，顺序不可换：join 前 reset/forget 会让
+    /// 仍在运行的 worker 继续写回脏状态；终态发布前 forget 会让 publish
+    /// 触发 lazy-load，把刚丢弃的状态原样重建回来，清理变成空操作。
+    /// forget 之后该 seed 的 hub 态与 daemon 重启后的空态同构；磁盘索引
+    /// 保留，下次访问走既有 lazy-load 重放路径（UI 历史不丢）。
+    fn release_seed_resident_state(&self, seed: &str) {
+        // 图片注册表按 seed 键控存 base64（read_image 的上传缓存）。resume
+        // 路径（state/lifecycle.rs）会从持久化消息历史重建，关闭期清空
+        // 不破坏 image_index 语义。
+        qaqh_workspace::read_image::reset_images(seed);
+        if let Some(hub) = self.hub.get() {
+            hub.forget_seed(seed);
+        }
+    }
+
+    /// E: idle 卸载空闲会话 worker（docs/memory-governance-plan.md §E）。
+    /// `idle_secs` <= 0 时为 no-op（配置禁用）。对每个被卸载的 seed 发布
+    /// `SessionStateChanged::Closed`（与手动 close_session 一致，UI 可感知）。
+    /// 返回被卸载的 seed 列表。registry.close 是阻塞 join——调用方
+    /// （daemon 周期任务）必须置于 spawn_blocking。
+    pub fn unload_idle_sessions(&self, idle_secs: u64) -> Vec<String> {
+        if idle_secs == 0 {
+            return Vec::new();
+        }
+        let Ok(mut registry) = self.registry() else {
+            return Vec::new();
+        };
+        let unloaded = registry.unload_idle_sessions(idle_secs);
+        if let Some(hub) = self.hub.get() {
+            for seed in &unloaded {
+                let _ = hub.publish_with_causation(
+                    seed,
+                    qaqh_domain::DomainEvent::Control(
+                        qaqh_domain::ControlEvent::SessionStateChanged {
+                            seed: seed.to_string(),
+                            state: qaqh_domain::SessionState::Closed,
+                        },
+                    ),
+                    None,
+                );
+            }
+        }
+        for seed in &unloaded {
+            self.release_seed_resident_state(seed);
+        }
+        if !unloaded.is_empty() {
+            release_freed_heap_memory();
+        }
+        unloaded
     }
 
     /// 归档会话（标签 × 语义）：关闭 registry 实例 + meta `archived=true`。
@@ -879,10 +938,7 @@ fn dashboard(seed: &str) -> Result<Value, String> {
     Ok(json!({"tasks":tasks,"recent_edits":edits}))
 }
 
-fn activity(
-    sessions: &qaqh_session::SessionManager,
-    seed: &str,
-) -> Result<Value, String> {
+fn activity(sessions: &qaqh_session::SessionManager, seed: &str) -> Result<Value, String> {
     let (_, messages) = sessions
         .load(seed)
         .ok_or_else(|| "session not found".to_string())?;
@@ -1005,10 +1061,7 @@ fn qaqh_dir(sessions: &qaqh_session::SessionManager, seed: &str) -> std::path::P
         std::path::Path::new(&workspace).join(".qaqh")
     }
 }
-fn read_plan(
-    sessions: &qaqh_session::SessionManager,
-    seed: &str,
-) -> Result<Value, String> {
+fn read_plan(sessions: &qaqh_session::SessionManager, seed: &str) -> Result<Value, String> {
     let content = match std::fs::read_to_string(qaqh_dir(sessions, seed).join("PLAN.md")) {
         Ok(value) => value,
         Err(_) => return Ok(json!([])),
@@ -1076,6 +1129,33 @@ fn plan_action(
 }
 
 #[allow(dead_code)]
+/// D-2：会话 bundle 释放后尽力把空闲堆归还 OS。
+///
+/// glibc ptmalloc 的 arena 会保留已释放 chunk（worker join + drop 之后 RSS
+/// 不回落——诊断结论①：retention ≠ leak）。`malloc_trim(0)` 遍历各 arena
+/// 把连续空闲空间归还内核。其余平台无等价可移植 API：Windows UCRT / macOS /
+/// musl 下为 no-op（Windows 侧若仍需 RSS 回落，备选方案是 daemon 全局换用
+/// mimalloc 并开启 decommit——影响全局行为，需单独决策后实施）。
+fn release_freed_heap_memory() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        // SAFETY：malloc_trim 只归还空闲堆内存，不触碰存活分配；glibc 文档
+        // 保证线程安全。返回 1 表示确实归还了内存（0 = 无可归还）。
+        let returned = unsafe { libc::malloc_trim(0) };
+        if returned == 1 {
+            log::debug!("[memory] malloc_trim(0): freed heap pages returned to OS");
+        }
+    }
+}
+
+fn command_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("svc-{nanos:x}")
+}
+
 #[cfg(test)]
 mod tool_mode_tests {
     use super::{optional_tool_mode, validate_tool_mode};
@@ -1089,12 +1169,12 @@ mod tool_mode_tests {
     fn optional_tool_mode_rejects_deprecated_minimal_dsh() {
         // minimal:dsh 已随 bash/pwsh 拆分下线：废弃模式必须被 KNOWN_MODES
         // 白名单拒绝，不得回流。
-        assert!(optional_tool_mode(
-            &serde_json::json!({
+        assert!(
+            optional_tool_mode(&serde_json::json!({
                 "tool_mode": "minimal:dsh",
-            })
-        )
-        .is_err());
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -1122,12 +1202,4 @@ mod tool_mode_tests {
         }
         assert!(validate_tool_mode("turbo").is_err());
     }
-}
-
-fn command_id() -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("svc-{nanos:x}")
 }

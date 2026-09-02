@@ -1266,41 +1266,41 @@ fn exec_schema(with_shell: bool) -> serde_json::Value {
     let mut props = serde_json::Map::new();
     props.insert(
         "argv".into(),
-        serde_json::json!({ "type": "array", "items": {"type": "string"}, "description": "命令数组：argv[0]=可执行文件，argv[1..]=参数；无 shell" }),
+        serde_json::json!({ "type": "array", "items": {"type": "string"}, "description": "argv: [exe,args] no shell" }),
     );
     props.insert(
         "command".into(),
-        serde_json::json!({ "type": "string", "description": "shell 命令字符串（bash -c / pwsh -EncodedCommand / cmd /c 包装），用于管道/重定向/一行脚本；pwsh 下可配合 args 走 -CommandWithArgs" }),
+        serde_json::json!({ "type": "string", "description": "Shell command string" }),
     );
     props.insert(
         "args".into(),
-        serde_json::json!({ "type": "array", "items": {"type": "string"}, "description": "pwsh -CommandWithArgs 专用：传给 $args 的参数列表（仅 pwsh 且 command 模式有效；提供则走 -CommandWithArgs，否则走 -EncodedCommand）" }),
+        serde_json::json!({ "type": "array", "items": {"type": "string"}, "description": "pwsh -CommandWithArgs args" }),
     );
     if with_shell {
         props.insert(
             "shell".into(),
-            serde_json::json!({ "type": "string", "enum": ["bash", "zsh", "sh", "pwsh", "cmd"], "description": "command 的包装 shell（默认：Windows pwsh、Unix bash）；POSIX 语法选 bash。argv 模式忽略" }),
+            serde_json::json!({ "type": "string", "enum": ["bash", "zsh", "sh", "pwsh", "cmd"], "description": "Shell for command" }),
         );
     }
     props.insert(
         "cwd".into(),
-        serde_json::json!({"type": "string", "description": "工作目录（默认 workspace 根；相对路径基于 workspace 解析）"}),
+        serde_json::json!({"type": "string", "description": "Workdir (default workspace root)"}),
     );
     props.insert(
         "env".into(),
-        serde_json::json!({"type": "object", "additionalProperties": {"type": "string"}, "description": "子进程环境变量（可选）；同名覆盖"}),
+        serde_json::json!({"type": "object", "additionalProperties": {"type": "string"}, "description": "Env overrides"}),
     );
     props.insert(
         "timeout_secs".into(),
-        serde_json::json!({"type": "integer", "description": "超时秒数（1-3600，默认 30）"}),
+        serde_json::json!({"type": "integer", "description": "Timeout secs (1-3600, default 30)"}),
     );
     props.insert(
         "background_after_secs".into(),
-        serde_json::json!({"type": "integer", "description": "快速移交窗口：子进程运行超过该秒数即返回 backgrounded + process_id（用于长驻服务，随后用 process action=check/wait/kill 接管）"}),
+        serde_json::json!({"type": "integer", "description": "Background after secs -> backgrounded+process_id"}),
     );
     props.insert(
         "max_output_tokens".into(),
-        serde_json::json!({ "type": "integer", "description": "输出截断上限（默认 10000，范围 100-50000）" }),
+        serde_json::json!({ "type": "integer", "description": "Max output tokens (10000, 100-50000)" }),
     );
     serde_json::json!({
         "type": "object",
@@ -1327,9 +1327,13 @@ fn register_shell_tool(
     let _ = Shell::from_name("bash");
     let resolved = shell.path();
     let description = if key == "pwsh" {
-        format!("执行命令，固定使用 {key}（{resolved}；本机探测结果，可能随环境变化）。三种模式：(1) argv=[程序, 参数…] 直接执行（无 shell）；(2) command={key} 命令字符串（管道/重定向/一行脚本，走 -EncodedCommand Base64）；(3) command+args（走 -CommandWithArgs，args 原样进 $args，免引号拼接，7.6 LTS 主流）。返回 {{status, exit_code, output, wall_time_seconds, timed_out}}；超时移交时返回 backgrounded + process_id。该 shell 不可用时调用报错并列出可用 shell。")
+        format!(
+            "Run command via {key} ({resolved}). Modes: argv|[exe,args] or command|[shell string] (+args for -CommandWithArgs). Returns status/exit_code/output; backgrounded+process_id if timeout."
+        )
     } else {
-        format!("执行命令，固定使用 {key}（{resolved}；本机探测结果，可能随环境变化）。两种模式：(1) argv=[程序, 参数…] 直接执行（无 shell）；(2) command={key} 命令字符串（管道/重定向/一行脚本）。返回 {{status, exit_code, output, wall_time_seconds, timed_out}}；超时移交时返回 backgrounded + process_id。该 shell 不可用时调用报错并列出可用 shell。")
+        format!(
+            "Run command via {key} ({resolved}). Modes: argv|[exe,args] or command|[shell string]. Returns status/exit_code/output; backgrounded+process_id if timeout."
+        )
     };
     // ToolHandler.description 是 &'static str：注册仅进程启动一次，leak 即静态。
     let description: &'static str = Box::leak(description.into_boxed_str());
@@ -1491,13 +1495,17 @@ mod tests {
         let cmd = Shell::Cmd.derive_exec_args("dir");
         assert_eq!(&cmd[..2], ["cmd", "/c"]);
         assert_eq!(cmd[2], "dir");
-
     }
 
     #[test]
     fn pwsh_command_with_args_uses_command_with_args() {
-        let args = vec!["arg1".to_string(), "hello world".to_string(), "a\"b".to_string()];
-        let pwsh = Shell::PowerShell.derive_exec_args_with("Write-Output $args[0]; Write-Output $args[1]", Some(&args));
+        let args = vec![
+            "arg1".to_string(),
+            "hello world".to_string(),
+            "a\"b".to_string(),
+        ];
+        let pwsh = Shell::PowerShell
+            .derive_exec_args_with("Write-Output $args[0]; Write-Output $args[1]", Some(&args));
         assert_eq!(
             &pwsh[..12],
             [
@@ -1522,7 +1530,6 @@ mod tests {
         assert!(pwsh2.contains(&"-EncodedCommand".to_string()));
         assert!(!pwsh2.contains(&"-CommandWithArgs".to_string()));
     }
-
 
     #[test]
     fn pwsh_tool_with_args_executes_via_command_with_args() {
@@ -1555,7 +1562,11 @@ mod tests {
         );
         let r = handle_run_pwsh(ctx);
         assert!(r.is_success(), "model text: {}", r.model_text());
-        assert!(r.model_text().contains("中文测试"), "output: {}", r.model_text());
+        assert!(
+            r.model_text().contains("中文测试"),
+            "output: {}",
+            r.model_text()
+        );
     }
     #[test]
     fn test_git_status_returns_output() {

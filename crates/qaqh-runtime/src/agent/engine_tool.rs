@@ -157,29 +157,15 @@ impl ToolEngine {
             qaqh_workspace::Admission::ApprovalRequired(challenge) => {
                 let cat_str = challenge.category().as_str().to_string();
                 let cat_domain = match challenge.category() {
-                    qaqh_workspace::ToolCategory::Read => {
-                        qaqh_domain::PermissionCategory::Read
-                    }
-                    qaqh_workspace::ToolCategory::Write => {
-                        qaqh_domain::PermissionCategory::Write
-                    }
-                    qaqh_workspace::ToolCategory::Exec => {
-                        qaqh_domain::PermissionCategory::Exec
-                    }
-                    qaqh_workspace::ToolCategory::Net => {
-                        qaqh_domain::PermissionCategory::Net
-                    }
+                    qaqh_workspace::ToolCategory::Read => qaqh_domain::PermissionCategory::Read,
+                    qaqh_workspace::ToolCategory::Write => qaqh_domain::PermissionCategory::Write,
+                    qaqh_workspace::ToolCategory::Exec => qaqh_domain::PermissionCategory::Exec,
+                    qaqh_workspace::ToolCategory::Net => qaqh_domain::PermissionCategory::Net,
                 };
                 let risk_domain = match challenge.risk() {
-                    qaqh_workspace::PermissionRisk::Low => {
-                        qaqh_domain::PermissionRisk::Low
-                    }
-                    qaqh_workspace::PermissionRisk::Medium => {
-                        qaqh_domain::PermissionRisk::Medium
-                    }
-                    qaqh_workspace::PermissionRisk::High => {
-                        qaqh_domain::PermissionRisk::High
-                    }
+                    qaqh_workspace::PermissionRisk::Low => qaqh_domain::PermissionRisk::Low,
+                    qaqh_workspace::PermissionRisk::Medium => qaqh_domain::PermissionRisk::Medium,
+                    qaqh_workspace::PermissionRisk::High => qaqh_domain::PermissionRisk::High,
                 };
                 let turn_id = format!("tc_{}", challenge.call_id());
                 let permission = qaqh_domain::TimelineToolPermission {
@@ -390,10 +376,11 @@ impl ToolEngine {
         for tool in tools {
             // 已移除 minimal:dsh PTY（bash_v2 下线），当前恒等。
             // 让权限准入 / prepare_req / handler 全部走内部 key，原生 bash 不参与。
-            let effective_name = crate::agent::state::agent::AgentState::normalize_tool_name_for_mode(
-                &ctx.agent.session.tool_mode,
-                &tool.name,
-            );
+            let effective_name =
+                crate::agent::state::agent::AgentState::normalize_tool_name_for_mode(
+                    &ctx.agent.session.tool_mode,
+                    &tool.name,
+                );
             match qaqh_workspace::authorize_call(
                 &ctx.agent.session.seed,
                 &tool.id,
@@ -484,29 +471,19 @@ impl ToolEngine {
                     // Ringing：LLM 工具轮权限请求（legacy PermissionRequest 的替代，
                     // 与 handle_ui_tool_call 路径一致）。
                     let cat_domain = match challenge.category() {
-                        qaqh_workspace::ToolCategory::Read => {
-                            qaqh_domain::PermissionCategory::Read
-                        }
+                        qaqh_workspace::ToolCategory::Read => qaqh_domain::PermissionCategory::Read,
                         qaqh_workspace::ToolCategory::Write => {
                             qaqh_domain::PermissionCategory::Write
                         }
-                        qaqh_workspace::ToolCategory::Exec => {
-                            qaqh_domain::PermissionCategory::Exec
-                        }
-                        qaqh_workspace::ToolCategory::Net => {
-                            qaqh_domain::PermissionCategory::Net
-                        }
+                        qaqh_workspace::ToolCategory::Exec => qaqh_domain::PermissionCategory::Exec,
+                        qaqh_workspace::ToolCategory::Net => qaqh_domain::PermissionCategory::Net,
                     };
                     let risk_domain = match challenge.risk() {
-                        qaqh_workspace::PermissionRisk::Low => {
-                            qaqh_domain::PermissionRisk::Low
-                        }
+                        qaqh_workspace::PermissionRisk::Low => qaqh_domain::PermissionRisk::Low,
                         qaqh_workspace::PermissionRisk::Medium => {
                             qaqh_domain::PermissionRisk::Medium
                         }
-                        qaqh_workspace::PermissionRisk::High => {
-                            qaqh_domain::PermissionRisk::High
-                        }
+                        qaqh_workspace::PermissionRisk::High => qaqh_domain::PermissionRisk::High,
                     };
                     ctx.emitter.emit_domain(qaqh_domain::DomainEvent::Tool(
                         qaqh_domain::ToolEvent::ToolPermissionRequested {

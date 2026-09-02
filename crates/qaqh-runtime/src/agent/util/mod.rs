@@ -275,4 +275,3 @@ pub(crate) fn emit_round_complete_via_emitter(
         },
     ));
 }
-

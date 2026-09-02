@@ -4,7 +4,10 @@
 //! 后续 `parse`/`admit`/`backfill` 共享 terminal helpers。
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
+
+static GLOBAL_TIMELINE_SEGMENT: AtomicU32 = AtomicU32::new(0);
 
 use qaqh_types::UsageInfo;
 
@@ -274,8 +277,14 @@ pub(crate) fn ensure_stream_block(
         qaqh_domain::TimelineBlockKind::Text => "text",
         _ => "stream",
     };
-    let block_id = format!("round-{round_num}:{label}:{}", *segment);
-    *segment = (*segment).saturating_add(1);
+    // Use a process-global monotonic segment to avoid ID collisions across
+    // continuation laps (same round_num with reset per-request segment would
+    // reuse IDs like round-0:text:0). Keeps timeline block IDs unique while
+    // block_order is still assigned by the timeline store.
+    let seg = GLOBAL_TIMELINE_SEGMENT.fetch_add(1, Ordering::Relaxed);
+    // Keep the per-request segment in sync for callers that still read it
+    *segment = segment.saturating_add(1);
+    let block_id = format!("round-{round_num}:{label}:{seg}");
     ctx.emitter
         .emit_timeline(qaqh_domain::TimelineIntent::BlockOpened {
             turn_id: turn_id.to_string(),
@@ -444,17 +453,15 @@ pub(crate) fn gate_request(
                 if let Some(ref u) = usage {
                     ctx.agent.session.record_usage(u);
                     if !ctx.agent.ephemeral {
-                        ctx.agent
-                            .enqueue_meta_op(crate::agent::state::agent::MetaOp::PersistUsage {
+                        ctx.agent.enqueue_meta_op(
+                            crate::agent::state::agent::MetaOp::PersistUsage {
                                 seed: ctx.agent.session.seed.clone(),
                                 totals: ctx.agent.session.usage_totals.clone(),
                                 last_usage: ctx.agent.session.last_usage.clone(),
                                 requests: ctx.agent.session.usage_requests,
-                                cache_reported_requests: ctx
-                                    .agent
-                                    .session
-                                    .cache_reported_requests,
-                            });
+                                cache_reported_requests: ctx.agent.session.cache_reported_requests,
+                            },
+                        );
                     }
                     util::record_token_usage(u, &ctx.agent.config.model);
                     last_usage = usage.clone();
@@ -677,6 +684,7 @@ pub(crate) fn provider_for(ctx: &RingContext, request_tag: &str) -> qaqh_gate::P
         if p.model.contains("muse-spark") {
             p.prompt_cache_key = Some(ctx.agent.session.seed.clone());
             p.responses_compat.echo_reasoning_content = false;
+            p.responses_compat.send_include = false;
             p.responses_compat.effort_max = "xhigh".into();
             p.responses_compat.web_search = false;
             p.responses_compat.echo_web_search_call = false;

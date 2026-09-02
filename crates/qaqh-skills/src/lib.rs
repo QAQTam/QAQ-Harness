@@ -18,9 +18,7 @@ use std::path::{Component, Path, PathBuf};
 pub mod runtime;
 pub mod session_state;
 pub use runtime::{SkillContextManager, SkillRuntimeInfo, SkillRuntimeState, SkillTurnSnapshot};
-pub use session_state::{
-    SkillSessionEntry, SkillSessionEntryState, SkillSessionStateV2,
-};
+pub use session_state::{SkillSessionEntry, SkillSessionEntryState, SkillSessionStateV2};
 
 /// Magic marker that identifies a SKILL.md file as an active skill definition.
 pub const ACTIVATION_MARKER: &str = "[QAQH_SKILL_V1]";

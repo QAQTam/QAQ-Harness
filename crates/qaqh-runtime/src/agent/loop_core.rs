@@ -240,19 +240,20 @@ pub struct Loop {
 
     /// Direct output emitter. The renderer performs frame-level coalescing.
     paced_emitter: PacedEmitter,
+
+    /// Idle-unload liveness signal shared with the daemon registry. The Loop
+    /// is the producer (busy/activity/suspend), the registry is the consumer.
+    liveness: std::sync::Arc<super::liveness::WorkerLiveness>,
 }
 
 impl Loop {
-    /// Construct a Loop from pre-created in-process channel ends.
-    ///
-    /// The caller owns the producer side (`cmd_tx`) and consumer side
-    /// (`event_rx`) from [`LoopChannels`].
     pub fn from_channels(
         agent: AgentState,
         cmd_rx: mpsc::Receiver<WorkerCommand>,
         event_tx: mpsc::SyncSender<WriterEvent>,
         cancel: CancelToken,
         writer_dead: Arc<AtomicBool>,
+        liveness: std::sync::Arc<super::liveness::WorkerLiveness>,
     ) -> Self {
         // resume 模式下 `--resume-seed` 只写入 resume_seed 字段，seed 此时
         // 仍为空；用 resume_seed 兜底，避免 PacedEmitter 以空 seed 构造
@@ -288,6 +289,7 @@ impl Loop {
             pending_compact_id: None,
             pending_compact_causation: None,
             paced_emitter,
+            liveness,
         }
     }
 
@@ -310,6 +312,9 @@ impl Loop {
     where
         F: FnOnce(&mut Self) + std::panic::UnwindSafe,
     {
+        // Idle-unload liveness: this dispatch counts as activity; the registry
+        // must never unload while it is running.
+        self.liveness.set_busy(true);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             f(self);
         }));
@@ -323,6 +328,10 @@ impl Loop {
             self.phase = LoopPhase::Idle;
             self.cancel.clear();
             qaqh_workspace::clear_cancel();
+            // L1: a panic must not widen the persistence loss window. Ops
+            // enqueued before the panic are complete PersistOps — applying
+            // them here keeps the archive at the last coherent round boundary.
+            self.session.agent.drain_persist_ops();
 
             // panic 恢复：Ringing 侧以 OperationFailed 暴露（legacy Error/Done 已拆除）。
             self.paced_emitter
@@ -353,6 +362,14 @@ impl Loop {
                     },
                 ));
         }
+
+        // Liveness bookkeeping runs on both the success and panic-recovery
+        // paths: a completed dispatch is activity, and a suspended turn
+        // (unresolved ask / permission / plan) blocks idle unload.
+        self.liveness.set_busy(false);
+        self.liveness.touch();
+        self.liveness
+            .set_suspend_pending(self.session.turn.is_suspended());
     }
 
     /// Reset all engines to clean idle state.

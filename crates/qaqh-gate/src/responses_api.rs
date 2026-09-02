@@ -140,6 +140,18 @@ fn convert_messages_to_input(
                     })
                     .collect();
                 for item in &response_items {
+                    // muse-spark + prompt_cache_key path: server restores phase
+                    // via prompt_cache_key, opaque reasoning (encrypted_content)
+                    // must not be replayed — it inflates the prompt and busts
+                    // the physical prefix cache. Filter both at input build
+                    // (old files still contain it) and at preservation (new
+                    // files should not store it — see
+                    // preserve_completed_output_item's compat guard).
+                    let is_reasoning_item =
+                        item.get("type").and_then(|v| v.as_str()) == Some("reasoning");
+                    if is_reasoning_item && !compat.echo_reasoning_content {
+                        continue;
+                    }
                     items.push((*item).clone());
                 }
                 let has_response_type = |expected: &str| {
@@ -268,6 +280,24 @@ fn convert_messages_to_input(
                                 ],
                             }));
                         }
+                        ContentBlock::ImageRef {
+                            sha256, mime_type, ..
+                        } => {
+                            // A-2 L0：按需读盘后走同一 data URL 降格路径。
+                            match qaqh_types::image_store::load_image_b64(sha256, mime_type) {
+                                Ok(data) => items.push(serde_json::json!({
+                                    "type": "message",
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "input_text", "text": "Attached media from tool result:"},
+                                        {"type": "input_image", "image_url": format!("data:{mime_type};base64,{data}")},
+                                    ],
+                                })),
+                                Err(e) => log::warn!(
+                                    "[gate] image {sha256} load failed, dropped from responses request: {e}"
+                                ),
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -301,6 +331,20 @@ fn convert_user_content(blocks: &[ContentBlock], img_idx: &mut usize) -> Vec<ser
                     "text": format!(
                         "[Image #{img_idx}: {mime_type}, ~{} bytes — call read_image(image_index={img_idx}) to view it yourself]",
                         data.len()
+                    )
+                }));
+                *img_idx += 1;
+            }
+            ContentBlock::ImageRef {
+                mime_type,
+                bytes_len,
+                ..
+            } => {
+                // A-2 L0：外置图片仅持索引，占位符用 bytes_len 显示。
+                parts.push(serde_json::json!({
+                    "type": "input_text",
+                    "text": format!(
+                        "[Image #{img_idx}: {mime_type}, ~{bytes_len} bytes — call read_image(image_index={img_idx}) to view it yourself]"
                     )
                 }));
                 *img_idx += 1;
@@ -977,7 +1021,9 @@ fn handle_responses_event(
                 state.usage = Some(usage.clone());
                 on_event(StreamEvent::UsageUpdate(usage));
             }
-            EventAction::Completed { stop_reason: None }
+            EventAction::Completed {
+                stop_reason: Some("stop".to_string()),
+            }
         }
         "response.incomplete" => {
             if let Some(response) = data.get("response") {
@@ -1033,6 +1079,18 @@ fn preserve_completed_output_item(
         },
     );
     if duplicate {
+        return;
+    }
+    // muse-spark path: do not persist opaque reasoning (encrypted_content)
+    // at all — it is already available as plaintext Reasoning via
+    // reasoning_text deltas / summary, and persisting it bloats
+    // messages.jsonl and would be filtered at replay anyway. Other
+    // models (DeepSeek/MiMo/Kimi) keep it for stateless replay.
+    let is_reasoning = item.get("type").and_then(|v| v.as_str()) == Some("reasoning");
+    if is_reasoning && !state.compat.echo_reasoning_content {
+        // Still project nothing: reasoning is already captured via
+        // response.reasoning_summary_text.delta → ReasoningDelta →
+        // ContentBlock::Reasoning in emit_done.
         return;
     }
     state.response_output_items.push(item.clone());
@@ -1887,7 +1945,9 @@ mod tests {
         let action = handle_responses_event(&data, &mut state, &mut |e| events.push(e));
         assert!(matches!(
             action,
-            EventAction::Completed { stop_reason: None }
+            EventAction::Completed {
+                stop_reason: Some(reason)
+            } if reason == "stop"
         ));
         assert_eq!(events.len(), 1);
         match &events[0] {

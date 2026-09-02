@@ -41,9 +41,7 @@
 //! 2. 对外构造唯一入口为 `spawn_agent`（`actor.rs` / `registry.rs` 不得自行
 //!    装配 `AgentState`）。
 
-
 pub(crate) mod dashboard;
-pub mod input_guard;
 pub mod engine_compact;
 pub mod engine_input;
 pub mod engine_misc;
@@ -52,14 +50,17 @@ pub mod engine_title;
 pub mod engine_tool;
 pub mod engine_turn;
 pub mod injection;
+pub mod input_guard;
+pub mod liveness;
 pub mod loop_core;
 pub mod paced_emitter;
 pub mod prompt;
 pub(crate) mod spawn;
+pub mod state;
+pub(crate) mod tool_outbox;
 pub(crate) mod turn_lap;
 pub mod types;
-pub mod wire;
-pub mod state;
 pub mod util;
+pub mod wire;
 
-pub(crate) use spawn::{spawn_agent, ActorKind, SubagentSpawnSpec};
+pub(crate) use spawn::{ActorKind, SubagentSpawnSpec, spawn_agent};

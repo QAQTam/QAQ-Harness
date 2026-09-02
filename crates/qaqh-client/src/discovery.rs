@@ -33,7 +33,10 @@ impl DaemonDiscovery {
         } else if let Some(r) = self.endpoint.strip_prefix("https://") {
             (r, "https")
         } else {
-            return Err(ClientError::Discovery(format!("unexpected endpoint: {}", self.endpoint)));
+            return Err(ClientError::Discovery(format!(
+                "unexpected endpoint: {}",
+                self.endpoint
+            )));
         };
         let host = rest.split('/').next().unwrap_or("");
         if host.is_empty() {

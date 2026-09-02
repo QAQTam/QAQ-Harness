@@ -58,6 +58,13 @@ pub struct PersistentConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notifications_enabled: Option<bool>,
 
+    // ── Daemon session policy ──
+    /// 空闲会话 worker 自动卸载阈值（秒）。`None`/0 = 禁用（缺省）。
+    /// 卸载 = 优雅 seal + 从 registry 摘除 + 释放内存；下次输入自动
+    /// load_for_resume 恢复。详见 docs/memory-governance-plan.md §E。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_idle_unload_secs: Option<u64>,
+
     // ── Subagent defaults ──
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subagent: Option<PersistentSubagentConfig>,

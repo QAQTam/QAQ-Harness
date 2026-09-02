@@ -1,5 +1,5 @@
-use crate::{SkillActivation, SkillBodyChange, SkillCatalogSnapshot, SkillEffect};
 use crate::session_state::{SkillSessionEntry, SkillSessionEntryState, SkillSessionStateV2};
+use crate::{SkillActivation, SkillBodyChange, SkillCatalogSnapshot, SkillEffect};
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 

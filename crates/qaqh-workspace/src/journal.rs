@@ -450,16 +450,16 @@ pub fn register(mgr: &mut crate::ToolManager) {
     mgr.register_with_placement(
         crate::ToolHandler {
             key: "journal".to_string(),
-            description: "Query or replay the session modification journal (SMJ). Use action='query' to list recorded file modifications, action='export' to dump all steps for a session, or action='replay' to recover a file's content at a sequence point.",
+            description: "Query/replay session journal (SMJ): query list, export dump, replay restore.",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["query", "export", "replay"], "default": "query", "description": "query=filter steps; export=all steps for a session; replay=restore file content"},
-                    "session": {"type": "string", "description": "Session seed filter"},
-                    "file": {"type": "string", "description": "File path filter (for query) or file to replay"},
-                    "since": {"type": "integer", "description": "Only steps with ts >= since (epoch seconds)"},
-                    "at": {"type": "integer", "description": "Replay up to this sequence number (inclusive)"},
-                    "out": {"type": "string", "description": "Optional output path for replay"}
+                    "action": {"type": "string", "enum": ["query", "export", "replay"], "default": "query", "description": "Action"},
+                    "session": {"type": "string", "description": "Session seed"},
+                    "file": {"type": "string", "description": "File filter / replay target"},
+                    "since": {"type": "integer", "description": "Since epoch seconds"},
+                    "at": {"type": "integer", "description": "Replay up to seq"},
+                    "out": {"type": "string", "description": "Output path for replay"}
                 },
                 "required": ["action"],
                 "additionalProperties": false

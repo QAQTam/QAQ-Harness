@@ -365,25 +365,17 @@ pub fn register(mgr: &mut crate::ToolManager) {
     mgr.register_with_placement(
         ToolHandler {
             key: "grep".to_string(),
-            description: "Search file CONTENTS using the ripgrep engine (in-process, no external \
-                binary). Returns 'path:line:content' matches (relative paths, context lines as \
-                'path-line-content'), workspace-bounded, gitignored/hidden/binary files skipped \
-                by default. Pattern is a regex (rg syntax: 'fn main', 'TODO|FIXME', \
-                '\\bfn\\s+\\w+'). Case-insensitive by default (set case_sensitive=true for exact \
-                case). Use 'glob' to restrict to file patterns (e.g. [\"*.rs\", \"!**/tests/**\"]). \
-                Results are capped at max_results (default 200) with a truncated marker — narrow \
-                the pattern rather than raising it. For file NAME listing use glob; for arbitrary \
-                commands use exec.",
+            description: "Search file contents (ripgrep, regex). Returns path:line:content; use glob to filter files; max_results capped.",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "pattern": {"type": "string", "description": "Regex pattern (rg syntax)"},
-                    "paths": {"type": "array", "items": {"type": "string"}, "description": "Directories/files to search (relative to workspace root; default: whole workspace)"},
-                    "glob": {"type": "array", "items": {"type": "string"}, "description": "File filters, e.g. [\"*.rs\", \"!**/tests/**\"] (rg -g syntax)"},
-                    "case_sensitive": {"type": "boolean", "default": false, "description": "Match case exactly (default: case-insensitive)"},
-                    "context_before": {"type": "integer", "minimum": 0, "description": "Lines of context before each match"},
-                    "context_after": {"type": "integer", "minimum": 0, "description": "Lines of context after each match"},
-                    "max_results": {"type": "integer", "minimum": 1, "maximum": 2000, "description": "Max matches to return (default 200; overflow flagged truncated)"}
+                    "pattern": {"type": "string", "description": "Regex (rg syntax)"},
+                    "paths": {"type": "array", "items": {"type": "string"}, "description": "Dirs to search"},
+                    "glob": {"type": "array", "items": {"type": "string"}, "description": "File filters (rg -g)"},
+                    "case_sensitive": {"type": "boolean", "default": false, "description": "Case-sensitive (default false)"},
+                    "context_before": {"type": "integer", "minimum": 0, "description": "Context before"},
+                    "context_after": {"type": "integer", "minimum": 0, "description": "Context after"},
+                    "max_results": {"type": "integer", "minimum": 1, "maximum": 2000, "description": "Max results (default 200)"}
                 },
                 "required": ["pattern"],
                 "additionalProperties": false

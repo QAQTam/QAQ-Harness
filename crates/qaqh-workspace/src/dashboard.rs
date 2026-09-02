@@ -38,8 +38,18 @@ pub fn build_tasks() -> Vec<TaskInfo> {
     crate::todo::get_todo_infos()
 }
 
+pub fn build_tasks_for(seed: &str) -> Vec<TaskInfo> {
+    crate::todo::get_todo_infos_for(seed)
+}
+
 pub fn build_current_todo_id() -> Option<String> {
     crate::todo::load_todo()
+        .ok()
+        .and_then(|store| store.current_id)
+}
+
+pub fn build_current_todo_id_for(seed: &str) -> Option<String> {
+    crate::todo::load_todo_for(seed)
         .ok()
         .and_then(|store| store.current_id)
 }

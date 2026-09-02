@@ -2,14 +2,14 @@
 //!
 //! Follows the same pattern as qaqh-workspace::ToolManager.
 
+pub mod grouping;
 pub mod manager;
 mod migrate;
 pub mod session_meta;
 pub mod store;
-pub mod grouping;
+pub use grouping::{WorkspaceMeta, WorkspaceStore};
 pub use manager::{CompactContext, SessionManager};
 pub use session_meta::SessionMeta;
-pub use grouping::{WorkspaceMeta, WorkspaceStore};
 
 /// Free-function seed generator (PR-1-5 / B6): loop crates consume the
 /// helpers without naming the [`SessionManager`] type. Delegates to the

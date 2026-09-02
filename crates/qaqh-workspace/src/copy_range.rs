@@ -375,23 +375,16 @@ fn handle_copy_range(ctx: crate::ToolCallCtx) -> ToolResult {
 pub fn register(mgr: &mut crate::ToolManager) {
     mgr.register_with_placement(ToolHandler {
         key: "copy_range".to_string(),
-        description: concat!(
-            "Copy a CONTENT RANGE from one file to another (or within one file) WITHOUT re-typing the body. ",
-            "The range is anchored by content, not line numbers: 'source_start' and optional 'source_end' are each a SHORT unique line fragment (the first line and last line of the range; omit source_end to copy a single line). ",
-            "Insertion: mode insert_after/insert_before with 'target_anchor' (a unique line fragment in the target), or append (end of file, default) / prepend (start of file). ",
-            "Matching is exact per whole line (trailing whitespace tolerated); ambiguous anchors are rejected with candidate line numbers — make anchors longer/more unique. ",
-            "This is NOT clipboard copy and NOT whole-file copy (that is exec cp); it copies a selected region of file contents between workspace files. ",
-            "The model only writes the anchors (a few tokens); the engine reads the region from the source file verbatim."
-        ),
+        description: "Copy content range by line anchors (exact line match). source_start/source_end = range; mode=insert_after/before(need target_anchor) or append/prepend.",
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
-                "source_path": {"type": "string", "description": "File to copy FROM (relative to workspace root)"},
-                "source_start": {"type": "string", "description": "Anchor line: first line of the range to copy (exact whole-line match, trailing whitespace tolerated)"},
-                "source_end": {"type": "string", "description": "Optional anchor line: last line of the range (inclusive); omit to copy a single line", "default": null},
-                "target_path": {"type": "string", "description": "File to copy INTO (relative to workspace root)"},
-                "target_anchor": {"type": "string", "description": "Required when mode is insert_after/insert_before: the line to insert after/before"},
-                "mode": {"type": "string", "enum": ["insert_after", "insert_before", "append", "prepend"], "description": "Where to insert in the target; default append", "default": "append"}
+                "source_path": {"type": "string", "description": "Source file"},
+                "source_start": {"type": "string", "description": "Start anchor line (exact)"},
+                "source_end": {"type": "string", "description": "End anchor inclusive; omit=single line", "default": null},
+                "target_path": {"type": "string", "description": "Target file"},
+                "target_anchor": {"type": "string", "description": "Anchor for insert_after/before"},
+                "mode": {"type": "string", "enum": ["insert_after", "insert_before", "append", "prepend"], "description": "Insert position (default append)", "default": "append"}
             },
             "required": ["source_path", "source_start", "target_path"],
             "additionalProperties": false

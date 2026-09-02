@@ -7,9 +7,9 @@ use std::io::{BufRead, Write};
 use std::sync::atomic::Ordering;
 
 use qaqh_runtime::agent::loop_core::{Loop, LoopChannels, ringing_command_is_interrupt};
+use qaqh_runtime::agent::state::agent::AgentState;
 use qaqh_runtime::agent::types::{WorkerCommand, WriterEvent};
 use qaqh_runtime::agent::wire::read_worker_command_frame;
-use qaqh_runtime::agent::state::agent::AgentState;
 
 /// First-class pipe transport for tests: spawns the reader (input → command
 /// channel) and writer (event channel → output) threads that `Loop::new_ipc`
@@ -75,6 +75,7 @@ pub fn spawn_pipe_loop(
         channels.event_tx,
         channels.cancel,
         channels.writer_dead,
+        std::sync::Arc::new(qaqh_runtime::agent::liveness::WorkerLiveness::new()),
     )
 }
 

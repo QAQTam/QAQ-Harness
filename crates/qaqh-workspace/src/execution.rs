@@ -446,8 +446,14 @@ mod tests {
         assert!(!traversal.success);
         assert!(traversal.content.contains("SKILL_RESOURCE_UNAVAILABLE"));
 
-        let list =
-            execute_with_context("skills", "", r#"{"action":"list"}"#, "skills-list-1", None, &crate::runtime::ToolCtx::admitted("test_session"));
+        let list = execute_with_context(
+            "skills",
+            "",
+            r#"{"action":"list"}"#,
+            "skills-list-1",
+            None,
+            &crate::runtime::ToolCtx::admitted("test_session"),
+        );
         assert!(list.success);
         assert!(list.content.contains("typed-skill"));
 
@@ -771,7 +777,14 @@ mod tests {
         crate::runtime::set_context("test_session", 4);
         TEST_HANDLER_COUNT.store(0, Ordering::SeqCst);
         // With Level 4 permission context, auto-approve should work
-        let result = execute_with_context("test_counter", "", "{}", "compat-2", None, &crate::runtime::ToolCtx::admitted("test_session"));
+        let result = execute_with_context(
+            "test_counter",
+            "",
+            "{}",
+            "compat-2",
+            None,
+            &crate::runtime::ToolCtx::admitted("test_session"),
+        );
         assert!(
             result.success,
             "compat wrapper should succeed with permission context: {}",
@@ -903,7 +916,14 @@ mod tests {
         let _test_guard = setup_test_manager();
         crate::runtime::set_context("test", 4);
         TEST_HANDLER_COUNT.store(0, Ordering::SeqCst);
-        let result = execute_with_context("test_counter", "", "not-json{{{", "inv-json-1", None, &crate::runtime::ToolCtx::admitted("test"));
+        let result = execute_with_context(
+            "test_counter",
+            "",
+            "not-json{{{",
+            "inv-json-1",
+            None,
+            &crate::runtime::ToolCtx::admitted("test"),
+        );
         assert!(!result.success, "invalid JSON should fail");
         assert!(
             result.content.contains("[ERROR]"),

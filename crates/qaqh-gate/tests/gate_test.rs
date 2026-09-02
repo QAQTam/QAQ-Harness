@@ -6,7 +6,7 @@ mod common;
 use common::mock_server::{self, MockServer, SseChunk};
 
 use qaqh_gate::{ProviderConfig, StreamEvent};
-use qaqh_types::{ContentBlock, Message, ToolDef, ToolFunction};
+use qaqh_types::{ContentBlock, Message, ToolDef, ToolFunction, ToolResult};
 use serde_json::json;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1142,4 +1142,56 @@ fn responses_chat_stream_http_error_retries() {
         2,
         "should have retried once"
     );
+}
+
+#[test]
+fn tool_result_image_ref_is_lowered_to_data_uri() {
+    // A-2 L0：消息里只带 ImageRef 索引；gate 构建请求时读盘物化为 data URI。
+    let tmp = std::env::temp_dir().join(format!("qaqh-gate-img-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    unsafe { std::env::set_var("QAQH_DATA_DIR", &tmp) };
+
+    let b64 = "aGVsbG8gcXNxai1pbWFnZQ==";
+    let sha = qaqh_types::image_store::store_image_b64(b64, "image/png").expect("store image");
+
+    let scenario = vec![
+        SseChunk::text("seen"),
+        SseChunk::finish("stop", None),
+        SseChunk::done(),
+    ];
+    let mock = MockServer::new(scenario);
+    let provider = make_provider(&mock);
+
+    let messages = vec![Message {
+        msg_id: None,
+        role: "tool".to_string(),
+        name: None,
+        content: vec![
+            ContentBlock::ToolResult {
+                tool_use_id: "call-1".to_string(),
+                result: ToolResult::ok("image attached"),
+            },
+            ContentBlock::ImageRef {
+                sha256: sha,
+                mime_type: "image/png".to_string(),
+                bytes_len: b64.len(),
+            },
+        ],
+    }];
+
+    let _events = collect_events(&provider, messages, None);
+
+    let body = mock
+        .last_request_body
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .expect("request body captured");
+    assert!(
+        body.contains(&format!("data:image/png;base64,{b64}")),
+        "ImageRef must be materialized to a data URI on the wire"
+    );
+
+    unsafe { std::env::remove_var("QAQH_DATA_DIR") };
+    let _ = std::fs::remove_dir_all(&tmp);
 }

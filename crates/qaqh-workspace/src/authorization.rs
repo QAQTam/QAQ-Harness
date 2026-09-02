@@ -491,7 +491,9 @@ static GLOBAL_TRUSTED: std::sync::Mutex<Option<crate::permission::TrustedFolderS
     std::sync::Mutex::new(None);
 
 fn with_global_trusted<R>(f: impl FnOnce(&mut crate::permission::TrustedFolderSet) -> R) -> R {
-    let mut guard = GLOBAL_TRUSTED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = GLOBAL_TRUSTED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let set = guard.get_or_insert_with(|| {
         // 语义与旧 `ToolEngine::new` 的 `TrustedFolderSet::load("")` 逐字一致
         // （进程级共享信任文件）；惰性初始化，装配方零调用负担。

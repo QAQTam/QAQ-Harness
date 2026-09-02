@@ -21,7 +21,6 @@ pub const MINIMAL_B: &str = "minimal:b";
 /// Minimal tier C: smallest stress-test set.
 pub const MINIMAL_C: &str = "minimal:c";
 
-
 /// User-selected allowlist supplied through `custom_tools`.
 pub const CUSTOM: &str = "custom";
 
@@ -50,14 +49,9 @@ pub const MINIMAL_TOOLS_B: &[&str] = &["bash", "edit", "glob", "grep", "read", "
 /// Minimal tier C (internal registration keys).
 pub const MINIMAL_TOOLS_C: &[&str] = &["bash", "edit", "glob", "confirm_apply"];
 
-
-
 /// Returns `true` for every mode accepted by the daemon action whitelist.
 pub fn is_known(mode: &str) -> bool {
-    matches!(
-        mode,
-        STANDARD | MINIMAL | MINIMAL_B | MINIMAL_C | CUSTOM
-    )
+    matches!(mode, STANDARD | MINIMAL | MINIMAL_B | MINIMAL_C | CUSTOM)
 }
 
 /// Returns `true` for the minimal family. Callers must validate unknown names
@@ -121,6 +115,4 @@ mod tests {
         assert_eq!(preset_tools(CUSTOM), None);
         assert_eq!(preset_tools(""), None);
     }
-
-
 }

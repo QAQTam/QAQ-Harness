@@ -88,20 +88,12 @@ pub fn register(mgr: &mut crate::ToolManager) {
     mgr.register_with_placement(
         ToolHandler {
             key: "confirm_apply".to_string(),
-            description: concat!(
-                "Commit or discard a pending dry-run. ",
-                "edit / apply_patch / write called with dry_run=true return a pending_id when the dry-run passes. ",
-                "After asking the user for confirmation, call confirm_apply with that pending_id and action=\"apply\" to commit ",
-                "— the engine replays the stored parameters, so you do NOT re-send the hunks/patch/content. ",
-                "action=\"discard\" drops the pending without writing. ",
-                "One-shot: each pending_id works once; expires after 30 minutes. ",
-                "If the file changed since the dry-run, the commit is rejected (re-run the dry-run)."
-            ),
+            description: "Commit/discard pending dry_run (pending_id from edit/apply_patch/write). One-shot, 30min expiry.",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "pending_id": {"type": "string", "description": "pending_id returned by a dry_run of edit / apply_patch / write"},
-                    "action": {"type": "string", "enum": ["apply", "discard"], "default": "apply", "description": "apply = commit the pending change; discard = drop it"}
+                    "pending_id": {"type": "string", "description": "Pending ID from dry_run"},
+                    "action": {"type": "string", "enum": ["apply", "discard"], "default": "apply", "description": "apply or discard"}
                 },
                 "required": ["pending_id"],
                 "additionalProperties": false

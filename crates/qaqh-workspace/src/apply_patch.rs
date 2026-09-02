@@ -192,19 +192,12 @@ fn handle_apply_patch(ctx: crate::ToolCallCtx) -> ToolResult {
 pub fn register(mgr: &mut crate::ToolManager) {
     mgr.register_with_placement(ToolHandler {
         key: "apply_patch".to_string(),
-        description: concat!(
-            "Apply a Codex-format patch (the '*** Begin Patch' format) to the workspace repo. ",
-            "Structure: '*** Begin Patch' … '*** End Patch' with '*** Add File: <path>' / '*** Delete File: <path>' / '*** Update File: <path>' sections; hunk lines start with '+' (add), '-' (remove), ' ' (context); '@@ <context>' starts a chunk (context anchors the match); '*** Move to: <path>' renames; '*** End of File' anchors a chunk at EOF. ",
-            "NO line numbers: matching is content-based with 4 tiers (exact → trailing-whitespace-insensitive → trimmed → Unicode-normalised typographic punctuation). ",
-            "Hunks apply in order; when one fails, files already written stay, so re-send a corrected FULL patch for a clean result (or dry_run=true first to pre-check every hunk). ",
-            "Example:\n```\n*** Begin Patch\n*** Update File: src/a.rs\n@@ fn main\n-let old = 1;\n+let old = 2;\n*** End Patch\n```\n",
-            "For structured single-file edits use edit."
-        ),
+        description: "Apply Codex-format patch (*** Begin Patch). Content-matched hunks; use dry_run to preview.",
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
-                "patch": {"type": "string", "description": "Codex-format patch text: '*** Begin Patch' ... '*** End Patch'; '+'/'-'/' ' prefixed hunk lines; '@@ <context>' chunk anchors; '*** Add/Delete/Update File:' sections. Multiple files allowed in one patch."},
-                "dry_run": {"type": "boolean", "description": "Pre-check parsing + every hunk against current file contents; do not apply", "default": false}
+                "patch": {"type": "string", "description": "Codex patch text"},
+                "dry_run": {"type": "boolean", "description": "Preview only", "default": false}
             },
             "required": ["patch"],
             "additionalProperties": false

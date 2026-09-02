@@ -74,7 +74,11 @@ fn inject_image_capability() {
     let (endpoint, model) = match qaqh_config::Config::load() {
         Ok(cfg) => (
             qaqh_config::registry::image_tool_enabled(&cfg.provider_id, &cfg.endpoint),
-            qaqh_config::registry::image_model_supported(&cfg.provider_id, &cfg.endpoint, &cfg.model),
+            qaqh_config::registry::image_model_supported(
+                &cfg.provider_id,
+                &cfg.endpoint,
+                &cfg.model,
+            ),
         ),
         Err(_) => (true, true),
     };

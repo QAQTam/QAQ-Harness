@@ -36,18 +36,42 @@ const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 static IMAGE_REGISTRY: std::sync::LazyLock<Mutex<HashMap<String, Vec<ImageEntry>>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Registry 条目（A-2 L0 索引化）：只持有磁盘引用，不再常驻 base64。
 #[derive(Clone)]
 struct ImageEntry {
     mime_type: String,
-    data: String,
+    /// 内容寻址 id = sha256(base64 文本)（字节已由 qaqh_types::image_store 落盘）。
+    sha256: String,
 }
 
 /// Register an uploaded image for a session. Called from engine_input.
+///
+/// A-2 L0：字节外置磁盘（内容寻址，幂等去重），registry 只留 `{mime, sha256}`
+/// 索引；`peek_image` 时按需读盘。落盘失败则丢弃条目并告警（调用方拿到
+/// peek None，会引导用户重新附加——与"上传离开上下文"同一语义）。
 pub fn store_image(seed: &str, mime_type: &str, data: &str) {
+    let sha256 = match qaqh_types::image_store::store_image_b64(data, mime_type) {
+        Ok(sha) => sha,
+        Err(e) => {
+            log::warn!("[read_image] registry store failed (entry dropped): {e}");
+            return;
+        }
+    };
     if let Ok(mut reg) = IMAGE_REGISTRY.lock() {
         reg.entry(seed.to_string()).or_default().push(ImageEntry {
             mime_type: mime_type.to_string(),
-            data: data.to_string(),
+            sha256,
+        });
+    }
+}
+
+/// 按 ImageRef 重建 registry 条目（resume 路径专用）：磁盘文件已在场，
+/// 无需任何字节，O(1) 登记。
+pub fn register_image_ref(seed: &str, mime_type: &str, sha256: &str) {
+    if let Ok(mut reg) = IMAGE_REGISTRY.lock() {
+        reg.entry(seed.to_string()).or_default().push(ImageEntry {
+            mime_type: mime_type.to_string(),
+            sha256: sha256.to_string(),
         });
     }
 }
@@ -62,13 +86,17 @@ pub fn reset_images(seed: &str) {
     }
 }
 
-/// Peek at an image by index — returns a clone without removing.
+/// Peek at an image by index — returns base64 text without removing.
+///
+/// 磁盘读取在锁外执行（几 MB 文本，ms 级），不阻塞其它 seed 的 registry 操作。
 pub fn peek_image(seed: &str, index: usize) -> Option<(String, String)> {
-    let reg = IMAGE_REGISTRY.lock().ok()?;
-    let entries = reg.get(seed)?;
-    entries
-        .get(index)
-        .map(|e| (e.mime_type.clone(), e.data.clone()))
+    let entry = {
+        let reg = IMAGE_REGISTRY.lock().ok()?;
+        let entries = reg.get(seed)?;
+        entries.get(index)?.clone()
+    };
+    let data = qaqh_types::image_store::load_image_b64(&entry.sha256, &entry.mime_type).ok()?;
+    Some((entry.mime_type.clone(), data))
 }
 
 // ── Capability gate ───────────────────────────────────────────────────
@@ -208,27 +236,23 @@ fn read_image_file(path: &str) -> Result<(Vec<u8>, String), String> {
 pub fn register(mgr: &mut crate::ToolManager) {
     mgr.register_with_placement(ToolHandler {
         key: "read_image".to_string(),
-        description: "Load an image into your own visual context so you can see it directly. \
-             Use image_index to view an image the user uploaded ([Image #N: ...] references), \
-             or path to view an image file in the workspace (png/jpeg/gif/webp/bmp/tiff). \
-             Oversized images are downscaled and re-compressed automatically. \
-             Do NOT pass base64 data — reference images by index or path only.",
+        description: "Load image into visual context (by image_index or file path). Auto downscale if oversized.",
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
                 "image_index": {
                     "type": "integer",
-                    "description": "Index of an image uploaded in this conversation (0-based). Use this when you see [Image #N: ...] references."
+                    "description": "Uploaded image index (0-based)"
                 },
                 "path": {
                     "type": "string",
-                    "description": "Path to an image file (workspace-relative or absolute)."
+                    "description": "Image file path"
                 }
             },
             "additionalProperties": false,
             "anyOf": [
-                { "required": ["image_index"], "description": "View an image already uploaded in this conversation" },
-                { "required": ["path"], "description": "View an image file from the workspace" }
+                { "required": ["image_index"] },
+                { "required": ["path"] }
             ]
         }),
         handler: handle_read_image,
@@ -257,6 +281,12 @@ mod tests {
 
     #[test]
     fn registry_peek_is_non_destructive() {
+        let _serial = crate::TEST_RUNTIME_SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!("qaqh-read-img-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        unsafe { std::env::set_var("QAQH_DATA_DIR", &tmp) };
         let seed = "read_image_registry_test";
         store_image(seed, "image/png", "Zm9v");
         assert_eq!(
@@ -270,12 +300,20 @@ mod tests {
         );
         assert_eq!(peek_image(seed, 1), None);
         assert_eq!(peek_image("other-seed", 0), None);
+        unsafe { std::env::remove_var("QAQH_DATA_DIR") };
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn reset_then_replay_keeps_indices_stable() {
         // 模拟 session restore：先 reset 再按历史顺序重放注册，
         // 重复 restore 不产生重复条目、不移动索引。
+        let _serial = crate::TEST_RUNTIME_SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!("qaqh-read-img-reset-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        unsafe { std::env::set_var("QAQH_DATA_DIR", &tmp) };
         let seed = "read_image_reset_test";
         store_image(seed, "image/png", "AAA");
         store_image(seed, "image/jpeg", "BBB");
@@ -292,6 +330,34 @@ mod tests {
             Some(("image/jpeg".into(), "BBB".into()))
         );
         assert_eq!(peek_image(seed, 2), None);
+        unsafe { std::env::remove_var("QAQH_DATA_DIR") };
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn register_image_ref_rebuilds_peek_without_bytes() {
+        // A-2 L0 resume 重建路径：ImageRef 已在场（磁盘有文件），
+        // register_image_ref 零字节登记，peek 读盘还原。
+        let _serial = crate::TEST_RUNTIME_SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!("qaqh-read-img-ref-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        unsafe { std::env::set_var("QAQH_DATA_DIR", &tmp) };
+
+        let b64 = "aW1hZ2UtcmVmLXJlYnVpbGQ=";
+        let sha = qaqh_types::image_store::store_image_b64(b64, "image/jpeg").expect("store");
+        let seed = "read_image_ref_test";
+        reset_images(seed);
+        register_image_ref(seed, "image/jpeg", &sha);
+        assert_eq!(peek_image(seed, 0), Some(("image/jpeg".into(), b64.into())));
+        // 重复重建幂等（reset + 重放，索引稳定）。
+        reset_images(seed);
+        register_image_ref(seed, "image/jpeg", &sha);
+        assert_eq!(peek_image(seed, 0), Some(("image/jpeg".into(), b64.into())));
+
+        unsafe { std::env::remove_var("QAQH_DATA_DIR") };
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

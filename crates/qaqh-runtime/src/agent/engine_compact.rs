@@ -181,11 +181,7 @@ impl CompactEngine {
         let contexts = serialize_messages(&history_head, &msgs[kept_idx..]);
         let timeline = {
             let created = ctx.agent.session.created_at;
-            let updated = ctx
-                .agent
-                .session
-                .updated_at
-                .max(qaqh_session::now_epoch());
+            let updated = ctx.agent.session.updated_at.max(qaqh_session::now_epoch());
             let start_str = util::epoch_to_date(created);
             let dur = updated.saturating_sub(created);
             format!(
@@ -594,7 +590,8 @@ fn serialize_messages(head: &[&qaqh_types::Message], kept: &[&qaqh_types::Messag
                         compact.get(..end).unwrap_or(&compact)
                     ))
                 }
-                qaqh_types::ContentBlock::Image { .. } => {
+                qaqh_types::ContentBlock::Image { .. }
+                | qaqh_types::ContentBlock::ImageRef { .. } => {
                     Some(format!("[{role}]: [Image attached]"))
                 }
                 qaqh_types::ContentBlock::ResponseOutputItem { .. } => None,

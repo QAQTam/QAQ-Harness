@@ -94,6 +94,61 @@ fn todo_path() -> Option<std::path::PathBuf> {
     }
 }
 
+/// Session-aware read: direct path `sessions/{seed}/todo.json` (no thread-local).
+fn todo_path_for(seed: &str) -> std::path::PathBuf {
+    qaqh_types::platform::sessions_dir()
+        .join(seed)
+        .join("todo.json")
+}
+
+fn read_store_for(seed: &str) -> Result<TodoStore, String> {
+    if seed.is_empty() {
+        return Err("no active session".into());
+    }
+    let path = todo_path_for(seed);
+    if !path.exists() {
+        return Ok(TodoStore {
+            items: Vec::new(),
+            mode: TodoMode::Manual,
+            current_id: None,
+            auto_turns: 0,
+            max_auto_turns: 24,
+        });
+    }
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("read todo.json: {e}"))?;
+    let store: TodoStore =
+        serde_json::from_str(&content).map_err(|e| format!("parse todo.json: {e}"))?;
+    Ok(store)
+}
+
+/// Session-aware variant: load TodoStore for an explicit seed (no RUNTIME_CTX).
+pub fn load_todo_for(seed: &str) -> Result<TodoStore, String> {
+    let _guard = TODO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    read_store_for(seed)
+}
+
+/// Session-aware variant: get TaskInfos for an explicit seed.
+pub fn get_todo_infos_for(seed: &str) -> Vec<qaqh_proto::TaskInfo> {
+    let _guard = TODO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let store = read_store_for(seed).unwrap_or_default();
+    store
+        .items
+        .iter()
+        .map(|item| qaqh_proto::TaskInfo {
+            id: item.id.clone(),
+            subject: item.title.clone(),
+            description: item.description.clone(),
+            status: match item.status {
+                TodoStatus::Pending => "idle".into(),
+                TodoStatus::InProgress => "in_progress".into(),
+                TodoStatus::Completed => "completed".into(),
+                TodoStatus::Cancelled => "cancelled".into(),
+            },
+            evidence: item.evidence.clone(),
+        })
+        .collect()
+}
+
 /// Public API: load the TodoStore from disk (used by GoalEngine).
 pub fn load_todo() -> Result<TodoStore, String> {
     // W2：公共入口串行化，GoalEngine 与工具路径互斥。
@@ -110,6 +165,7 @@ pub fn save_todo(store: &TodoStore) -> Result<(), String> {
 
 /// Get todo items as Dashboard-compatible info structs.
 pub fn get_todo_infos() -> Vec<qaqh_proto::TaskInfo> {
+    let _guard = TODO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let store = read_store().unwrap_or_default();
     store
         .items
@@ -134,6 +190,8 @@ pub fn todo_status_json(seed: &str) -> Result<String, String> {
     if seed.is_empty() {
         return Ok("null".into());
     }
+    // Serialise with writer to avoid reading a half-renamed tmp.
+    let _guard = TODO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let path = qaqh_types::platform::sessions_dir()
         .join(seed)
         .join("todo.json");
@@ -916,7 +974,7 @@ pub fn register(mgr: &mut crate::ToolManager) {
     mgr.register_with_placement(
         ToolHandler {
             key: "todo".to_string(),
-            description: "管理会话内有序任务列表。action=create 创建任务（单个或 items 批量）、insert 插入到锚点 ID、set 更新状态（支持单条 id+status、批量 ids+status（ID 可用范围 T1-T3）、并行 updates[{id,status,evidence?}]）、list 列出。ID 由系统分配且稳定（T1、T2…），create 返回的 created 直接含新 ID，可立即用于 set；开始/完成子任务时随时 set 状态，前端面板实时展示。",
+            description: "Task list (session-scoped, T1..). create(title/items)/insert(after_id/before_id)/set(id/ids/updates+status)/list. IDs stable, create returns IDs for set.",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -927,16 +985,16 @@ pub fn register(mgr: &mut crate::ToolManager) {
                     },
                     "title": {
                         "type": "string",
-                        "description": "create/insert 的任务标题（1-100 字符）"
+                        "description": "Task title (1-100)"
                     },
                     "description": {
                         "type": "string",
-                        "description": "可选上下文或验收标准（≤200 字符）"
+                        "description": "Context/acceptance (<=200)"
                     },
                     "items": {
                         "type": "array",
                         "maxItems": 20,
-                        "description": "create 批量创建（按数组序分配 ID）或 insert 批量插入",
+                        "description": "Bulk create/insert", 
                         "items": {
                             "type": "object",
                             "properties": {
@@ -949,12 +1007,12 @@ pub fn register(mgr: &mut crate::ToolManager) {
                     },
                     "id": {
                         "type": ["string", "integer"],
-                        "description": "set 的目标任务 ID（如 T1）；Omit for action=create"
+                        "description": "Target ID (T1); Omit for action=create"
                     },
                     "ids": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "批量 set 同状态：ID 或范围表达式（\"T1\"、\"T1-T3\"、\"T1,T3\"），可混合；status 必填"
+                        "description": "Batch same-status IDs/range (T1,T1-T3)"
                     },
                     "updates": {
                         "type": "array",
@@ -972,51 +1030,33 @@ pub fn register(mgr: &mut crate::ToolManager) {
                             "required": ["id", "status"],
                             "additionalProperties": false
                         },
-                        "description": "并行 set 多条异状态：每条 {id, status, evidence?}；未知 ID 记入 not_found 不中断"
+                        "description": "Parallel per-item {id,status,evidence?}"
                     },
                     "status": {
                         "type": "string",
                         "enum": ["idle", "in_progress", "completed", "cancelled"],
-                        "description": "set 的目标状态"
+                        "description": "Target status"
                     },
                     "evidence": {
                         "type": "string",
-                        "description": "set 时的完成摘要（可选，非空字符串）"
+                        "description": "Evidence (optional)"
                     },
                     "after_id": {
                         "type": ["string", "integer"],
-                        "description": "insert 锚点：插入到该 ID 之后"
+                        "description": "Insert after ID"
                     },
                     "before_id": {
                         "type": ["string", "integer"],
-                        "description": "insert 锚点：插入到该 ID 之前"
+                        "description": "Insert before ID"
                     }
                 },
                 "required": ["action"],
                 "additionalProperties": false,
                 "oneOf": [
-                    {"title": "Create one task", "properties": {"action": {"const": "create"}}, "required": ["action", "title"]},
-                    {"title": "Create a task group", "properties": {"action": {"const": "create"}}, "required": ["action", "items"]},
-                    {"title": "Insert one task after an ID", "properties": {"action": {"const": "insert"}}, "required": ["action", "title", "after_id"]},
-                    {"title": "Insert one task before an ID", "properties": {"action": {"const": "insert"}}, "required": ["action", "title", "before_id"]},
-                    {"title": "Insert a task group after an ID", "properties": {"action": {"const": "insert"}}, "required": ["action", "items", "after_id"]},
-                    {"title": "Insert a task group before an ID", "properties": {"action": {"const": "insert"}}, "required": ["action", "items", "before_id"]},
-                    {
-                        "title": "Set task state (single)",
-                        "properties": {"action": {"const": "set"}},
-                        "required": ["action", "id", "status"]
-                    },
-                    {
-                        "title": "Set task states (batch, same status)",
-                        "properties": {"action": {"const": "set"}},
-                        "required": ["action", "ids", "status"]
-                    },
-                    {
-                        "title": "Set task states (parallel, per-item)",
-                        "properties": {"action": {"const": "set"}},
-                        "required": ["action", "updates"]
-                    },
-                    {"title": "List tasks", "properties": {"action": {"const": "list"}}, "required": ["action"]}
+                    {"title": "Create", "properties": {"action": {"const": "create"}}, "required": ["action"]},
+                    {"title": "Insert", "properties": {"action": {"const": "insert"}}, "required": ["action"]},
+                    {"title": "Set", "properties": {"action": {"const": "set"}}, "required": ["action"]},
+                    {"title": "List", "properties": {"action": {"const": "list"}}, "required": ["action"]}
                 ]
             }),
             handler: handle_todo,

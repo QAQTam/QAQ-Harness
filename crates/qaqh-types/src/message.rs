@@ -45,6 +45,21 @@ pub enum ContentBlock {
         /// Base64-encoded image data (raw, without the data URI prefix).
         data: String,
     },
+    /// 磁盘外置的图片引用（A-2 L0：docs/memory-governance-plan.md §A）。
+    ///
+    /// 字节存于 `{data_dir}/images/{sha256}.{ext}`（内容寻址、base64 文本
+    /// 形态，见 [`crate::image_store`]）；消息历史与内存常驻只携带索引，
+    /// gate 请求构建时按需读盘。旧会话的 inline [`ContentBlock::Image`]
+    /// 读侧继续兼容；写侧一律产生本变体。
+    #[serde(rename = "image_ref")]
+    ImageRef {
+        /// 内容寻址 id = sha256(base64 文本) 的 hex。
+        sha256: String,
+        /// MIME type（语义同 `Image.mime_type`）。
+        mime_type: String,
+        /// base64 文本长度（`[Image #N]` 占位符显示与 token 估算用）。
+        bytes_len: usize,
+    },
     /// A server-side web search call emitted by the model (Responses API
     /// built-in tool). The search itself runs on the provider; this block is
     /// carried in history and echoed back verbatim on the next turn so the
@@ -79,6 +94,15 @@ impl ContentBlock {
         ContentBlock::Image {
             mime_type: mime_type.to_string(),
             data: base64_data.to_string(),
+        }
+    }
+
+    /// 外置图片引用的便捷构造器（不校验磁盘在场——调用方负责先落盘）。
+    pub fn image_ref(sha256: &str, mime_type: &str, bytes_len: usize) -> Self {
+        ContentBlock::ImageRef {
+            sha256: sha256.to_string(),
+            mime_type: mime_type.to_string(),
+            bytes_len,
         }
     }
 }

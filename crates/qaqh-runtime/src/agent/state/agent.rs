@@ -3,10 +3,10 @@ use std::sync::Arc;
 use qaqh_config::Config;
 use qaqh_session::{SessionManager, SessionMeta};
 
-use qaqh_skills::SkillContextManager;
 use super::token_calibration::{
     RequestTokenEstimate, SessionTokenCalibrator, prepared_request_metrics,
 };
+use qaqh_skills::SkillContextManager;
 use qaqh_workspace::registration::ToolRegistrar;
 use qaqh_workspace::runtime;
 use std::path::Path;
@@ -23,7 +23,10 @@ pub enum MetaOp {
     /// through the injected handle directly — it runs off-dispatch).
     UpdateTitle { seed: String, title: String },
     /// Context statistics merged into meta.json (dashboard surface).
-    SetContextStats { seed: String, stats: serde_json::Value },
+    SetContextStats {
+        seed: String,
+        stats: serde_json::Value,
+    },
     /// Internal tool-mode code persisted to meta.json.
     PersistMode { seed: String, mode: u8 },
     /// Usage totals after a provider round.
@@ -35,7 +38,10 @@ pub enum MetaOp {
         cache_reported_requests: u32,
     },
     /// Skills session state (TurnComplete / session switch).
-    PersistSkills { seed: String, skills: qaqh_skills::SkillSessionStateV2 },
+    PersistSkills {
+        seed: String,
+        skills: qaqh_skills::SkillSessionStateV2,
+    },
 }
 
 // 工具模式档位、白名单、模型面投影的唯一契约已收敛到 qaqh-types。
@@ -248,7 +254,10 @@ impl AgentState {
     /// never the disk. Call at assembly and after every config reload.
     pub fn refresh_image_capability(&self) {
         qaqh_workspace::runtime::set_image_capability(
-            qaqh_config::registry::image_tool_enabled(&self.config.provider_id, &self.config.endpoint),
+            qaqh_config::registry::image_tool_enabled(
+                &self.config.provider_id,
+                &self.config.endpoint,
+            ),
             qaqh_config::registry::image_model_supported(
                 &self.config.provider_id,
                 &self.config.endpoint,
@@ -291,6 +300,9 @@ impl AgentState {
         for op in &meta_ops {
             execute_meta_op(op, &sm);
         }
+        // L2: every op logged in the WAL has now been applied to
+        // messages.jsonl — reset the log so the next crash replays nothing.
+        self.msg.wal_checkpoint();
     }
 
     pub(crate) fn token_calibration_fingerprint(&self) -> String {
@@ -735,61 +747,12 @@ fn execute_meta_op(op: &MetaOp, sm: &SessionManager) {
     }
 }
 
-/// The single op→SessionManager mapping (PR-1-6). Every variant must replay
-/// the exact call the store used to make inline; the shadow test in
-/// qaqh-message locks the mapping byte-for-byte (Z5).
+/// The op→SessionManager mapping (PR-1-6). The mapping itself lives on
+/// `SessionManager::apply_persist_op` (single source of truth — the WAL
+/// recovery path in qaqh-session replays through the same method); the
+/// shadow test in qaqh-message locks it byte-for-byte (Z5).
 fn execute_persist_op(op: &qaqh_message::PersistOp, sm: &SessionManager) {
-    match op {
-        qaqh_message::PersistOp::Append {
-            seed,
-            messages,
-            model,
-            effort,
-            compact_skip,
-            turn_count,
-        } => {
-            sm.save_append(
-                seed,
-                messages,
-                model,
-                effort.as_deref(),
-                *compact_skip,
-                *turn_count,
-            );
-        }
-        qaqh_message::PersistOp::UpdateMeta {
-            seed,
-            model,
-            effort,
-            compact_skip,
-            turn_count,
-        } => {
-            sm.update_meta(seed, model, effort.as_deref(), *compact_skip, *turn_count);
-        }
-        qaqh_message::PersistOp::UpdateCompactContext { seed, messages } => {
-            sm.update_compact_context(seed, messages);
-        }
-        qaqh_message::PersistOp::SaveCompactContext { seed, messages } => {
-            sm.save_compact_context(seed, messages);
-        }
-        qaqh_message::PersistOp::SaveFull {
-            seed,
-            messages,
-            model,
-            effort,
-            compact_skip,
-            turn_count,
-        } => {
-            sm.save_full(
-                seed,
-                messages,
-                model,
-                effort.as_deref(),
-                *compact_skip,
-                *turn_count,
-            );
-        }
-    }
+    sm.apply_persist_op(op);
 }
 
 #[cfg(test)]
@@ -1241,9 +1204,7 @@ mod tests {
                 }
             }
         }
-
     }
-
 }
 
 // ═══════════════════════════════════════════════════════

@@ -283,24 +283,24 @@ handler!(handle_read, exec_read);
 pub fn register(mgr: &mut crate::ToolManager) {
     mgr.register_with_placement(ToolHandler {
         key: "read".to_string(),
-        description: "Read up to eight files as precise contiguous ranges. Every returned line has a stable L<number> prefix, and each file includes its hash, total line count, and a directly executable continuation when the model budget is insufficient. Directories are rejected with IS_DIRECTORY; list directory contents with exec (e.g. argv [\"rg\", \"--files\"]).",
+        description: "Read files (L-prefixed lines, hash+line_count). Up to 8 files; dirs -> IS_DIRECTORY.",
         input_schema: serde_json::json!({
             "type":"object",
             "properties": {
                 "requests": {
                     "type":"array", "maxItems":8,
-                    "description":"Batch of up to 8 files/requests; each item mirrors the single-file fields below.",
+                    "description":"Batch (mirrors single-file fields)",
                     "items": {"type":"object", "properties": {
-                        "path":{"type":"string","description":"File path (relative to workspace root, or absolute)"},
-                        "start_line":{"type":"integer","minimum":1,"description":"First line to read, 1-based, inclusive"},
-                        "end_line":{"type":"integer","minimum":1,"description":"Last line to read, 1-based, inclusive; omit to read to EOF"},
-                        "if_hash":{"type":"string","description":"Expected content hash from a prior read; returns NOT_MODIFIED when unchanged, guarding against silent drift"}
+                        "path":{"type":"string","description":"File"},
+                        "start_line":{"type":"integer","minimum":1,"description":"Start line (1-based)"},
+                        "end_line":{"type":"integer","minimum":1,"description":"End line inclusive"},
+                        "if_hash":{"type":"string","description":"Hash from prior read; NOT_MODIFIED if unchanged"}
                     }, "required":["path"], "additionalProperties":false}
                 },
-                "path":{"type":"string","description":"File path (relative to workspace root, or absolute)"},
-                "start_line":{"type":"integer","minimum":1,"description":"First line to read, 1-based, inclusive"},
-                "end_line":{"type":"integer","minimum":1,"description":"Last line to read, 1-based, inclusive; omit to read to EOF"},
-                "if_hash":{"type":"string","description":"Expected content hash from a prior read; returns NOT_MODIFIED when unchanged, guarding against silent drift"}
+                "path":{"type":"string","description":"File"},
+                "start_line":{"type":"integer","minimum":1,"description":"Start line (1-based)"},
+                "end_line":{"type":"integer","minimum":1,"description":"End line inclusive"},
+                "if_hash":{"type":"string","description":"Hash from prior read; NOT_MODIFIED if unchanged"}
             },
             "oneOf":[{"required":["requests"]},{"required":["path"]}],
             "additionalProperties":false

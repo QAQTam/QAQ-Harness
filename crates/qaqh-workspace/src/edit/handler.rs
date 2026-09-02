@@ -372,82 +372,60 @@ pub fn register(mgr: &mut ToolManager) {
     mgr.register_with_placement(
         ToolHandler {
             key: "edit".to_string(),
-            description: concat!(
-                "Structured hunk editor — the ONLY file editor. Kind-tagged hunks: ",
-                "replace (old/new/context_before/context_after), overwrite (new, whole-file replacement), insert_after / insert_before (anchor/new), replace_inline (anchor + old/new substring or regex replace, sed s/// semantics, window-limited), ",
-                "prepend_file / append_file (new). Four-tier matching: exact → indent-shape → similarity scoring ",
-                "with margin (auto-applies only when the best candidate clearly wins) → top-3 candidates on failure. ",
-                "overwrite replaces the ENTIRE file (equivalent to write) and must be the only hunk in the call. ",
-                "Keep 'old' SHORT: use the smallest unique 1-5 line fragment (whitespace/indent differences are auto-tolerated; ",
-                "a whole function body is more likely to mismatch). ",
-                "replace_all=true on a replace hunk substitutes EVERY exact occurrence of 'old' (Tier-1 exact only). ",
-                "All hunks are located on ONE unchanged snapshot and applied all-or-nothing; overlapping hunks are rejected. ",
-                "Newline rule: the replaced range includes the trailing newline ONLY if 'old' ends with '\\n' — ",
-                "normally give both old and new WITHOUT the trailing newline (it stays in place); ",
-                "end 'old' with '\\n' only when you want to delete/replace the line break itself. ",
-                "expected_hash (optional; from read data, if your provider exposes it) guards stale content; omit it to edit without verification — the content match itself is the safety net. ",
-                "On success returns new_hash to chain into the next call without re-reading. ",
-                "On failure, candidates come back with line ranges — refine 'old'/context from them, or re-read the file first if the view may be stale. ",
-                "mode 'partial' applies successful hunks and reports failures in detail, so you only re-send the failed ones "
-                ,"(with expected_hash = returned new_hash) instead of the whole batch; mode 'strict' (default) is all-or-nothing. "
-                ,"dry_run=true (only when confirm_apply is available) locates and computes without writing and returns a pending_id — ask the user for confirmation, then commit via confirm_apply without re-sending the hunks. Otherwise call edit directly WITHOUT dry_run to write immediately. Omit hunks (or send []) to READ the file: read-only result with content + hash + line_count — the hash chains straight into expected_hash for the next edit. Read mode also supports grep-driven precision reads: start_line/end_line (1-based; line ranges connect straight to grep `path:line:` output; each line prefixed L<number>:) and anchor + context_before/context_after (anchored read reusing the SAME four-tier locator as hunks — the anchor you read with is the anchor you edit with; ambiguous anchors return candidates). All read modes return the full-file hash for expected_hash chaining."
-            ),
+            description: "File editor (hunk-based, content-matched, supports replace_all). Kinds: replace(old/new), insert_after/insert_before(anchor/new), replace_inline(anchor/old/new), overwrite(new), prepend/append_file(new). Use shortest unique old/anchor; supports expected_hash, dry_run+confirm_apply, partial. Omit hunks for read mode.",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Target file path"},
+                    "path": {"type": "string", "description": "Target file"},
                     "expected_hash": {
                         "type": "string",
-                        "description": "Optional; hash from read's data. Omit to edit without verification (content match itself is the safety net). Mismatch rejects with current content returned."
+                        "description": "Hash from prior read; omit to skip verification"
                     },
                     "hunks": {
                         "type": "array",
-                        "description": "Edit hunks. Each hunk: {\"kind\":\"replace\",\"old\":…,\"new\":…,\"context_before\":…,\"context_after\":…,\"replace_all\":false} | {\"kind\":\"overwrite\",\"new\":…} (whole-file replacement; must be the only hunk) | {\"kind\":\"insert_after\"|\"insert_before\",\"anchor\":…,\"new\":…} | {\"kind\":\"prepend_file\"|\"append_file\",\"new\":…} | {\"kind\":\"replace_inline\",\"anchor\":…,\"old\":…,\"new\":…,\"replace_all\":false,\"regex\":false} (sed s/// semantics: substring/regex replace ONLY inside the anchor's located window, never across lines; replace_all=false replaces the first occurrence only; regex uses regex-crate syntax, case-sensitive). Omit hunks or send [] to READ the file (read-only: content + hash + line_count, aligned with read; creation requires explicit hunks). Empty 'old' with contexts = pure insert. replace_all=true substitutes every exact occurrence of 'old' (Tier-1 exact only)."
+                        "description": "Hunks: replace/insert_after/insert_before/replace_inline/overwrite/prepend_file/append_file. Omit or [] = read mode"
                     },
                     "mode": {
                         "type": "string",
                         "enum": ["strict", "partial"],
                         "default": "strict",
-                        "description": "strict = all-or-nothing; partial = successful hunks are applied and written, failed hunks are reported in detail — retry only the failed hunks with expected_hash = returned new_hash."
+                        "description": "strict=all-or-nothing; partial=apply successes, report failures"
                     },
                     "dry_run": {
                         "type": "boolean",
                         "default": false,
-                        "description": "Preview only (write NOTHING, returns pending_id). Only use when confirm_apply is available; otherwise call without dry_run to write immediately."
+                        "description": "Preview only, return pending_id for confirm_apply"
                     },
                     "start_line": {
                         "type": "integer",
                         "minimum": 1,
-                        "description": "Read mode only (omit hunks): first line, 1-based — connects straight to grep line numbers."
+                        "description": "Read mode: start line (1-based)"
                     },
                     "end_line": {
                         "type": "integer",
                         "minimum": 1,
-                        "description": "Read mode only: last line, 1-based, inclusive; omit to read to EOF."
+                        "description": "Read mode: end line inclusive"
                     },
                     "anchor": {
                         "type": "string",
-                        "description": "Read mode only: content anchor, located with the same four-tier engine as hunks; returns the surrounding window (context_before/context_after)."
+                        "description": "Read mode: anchor line"
                     },
                     "context_before": {
                         "type": "integer",
                         "minimum": 0,
                         "default": 10,
-                        "description": "Read mode only: lines of context before the anchor match."
+                        "description": "Read mode: lines before anchor"
                     },
                     "context_after": {
                         "type": "integer",
                         "minimum": 0,
                         "default": 10,
-                        "description": "Read mode only: lines of context after the anchor match."
+                        "description": "Read mode: lines after anchor"
                     }
                 },
-                // 读/编辑模式互斥：编辑 = hunks 非空且不带读模式字段；
-                // 读 = 省略 hunks 或传 []。执行层不校验 schema（仅注入模型），
-                // oneOf 是给模型/providers 的结构化提示。
                 "oneOf": [
                     {
-                        "title": "Edit mode (hunks non-empty)",
+                        "title": "Edit mode",
                         "required": ["hunks"],
                         "properties": {
                             "hunks": {"minItems": 1}
@@ -463,7 +441,7 @@ pub fn register(mgr: &mut ToolManager) {
                         }
                     },
                     {
-                        "title": "Read mode (omit hunks or send [])",
+                        "title": "Read mode",
                         "not": {
                             "required": ["hunks"],
                             "properties": {

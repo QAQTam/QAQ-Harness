@@ -104,29 +104,23 @@ pub fn register(mgr: &mut crate::ToolManager) {
     mgr.register_with_placement(
         ToolHandler {
             key: "glob".to_string(),
-            description: "List files matching a gitignore-style glob pattern (native \
-                implementation, no shell). Pattern is relative to `path` (default: \
-                workspace root). `*` matches within one path segment, `**` crosses \
-                directories, `?` one char, `[a-z]` char class, `{a,b}` alternation \
-                (same syntax as `rg -g` / VS Code file search). Hidden files and \
-                gitignored paths are skipped (rg --files defaults). Returns relative \
-                paths one per line, sorted, capped at max_results.",
+            description: "List files by glob (gitignore-aware, native). Pattern vs rg -g.",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "pattern": {
                         "type": "string",
-                        "description": "Glob pattern relative to root, e.g. \"src/**/*.rs\", \"*.md\", \"crates/{qaqh-a,qaqh-b}/src/lib.rs\""
+                        "description": "Glob pattern"
                     },
                     "path": {
                         "type": "string",
-                        "description": "Search root (default: workspace root)"
+                        "description": "Search root"
                     },
                     "max_results": {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 10000,
-                        "description": "Max paths to return (default 500; overflow flagged truncated)"
+                        "description": "Max results (default 500)"
                     }
                 },
                 "required": ["pattern"],

@@ -397,8 +397,8 @@ handler_from_string!(handle_delete_file, exec_delete_file);
 pub fn register(mgr: &mut crate::ToolManager) {
     mgr.register_with_placement(ToolHandler {
         key: "write".to_string(),
-        description: "Create, overwrite, or append to a file. Success returns a summary line only (path:first_line +N -M), no diff echo — set dry_run=true to preview the full diff without writing. Use for whole-file creation/overwrite/append; use edit for targeted changes.",
-        input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"File path"},"content":{"type":"string","description":"Content to write"},"append":{"type":"boolean","description":"If true, append to file instead of overwriting","default":false},"dry_run":{"type":"boolean","description":"Preview only (with full diff), do not write","default":false},"expected_hash":{"type":"string","description":"Optional. When omitted, the tool auto-verifies against its own last-known state (from read/edit/write) and rejects overwrites of externally-modified files — no need to pass the hash back"}},"required":["path","content"],"additionalProperties":false}),
+        description: "Write/overwrite/append file (full content). Summary only; dry_run previews diff; use edit for targeted changes.",
+        input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"File"},"content":{"type":"string","description":"Content"},"append":{"type":"boolean","description":"Append (default false)","default":false},"dry_run":{"type":"boolean","description":"Preview only","default":false},"expected_hash":{"type":"string","description":"Hash from prior read (optional)"}},"required":["path","content"],"additionalProperties":false}),
         handler: handle_write_file,
         risk: ToolRisk::Write,
         category: crate::permission::ToolCategory::Write,
@@ -408,8 +408,8 @@ pub fn register(mgr: &mut crate::ToolManager) {
 );
     mgr.register_with_placement(ToolHandler {
         key: "delete".to_string(),
-        description: "Move file to trash (.qaqh/trash/) instead of permanent deletion.",
-        input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"File path to delete"}},"required":["path"],"additionalProperties":false}),
+        description: "Move file to trash (.qaqh/trash/).",
+        input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"File"}},"required":["path"],"additionalProperties":false}),
         handler: handle_delete_file,
         risk: ToolRisk::Destructive,
         category: crate::permission::ToolCategory::Write,

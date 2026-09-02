@@ -361,4 +361,3 @@ mod tests {
 //
 // PR-3-3：解析权威收敛为 `SessionManager::workspace_cwd`（实例方法，经注入
 // 句柄调用）；本模块不再持有会话 cwd 的读取入口。
-

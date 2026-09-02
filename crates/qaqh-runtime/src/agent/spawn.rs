@@ -76,6 +76,7 @@ pub(crate) fn spawn_agent(
     event_tx: SyncSender<WriterEvent>,
     cancel: CancelToken,
     writer_dead: Arc<AtomicBool>,
+    liveness: std::sync::Arc<super::liveness::WorkerLiveness>,
 ) {
     // 权威配置读收敛 config 单入口（PR-1-8 同向）；图片能力快照
     // 就地注入（PR-1-10：actor 进程的工具调用路径零磁盘读）。
@@ -141,6 +142,6 @@ pub(crate) fn spawn_agent(
         }
     }
 
-    let mut loop_ = Loop::from_channels(agent, cmd_rx, event_tx, cancel, writer_dead);
+    let mut loop_ = Loop::from_channels(agent, cmd_rx, event_tx, cancel, writer_dead, liveness);
     loop_.run();
 }

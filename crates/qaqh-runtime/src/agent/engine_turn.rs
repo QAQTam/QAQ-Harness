@@ -1010,6 +1010,12 @@ impl TurnEngine {
         last_usage: Option<UsageInfo>,
     ) -> Outcome {
         log::info!("[TURN] run_lap turn_id={} round_num={}", turn_id, round_num);
+        // L1 round-boundary durability: everything the previous round (or the
+        // turn's user message at round 0) enqueued reaches messages.jsonl
+        // here, before the next LLM request. The archive append path already
+        // fsyncs, so a kill between rounds loses at most the round in flight
+        // — and the L2 WAL covers even that.
+        ctx.agent.drain_persist_ops();
         // Rebuild provider from current config（gate_lap 准备逻辑，见 turn_lap::gate）
         let provider = provider_for(ctx, &turn_id);
 
@@ -1149,7 +1155,12 @@ impl TurnEngine {
             // 繁忙端点可能不发错误码而是直接终止 HTTP 流：此时 Done 仍会
             // 发出，但 stop_reason 缺失。半截内容已照常落盘（增量早已流出
             // 给前端），下一轮请求将其作为历史回传并注入续写提示。
-            let incomplete_stream = !had_error && request_error.is_none() && stop_reason.is_none();
+            // Responses 协议正常完成时 stop_reason=Some("stop")（responses_api 已对齐
+            // chat 的 finish_reason 语义），只有显式 None 才是截断；旧版若仍发
+            // None 则按 provider 特判避免对 Responses 的每次成功误判续写（导致 4x）。
+            let is_responses = provider.kind == qaqh_gate::ProviderKind::Responses;
+            let incomplete_stream =
+                !had_error && request_error.is_none() && stop_reason.is_none() && !is_responses;
             if incomplete_stream {
                 if self.continuation_count >= MAX_STREAM_CONTINUATIONS {
                     log::warn!(
@@ -1176,6 +1187,13 @@ impl TurnEngine {
                         round_num,
                         self.continuation_count,
                         MAX_STREAM_CONTINUATIONS
+                    );
+                    // 续写前密封当前流式块，避免下一 lap 以重置的 segment 重开同 ID 导致 timeline 交错
+                    crate::agent::turn_lap::gate::seal_active_stream_block(
+                        ctx,
+                        &turn_id,
+                        round_num,
+                        &mut active_stream_block,
                     );
                     return Outcome::ContinueTurn {
                         turn_id,

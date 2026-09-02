@@ -174,36 +174,36 @@ handler!(handle_ask_user, exec_ask_user);
 pub fn register(mgr: &mut crate::ToolManager) {
     mgr.register_with_placement(ToolHandler {
         key: "ask".to_string(),
-        description: "Ask the user one or more questions when clarification or a user decision is needed. This opens a Ringing interaction and is not treated as an ordinary successful tool result.",
+        description: "Ask user questions (Ringing interaction).",
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
                 "questions": {
                     "type": "array",
-                    "description": "Array of questions for multi-question prompts.",
+                    "description": "Questions",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "id": { "type": "string", "description": "Unique ID (e.g. 'q1'). Auto-generated if omitted." },
-                            "question": { "type": "string", "description": "The question text (supports Markdown)." },
-                            "options": { "type": "array", "items": { "type": "string" }, "description": "Preset answer choices." },
-                            "allow_custom": { "type": "boolean", "description": "Allow custom text input.", "default": true }
+                            "id": { "type": "string", "description": "ID (auto if omitted)" },
+                            "question": { "type": "string", "description": "Question text" },
+                            "options": { "type": "array", "items": { "type": "string" }, "description": "Choices" },
+                            "allow_custom": { "type": "boolean", "description": "Allow custom", "default": true }
                         },
                         "required": ["question"]
                     }
                 },
                 "question": {
                     "type": "string",
-                    "description": "[deprecated] Single question text. Use 'questions' array instead."
+                    "description": "Single question (deprecated, use questions)"
                 },
                 "options": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "[deprecated] Preset choices for single question."
+                    "description": "Choices (deprecated)"
                 },
                 "allow_custom": {
                     "type": "boolean",
-                    "description": "[deprecated] Allow custom input for single question.",
+                    "description": "Allow custom (deprecated)",
                     "default": true
                 }
             },

@@ -25,6 +25,11 @@ fn deepseek() -> ProviderSpec {
                 models_url: Some("https://api.deepseek.com".into()),
                 user_id_mode: Some(UserSendMode::Body),
                 include_stream_usage: true,
+                // 视觉：仅 deepseek-v4-flash-vision-exp 支持图片（chat_completions
+                // 使用 image_url data URL，见 https://api-docs.deepseek.com/zh-cn/guides/vision/）。
+                // 端点开图 + 模型白名单由 read_image 工具消费（all_tools 过滤 / 执行期拒绝）。
+                supports_image_tool: true,
+                image_models: Some(vec!["deepseek-v4-flash-vision-exp".into()]),
                 // chat_path: None → "/chat/completions" (default)
                 // thinking_mode: OpenAi (default)
                 // cache_field: PromptCacheHitTokens (default)
@@ -32,17 +37,23 @@ fn deepseek() -> ProviderSpec {
             },
             // DeepSeek Responses API (Beta): 目前仅支持 deepseek-v4-flash。
             // 模型列表静态锁定，避免 /models 探测在 Beta 阶段引入不稳定模型。
+            // 视觉模型 deepseek-v4-flash-vision-exp 同端点支持 input_image（见 guides/vision#responses-api）。
             EndpointSpec {
                 id: "responses".into(),
                 display: "Responses API".into(),
                 protocol: "responses".into(),
                 base_url: "https://api.deepseek.com".into(),
                 default_model: "deepseek-v4-flash".into(),
-                models: vec!["deepseek-v4-flash".into()],
+                models: vec![
+                    "deepseek-v4-flash".into(),
+                    "deepseek-v4-flash-vision-exp".into(),
+                ],
                 responses_path: Some("/responses".into()),
                 supports_thinking: false,
                 supports_reasoning_effort: true,
                 supports_reasoning_content: false,
+                supports_image_tool: true,
+                image_models: Some(vec!["deepseek-v4-flash-vision-exp".into()]),
                 // DeepSeek silently ignores `include` (no encrypted reasoning),
                 // so skip it; and its effort ladder extends to "max".
                 responses_send_include: false,
@@ -171,7 +182,13 @@ fn zcode() -> ProviderSpec {
             supports_thinking: true,
             thinking_budget_large: true,
             supports_reasoning_effort: true,
-            effort_allowlist: Some(vec!["low".into(), "medium".into(), "high".into(), "xhigh".into(), "max".into()]),
+            effort_allowlist: Some(vec![
+                "low".into(),
+                "medium".into(),
+                "high".into(),
+                "xhigh".into(),
+                "max".into(),
+            ]),
             supports_reasoning_content: true,
             supports_image_tool: true,
             has_balance: false,
@@ -713,11 +730,31 @@ mod tests {
 
     #[test]
     fn image_model_support_layers_endpoint_flag_and_allowlist() {
-        // 端点未开图 → 一律 false(即使模型在清单里)。
+        // deepseek 已开图但限 vision 模型：非 vision 仍 false
         assert!(!image_model_supported(
             "deepseek",
             "openai",
             "google/gemini-2.0"
+        ));
+        assert!(!image_model_supported(
+            "deepseek",
+            "openai",
+            "deepseek-v4-flash"
+        ));
+        assert!(image_model_supported(
+            "deepseek",
+            "openai",
+            "deepseek-v4-flash-vision-exp"
+        ));
+        assert!(image_model_supported(
+            "deepseek",
+            "responses",
+            "deepseek-v4-flash-vision-exp"
+        ));
+        assert!(!image_model_supported(
+            "deepseek",
+            "responses",
+            "deepseek-v4-flash"
         ));
         // opencode-go:端点开图且无 allowlist → 所有模型放行。
         assert!(image_model_supported("opencode-go", "openai", "任意-模型"));
@@ -781,11 +818,22 @@ mod tests {
         assert_eq!(endpoint.base_url, "https://api.deepseek.com");
         assert_eq!(endpoint.responses_path.as_deref(), Some("/responses"));
         assert_eq!(endpoint.default_model, "deepseek-v4-flash");
-        assert_eq!(endpoint.models, vec!["deepseek-v4-flash".to_string()]);
+        assert_eq!(
+            endpoint.models,
+            vec![
+                "deepseek-v4-flash".to_string(),
+                "deepseek-v4-flash-vision-exp".to_string()
+            ]
+        );
         assert!(endpoint.beta);
         assert!(!endpoint.supports_thinking);
         assert!(endpoint.supports_reasoning_effort);
         assert!(!endpoint.supports_reasoning_content);
+        assert!(endpoint.supports_image_tool);
+        assert_eq!(
+            endpoint.image_models.as_deref(),
+            Some(&["deepseek-v4-flash-vision-exp".to_string()][..])
+        );
         assert_eq!(
             endpoint.responses_search_function_alias.as_deref(),
             Some("qaqh_search")
@@ -798,6 +846,39 @@ mod tests {
         assert_eq!(protocol_for("deepseek", "openai"), "openai");
         // Unknown endpoint falls back to the openai protocol (backward compat).
         assert_eq!(protocol_for("deepseek", "unknown"), "openai");
+    }
+
+    #[test]
+    fn deepseek_openai_supports_vision_only_for_vision_model() {
+        let endpoint = find_endpoint("deepseek", "openai").expect("DeepSeek openai endpoint");
+        assert!(endpoint.supports_image_tool);
+        assert_eq!(
+            endpoint.image_models.as_deref(),
+            Some(&["deepseek-v4-flash-vision-exp".to_string()][..])
+        );
+        // 非 vision 模型被拒绝，vision 模型放行（大小写不敏感）
+        assert!(image_tool_enabled("deepseek", "openai"));
+        assert!(image_tool_enabled("deepseek", "responses"));
+        assert!(image_model_supported(
+            "deepseek",
+            "openai",
+            "deepseek-v4-flash-vision-exp"
+        ));
+        assert!(image_model_supported(
+            "deepseek",
+            "openai",
+            "DEEPSEEK-V4-FLASH-VISION-EXP"
+        ));
+        assert!(!image_model_supported(
+            "deepseek",
+            "openai",
+            "deepseek-v4-flash"
+        ));
+        assert!(!image_model_supported(
+            "deepseek",
+            "openai",
+            "deepseek-v4-pro"
+        ));
     }
 
     #[test]

@@ -9,6 +9,8 @@ use crate::{RingingHub, SessionActivityTracker};
 static SYSTEM_PATH: OnceLock<String> = OnceLock::new();
 
 pub fn cache_system_path() {
+    // `mut` 只被下方 Windows 注册表探测分支消费（非 Windows 编译只读）。
+    #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
     let mut path = std::env::var("PATH").unwrap_or_default();
     #[cfg(target_os = "windows")]
     for key in [
@@ -97,6 +99,8 @@ pub fn detect_os_info() {
 }
 
 fn background_command(program: &str) -> Command {
+    // `mut` 只被 Windows 的 CREATE_NO_WINDOW 调整消费（非 Windows 编译只读）。
+    #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
     let mut command = Command::new(program);
     #[cfg(target_os = "windows")]
     {
@@ -127,6 +131,9 @@ pub struct AgentInstance {
     seed: String,
     transport: AgentTransport,
     kind: AgentKind,
+    /// Idle-unload liveness (shared with the Loop actor). `None` for legacy
+    /// process workers — they are not idle-unload candidates.
+    liveness: Option<std::sync::Arc<crate::agent::liveness::WorkerLiveness>>,
     /// Event consumer thread (stdout reader for process workers, event channel
     /// reader for in-process actors). daemon 关闭时必须 join：worker 退出 ≠
     /// 尾部 intent（含 seal_turn）已消费——管道/通道里的最后几个事件仍由
@@ -297,6 +304,7 @@ impl AgentRegistry {
         let tools_len = spec.tools.len();
         let workspace_mode = self.workspace_mode.clone();
         let workspace_env = self.workspace_env.clone();
+        let liveness = std::sync::Arc::new(crate::agent::liveness::WorkerLiveness::new());
         let thread = std::thread::Builder::new()
             .name(format!("qaqh-subagent-{actor_seed}"))
             .spawn(move || {
@@ -307,6 +315,7 @@ impl AgentRegistry {
                     event_tx,
                     cancel,
                     writer_dead,
+                    liveness,
                     workspace_mode,
                     workspace_env,
                 );
@@ -322,6 +331,7 @@ impl AgentRegistry {
                     cancel: cancel_for_sender,
                 },
                 kind: AgentKind::Subagent(spec),
+                liveness: None,
                 reader: Some(reader),
                 thread: Some(thread),
             },
@@ -408,6 +418,8 @@ impl AgentRegistry {
         let new_seed_owned = new_seed.map(str::to_string);
         let workspace_mode = self.workspace_mode.clone();
         let workspace_env = self.workspace_env.clone();
+        let liveness = std::sync::Arc::new(crate::agent::liveness::WorkerLiveness::new());
+        let liveness_for_registry = std::sync::Arc::clone(&liveness);
         let thread = std::thread::Builder::new()
             .name(format!("qaqh-session-{actor_seed}"))
             .spawn(move || {
@@ -420,6 +432,7 @@ impl AgentRegistry {
                     event_tx,
                     cancel,
                     writer_dead,
+                    liveness,
                     workspace_mode,
                     workspace_env,
                 );
@@ -435,6 +448,7 @@ impl AgentRegistry {
                     cancel: cancel_for_sender,
                 },
                 kind: AgentKind::Session,
+                liveness: Some(liveness_for_registry),
                 reader: Some(reader),
                 thread: Some(thread),
             },
@@ -514,9 +528,56 @@ impl AgentRegistry {
         }
     }
 
+    /// Test/ops hook: the idle-unload liveness handle of a worker, if it has
+    /// one (in-process actors only).
+    #[doc(hidden)]
+    pub fn worker_liveness(
+        &self,
+        seed: &str,
+    ) -> Option<std::sync::Arc<crate::agent::liveness::WorkerLiveness>> {
+        self.instances
+            .get(seed)
+            .and_then(|instance| instance.liveness.clone())
+    }
+
+    /// E: idle-unload workers whose last dispatch is older than `idle_secs`.
+    /// Only in-process Session actors participate; subagents are short-lived
+    /// and legacy process workers have no liveness handle. The close path is
+    /// the regular graceful shutdown (signal → join → drop bundle → final
+    /// flush/drain), so the next input resumes from disk via
+    /// `load_for_resume`. Returns the seeds that were unloaded.
+    pub fn unload_idle_sessions(&mut self, idle_secs: u64) -> Vec<String> {
+        if self.shutting_down || idle_secs == 0 {
+            return Vec::new();
+        }
+        let unloadable: Vec<String> = self
+            .instances
+            .iter()
+            .filter_map(|(seed, instance)| {
+                if !matches!(instance.kind, AgentKind::Session) {
+                    return None;
+                }
+                let liveness = instance.liveness.as_ref()?;
+                (liveness.unloadable() && liveness.idle_secs() >= idle_secs).then(|| seed.clone())
+            })
+            .collect();
+        let mut unloaded = Vec::new();
+        for seed in unloadable {
+            let idle = self
+                .instances
+                .get(&seed)
+                .and_then(|instance| instance.liveness.as_ref())
+                .map(|liveness| liveness.idle_secs())
+                .unwrap_or(0);
+            log::info!("[registry] idle unload seed={seed} idle={idle}s");
+            self.close(&seed);
+            unloaded.push(seed);
+        }
+        unloaded
+    }
+
     pub fn shutdown_all(&mut self) {
         self.shutting_down = true;
-        let seeds: Vec<String> = self.instances.keys().cloned().collect();
         let mut instances: Vec<AgentInstance> = self
             .instances
             .drain()
@@ -544,11 +605,8 @@ impl AgentRegistry {
         let dead: Vec<(String, AgentKind)> = self
             .instances
             .iter()
-            .filter_map(|(seed, instance)| {
-                instance
-                    .is_dead()
-                    .then(|| (seed.clone(), instance.kind_name()))
-            })
+            .filter(|(_, instance)| instance.is_dead())
+            .map(|(seed, instance)| (seed.clone(), instance.kind_name()))
             .collect();
         for (seed, kind) in dead {
             // 退避：同一 seed 最近 1 秒内刚 spawn 过（例如刚拉起又立刻崩溃）
@@ -635,10 +693,14 @@ impl AgentInstance {
         );
         match &self.transport {
             AgentTransport::InProcess { cmd_tx, cancel } => {
-                // daemon-shutdown 是进程级语义：置全局 CANCEL（PR-3-4 保留的
-                // 唯一无会话写入路径），所有会话的在途工具一并中止。
+                // D-3：取消必须按会话键控，单会话 close 不得触碰进程级全局
+                // flag。实例 token 让 turn 循环在下个检查点解卷（engine_turn
+                // 轮询 ctx.cancel.is_set()）；SESSION_CANCELS 让该会话的工具
+                // 线程在轮询点立即中止。旧的全局 set_cancel(true) 对已绑定
+                // 会话的工具线程不可见（is_cancel 先读会话键控表），却会在
+                // daemon 侧残留全局脏标记（C2 同源问题），已废弃。
                 cancel.set();
-                qaqh_workspace::set_cancel(true);
+                qaqh_workspace::set_session_cancel(&self.seed, true);
                 let cmd = crate::agent::types::WorkerCommand {
                     frame: env,
                     causation: Some("daemon-shutdown".into()),
@@ -648,6 +710,11 @@ impl AgentInstance {
         }
     }
 
+    /// Blocking join of the worker loop + reader threads. Contract (D-4):
+    /// must run in a blocking context (spawn_blocking / dedicated thread /
+    /// daemon teardown) — never directly on a tokio worker thread. The
+    /// caller holds the registry mutex across the join by design; other
+    /// registry RPCs stall until the join completes.
     fn finish_shutdown(&mut self) {
         // Join the loop thread first so it drops `event_tx`; the event reader
         // then drains the channel tail and publishes the last intents
@@ -729,6 +796,15 @@ fn tail_text(text: &str, max_bytes: usize) -> String {
         .into_iter()
         .rev()
         .collect()
+}
+
+/// Broadcast 命令 id（时间戳十六进制，语义同 service.rs 的 `command_id`）。
+fn broadcast_command_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("bcast-{nanos:x}")
 }
 
 #[cfg(test)]
@@ -821,13 +897,4 @@ mod tests {
         assert!(tail.chars().all(|c| c == '汉'));
         assert_eq!(tail, "汉".repeat(tail.chars().count()));
     }
-}
-
-/// Broadcast 命令 id（时间戳十六进制，语义同 service.rs 的 `command_id`）。
-fn broadcast_command_id() -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("bcast-{nanos:x}")
 }

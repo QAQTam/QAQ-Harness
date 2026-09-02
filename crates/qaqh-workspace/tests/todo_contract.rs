@@ -37,10 +37,12 @@ fn public_schema_exposes_one_todo_tool_with_no_alias_and_no_goal_entrypoint() {
     let branches = todo.function.parameters["oneOf"]
         .as_array()
         .expect("action-specific schema branches");
+    // Schema slimmed: 10 branches (create×2 + insert×4 + set×3 + list) → 4 (create/insert/set/list).
+    // Detailed sub-variant validation stays server-side; schema keeps only action discriminator.
     assert_eq!(
         branches.len(),
-        10,
-        "anchored insert variants + three set shapes are public"
+        4,
+        "create/insert/set/list 4 branches (sub-variants validated server-side)"
     );
     let set_branches: Vec<_> = branches
         .iter()
@@ -48,25 +50,11 @@ fn public_schema_exposes_one_todo_tool_with_no_alias_and_no_goal_entrypoint() {
         .collect();
     assert_eq!(
         set_branches.len(),
-        3,
-        "set must expose single/batch/parallel shapes"
+        1,
+        "set collapsed to single branch (single/batch/parallel discriminated server-side)"
     );
-    let set_branch = set_branches
-        .iter()
-        .find(|branch| {
-            branch["title"]
-                .as_str()
-                .is_some_and(|t| t.starts_with("Set task state (single)"))
-        })
-        .expect("single set branch");
-    assert_eq!(
-        set_branch["required"],
-        serde_json::json!(["action", "id", "status"])
-    );
-    // The oneOf branch no longer carries `not` anti-constraints (schema
-    // simplification): required + action.const are the sole discriminator.
-    // Batch/parallel shapes are discriminated by their own required fields
-    // (ids / updates), so no cross-branch `not` is needed.
+    let set_branch = set_branches[0];
+    assert_eq!(set_branch["required"], serde_json::json!(["action"]));
     assert!(
         set_branches
             .iter()
@@ -77,12 +65,10 @@ fn public_schema_exposes_one_todo_tool_with_no_alias_and_no_goal_entrypoint() {
         .iter()
         .filter(|branch| branch["properties"]["action"]["const"] == "insert")
         .collect();
-    assert_eq!(insert_branches.len(), 4);
+    assert_eq!(insert_branches.len(), 1);
     assert!(insert_branches.iter().all(|branch| {
         let required = branch["required"].as_array().expect("required array");
-        required
-            .iter()
-            .any(|field| field == "before_id" || field == "after_id")
+        required == &vec![serde_json::json!("action")]
     }));
 }
 

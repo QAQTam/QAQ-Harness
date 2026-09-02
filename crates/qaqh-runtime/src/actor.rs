@@ -77,6 +77,7 @@ fn publish_worker_event(
 /// selection, panic isolation and cleanup. Agent construction and the loop
 /// itself live behind [`crate::agent::spawn_agent`] (PR-2-3).
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_actor(
     seed: String,
     kind: ActorKind,
@@ -84,6 +85,7 @@ pub(crate) fn run_actor(
     event_tx: SyncSender<crate::agent::types::WriterEvent>,
     cancel: crate::agent::types::CancelToken,
     writer_dead: Arc<std::sync::atomic::AtomicBool>,
+    liveness: std::sync::Arc<crate::agent::liveness::WorkerLiveness>,
     workspace_mode: String,
     workspace_env: Option<(String, String)>,
 ) {
@@ -110,7 +112,7 @@ pub(crate) fn run_actor(
             qaqh_workspace::authorization::set_subagent_sandbox(true);
         }
 
-        crate::agent::spawn_agent(&seed, kind, cmd_rx, event_tx, cancel, writer_dead);
+        crate::agent::spawn_agent(&seed, kind, cmd_rx, event_tx, cancel, writer_dead, liveness);
 
         qaqh_workspace::clear_actor_context();
         cleanup_actor_state(is_subagent);
@@ -134,6 +136,7 @@ pub(crate) fn run_subagent_actor(
     event_tx: SyncSender<crate::agent::types::WriterEvent>,
     cancel: crate::agent::types::CancelToken,
     writer_dead: Arc<std::sync::atomic::AtomicBool>,
+    liveness: std::sync::Arc<crate::agent::liveness::WorkerLiveness>,
     workspace_mode: String,
     workspace_env: Option<(String, String)>,
 ) {
@@ -144,6 +147,7 @@ pub(crate) fn run_subagent_actor(
         event_tx,
         cancel,
         writer_dead,
+        liveness,
         workspace_mode,
         workspace_env,
     );
@@ -160,6 +164,7 @@ pub(crate) fn run_session_actor(
     event_tx: SyncSender<crate::agent::types::WriterEvent>,
     cancel: crate::agent::types::CancelToken,
     writer_dead: Arc<std::sync::atomic::AtomicBool>,
+    liveness: std::sync::Arc<crate::agent::liveness::WorkerLiveness>,
     workspace_mode: String,
     workspace_env: Option<(String, String)>,
 ) {
@@ -174,6 +179,7 @@ pub(crate) fn run_session_actor(
         event_tx,
         cancel,
         writer_dead,
+        liveness,
         workspace_mode,
         workspace_env,
     );

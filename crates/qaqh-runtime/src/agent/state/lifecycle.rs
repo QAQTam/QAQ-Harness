@@ -14,11 +14,17 @@ pub(crate) fn load_session_workspace(agent: &AgentState) {
         .as_ref()
         .and_then(|sm| sm.workspace_cwd(&agent.session.seed))
         .unwrap_or_default();
-    qaqh_workspace::workspace::set_process_workspace(if cwd.is_empty() {
-        "."
-    } else {
-        &cwd
-    });
+    qaqh_workspace::workspace::set_process_workspace(if cwd.is_empty() { "." } else { &cwd });
+}
+
+/// L2：为真实会话的 MessageStore 启用 enqueue 级 WAL。临时（子代理）store
+/// 与单测 store 不启用；`enable_wal` 自身也对重复启用幂等。
+fn enable_message_wal(agent: &mut AgentState) {
+    if agent.ephemeral {
+        return;
+    }
+    let session_dir = qaqh_types::platform::sessions_dir().join(&agent.session.seed);
+    agent.msg.enable_wal(&session_dir);
 }
 
 /// Load session from disk via the injected session-manager handle.
@@ -45,11 +51,10 @@ pub fn init_session(agent: &mut AgentState, restore_seed: Option<&str>) -> bool 
                 );
                 return false;
             }
-            if let Some((meta, archive_messages, compact_context)) =
-                agent
-                    .session_manager
-                    .as_ref()
-                    .and_then(|sm| sm.load_for_resume(s))
+            if let Some((meta, archive_messages, compact_context)) = agent
+                .session_manager
+                .as_ref()
+                .and_then(|sm| sm.load_for_resume(s))
             {
                 let active_messages = compact_context
                     .as_ref()
@@ -125,12 +130,29 @@ pub fn init_session(agent: &mut AgentState, restore_seed: Option<&str>) -> bool 
                 // Keep the persisted metadata in sync with the authoritative
                 // replay so a later flush does not write a stale count back.
                 agent.session.turn_count = authority_turn_count as usize;
+                // B（Tier C）：逻辑压缩前缀在内存里零依赖——分配器基线（上面
+                // 已用「全量 restored 计数」校准，不受驱逐影响）固化后即可
+                // 从常驻内存驱逐。驱逐会把持久化模式物理化为 compact
+                // checkpoint（归档不再被 SaveFull 整写），崩溃安全分析见
+                // MessageStore::evict_compacted_prefix。
+                let evicted = agent.msg.evict_compacted_prefix();
+                if evicted > 0 {
+                    log::info!(
+                        "[LIFECYCLE] evicted {evicted} compacted prefix turns from memory (Tier C)"
+                    );
+                }
                 log::info!(
                     "[LIFECYCLE] from_messages done, {} turns, {} repairs",
                     msg.turn_count(),
                     repairs.len()
                 );
                 agent.msg = msg;
+                // L2：为真实会话启用 enqueue 级 WAL（恢复路径的 load_for_resume
+                // 已在创建 store 前重放并截断旧 WAL）。临时/子代理 store 不启用。
+                enable_message_wal(agent);
+                // L3：工具 outbox 对账——已执行但结果丢失的工具，修正 [RESTORE]
+                // 占位符语义（"未执行" → "已执行、结果未持久化"）。
+                crate::agent::tool_outbox::reconcile_store(&mut agent.msg, &agent.session.seed);
                 // 重建 read_image 图片注册表：registry 是内存态，daemon 重启
                 // 后会丢失；但上传图片本就以 ContentBlock::Image 持久化在
                 // user 消息里。按活跃视图的时序重放注册，使 [Image #N] 占位
@@ -141,12 +163,26 @@ pub fn init_session(agent: &mut AgentState, restore_seed: Option<&str>) -> bool 
                         continue;
                     }
                     for block in &message.content {
-                        if let qaqh_types::ContentBlock::Image { mime_type, data } = block {
-                            qaqh_workspace::read_image::store_image(
-                                &agent.session.seed,
-                                mime_type,
-                                data,
-                            );
+                        match block {
+                            // 旧会话 inline Image：借重建时机外置落盘（内容寻址幂等）。
+                            qaqh_types::ContentBlock::Image { mime_type, data } => {
+                                qaqh_workspace::read_image::store_image(
+                                    &agent.session.seed,
+                                    mime_type,
+                                    data,
+                                );
+                            }
+                            // 新写入一律 ImageRef：直接按引用登记，无需字节。
+                            qaqh_types::ContentBlock::ImageRef {
+                                sha256, mime_type, ..
+                            } => {
+                                qaqh_workspace::read_image::register_image_ref(
+                                    &agent.session.seed,
+                                    mime_type,
+                                    sha256,
+                                );
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -208,6 +244,7 @@ pub fn init_session(agent: &mut AgentState, restore_seed: Option<&str>) -> bool 
     } else {
         qaqh_message::MessageStore::new(&seed)
     };
+    enable_message_wal(agent);
     qaqh_workspace::workspace::set_current_session(&agent.session.seed);
     load_session_workspace(agent);
     let workspace = qaqh_workspace::CURRENT_WORKSPACE
@@ -239,6 +276,7 @@ pub fn create_session(agent: &mut AgentState) {
     } else {
         qaqh_message::MessageStore::new(&agent.session.seed)
     };
+    enable_message_wal(agent);
     qaqh_workspace::workspace::set_current_session(&agent.session.seed);
     load_session_workspace(agent);
     let workspace = qaqh_workspace::CURRENT_WORKSPACE
@@ -268,6 +306,7 @@ pub fn create_session_with_seed(agent: &mut AgentState) {
     } else {
         qaqh_message::MessageStore::new(&agent.session.seed)
     };
+    enable_message_wal(agent);
     qaqh_workspace::workspace::set_current_session(&agent.session.seed);
     load_session_workspace(agent);
     let workspace = qaqh_workspace::CURRENT_WORKSPACE

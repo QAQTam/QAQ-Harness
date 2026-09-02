@@ -9,28 +9,28 @@ use crate::{ToolCallCtx, ToolPlacement, ToolResult, ToolRisk, process_registry::
 pub fn register(mgr: &mut crate::ToolManager) {
     mgr.register_with_placement(crate::ToolHandler {
         key: "process".into(),
-        description: "Inspect and control tracked background processes with one action-based interface: check, wait, write, or kill.",
+        description: "Control backgrounded process: check/wait/write/kill.",
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
                     "enum": ["check", "wait", "write", "kill"],
-                    "description": "check: query status, output tail and metadata of a tracked process; wait: block until the process exits (or timeout_secs elapses) and return its current state; write: send text to the process stdin; kill: terminate the process tree."
+                    "description": "check: query status; wait: block; write: stdin; kill: terminate"
                 },
                 "id": {
                     "type": "integer",
-                    "description": "Process id returned by exec when a command was backgrounded (status \\\"backgrounded\\\" + process_id)."
+                    "description": "Process id from backgrounded exec"
                 },
                 "timeout_secs": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 3600,
-                    "description": "Max seconds to wait for action=wait. Default 120. Ignored by check/write/kill."
+                    "description": "Wait timeout (default 120)"
                 },
                 "text": {
                     "type": "string",
-                    "description": "Text to write to the process stdin (action=write only; newline is NOT appended automatically)."
+                    "description": "Text for write action"
                 }
             },
             "required": ["action", "id"],

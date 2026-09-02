@@ -809,7 +809,12 @@ fn filter_stateful_messages(messages: Vec<Message>) -> (Vec<Message>, usize) {
     let dropped_images = messages[..start]
         .iter()
         .flat_map(|m| m.content.iter())
-        .filter(|b| matches!(b, ContentBlock::Image { .. }))
+        .filter(|b| {
+            matches!(
+                b,
+                ContentBlock::Image { .. } | ContentBlock::ImageRef { .. }
+            )
+        })
         .count();
 
     let mut out: Vec<Message> = Vec::new();
@@ -905,6 +910,17 @@ fn convert_messages(
                             ));
                             img_idx += 1;
                         }
+                        ContentBlock::ImageRef {
+                            sha256: _,
+                            mime_type,
+                            bytes_len,
+                        } => {
+                            // A-2 L0：外置图片仅持索引，占位符用 bytes_len 显示。
+                            image_refs.push(format!(
+                                "[Image #{img_idx}: {mime_type}, ~{bytes_len} bytes — call read_image(image_index={img_idx}) to view it yourself]"
+                            ));
+                            img_idx += 1;
+                        }
                         _ => {}
                     }
                 }
@@ -986,6 +1002,23 @@ fn convert_messages(
                                     {"type": "image_url", "image_url": {"url": format!("data:{mime_type};base64,{data}")}},
                                 ],
                             }));
+                        }
+                        ContentBlock::ImageRef {
+                            sha256, mime_type, ..
+                        } => {
+                            // A-2 L0：按需读盘后走同一 data URI 降格路径。
+                            match qaqh_types::image_store::load_image_b64(sha256, mime_type) {
+                                Ok(data) => out.push(serde_json::json!({
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "text", "text": "Attached media from tool result:"},
+                                        {"type": "image_url", "image_url": {"url": format!("data:{mime_type};base64,{data}")}},
+                                    ],
+                                })),
+                                Err(e) => log::warn!(
+                                    "[gate] image {sha256} load failed, dropped from chat request: {e}"
+                                ),
+                            }
                         }
                         _ => {}
                     }

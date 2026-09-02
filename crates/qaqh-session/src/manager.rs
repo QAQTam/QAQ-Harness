@@ -4,14 +4,14 @@
 //!   {sessions_dir}/{seed}/
 //!     meta.json       — SessionMeta (atomic replace-write)
 //!     messages.jsonl  — one JSON line per Message (append-only)
+//!     messages.wal    — L2 write-ahead log of un-drained persist ops
 //!
 //! A central `index.json` enables fast listing.
 
+use qaqh_types::{Message, SessionMeta};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
-
-use qaqh_types::{Message, SessionMeta};
 
 use crate::store;
 
@@ -169,13 +169,18 @@ impl SessionManager {
     ///
     /// Fail-closed compact semantics (BUG-007): if a compact checkpoint file
     /// exists but cannot be parsed or points past the archive, this returns
-    /// `None` instead of silently degrading to the full pre-compact archive.
     /// Compacted history must never become reversible just because the
     /// checkpoint was damaged.
     pub fn load_for_resume(
         &self,
         seed: &str,
     ) -> Option<(SessionMeta, Vec<Message>, Option<CompactContext>)> {
+        // L2 recovery: fold any un-drained WAL ops into the archive BEFORE any
+        // consumer projects from it (worker resume, conversation snapshot,
+        // timeline rebuild all funnel through here). Idempotent — see
+        // `replay_message_wal`.
+        self.replay_message_wal(seed);
+        let (meta, archive_messages) = self.load(seed)?;
         let (meta, archive_messages) = self.load(seed)?;
         let selected = match self.read_compact_context_checked(seed) {
             Ok(None) => None,
@@ -200,6 +205,136 @@ impl SessionManager {
             }
         };
         Some((meta, archive_messages, selected))
+    }
+
+    /// The single `PersistOp` → store mapping (PR-1-6 / Z5). The runtime's
+    /// drain loop and the WAL recovery path both funnel through this method,
+    /// so the mapping exists exactly once and replayed ops take byte-identical
+    /// write paths to live ops. The shadow test in qaqh-message locks it.
+    pub fn apply_persist_op(&self, op: &qaqh_message::PersistOp) {
+        match op {
+            qaqh_message::PersistOp::Append {
+                seed,
+                messages,
+                model,
+                effort,
+                compact_skip,
+                turn_count,
+            } => {
+                self.save_append(
+                    seed,
+                    messages,
+                    model,
+                    effort.as_deref(),
+                    *compact_skip,
+                    *turn_count,
+                );
+            }
+            qaqh_message::PersistOp::UpdateMeta {
+                seed,
+                model,
+                effort,
+                compact_skip,
+                turn_count,
+            } => {
+                self.update_meta(seed, model, effort.as_deref(), *compact_skip, *turn_count);
+            }
+            qaqh_message::PersistOp::UpdateCompactContext { seed, messages } => {
+                self.update_compact_context(seed, messages);
+            }
+            qaqh_message::PersistOp::SaveCompactContext { seed, messages } => {
+                self.save_compact_context(seed, messages);
+            }
+            qaqh_message::PersistOp::SaveFull {
+                seed,
+                messages,
+                model,
+                effort,
+                compact_skip,
+                turn_count,
+            } => {
+                self.save_full(
+                    seed,
+                    messages,
+                    model,
+                    effort.as_deref(),
+                    *compact_skip,
+                    *turn_count,
+                );
+            }
+        }
+    }
+
+    /// L2 recovery: replay un-drained WAL ops into the archive.
+    ///
+    /// Idempotent by construction:
+    /// - `Append` batches are filtered against the archive's max `msg_id`
+    ///   (msg_ids are session-monotonic), so a crash between "op applied" and
+    ///   "WAL checkpointed" converges instead of duplicating;
+    /// - `UpdateMeta` is a pure metadata refresh;
+    /// - `SaveFull` / compact-context ops never reach the WAL (generation
+    ///   rewrites — see `qaqh_message::wal` module docs).
+    ///
+    /// Single-writer invariant: a non-empty WAL implies the previous worker
+    /// died before draining, so no live writer exists for this seed while
+    /// replay runs. Per-op application still takes the per-seed lock.
+    fn replay_message_wal(&self, seed: &str) {
+        let dir = self.session_path_dir(seed);
+        let ops = qaqh_message::wal::read_ops(&dir);
+        if ops.is_empty() {
+            return;
+        }
+        log::info!(
+            "SessionManager: replaying {} WAL op(s) for {seed}",
+            ops.len()
+        );
+        let mut applied_max_msg_id = self
+            .load(seed)
+            .map(|(_, messages)| {
+                messages
+                    .iter()
+                    .filter_map(|message| message.msg_id)
+                    .max()
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
+        for op in ops {
+            match op {
+                qaqh_message::PersistOp::Append {
+                    seed: op_seed,
+                    messages,
+                    model,
+                    effort,
+                    compact_skip,
+                    turn_count,
+                } => {
+                    let fresh: Vec<Message> = messages
+                        .into_iter()
+                        .filter(|message| message.msg_id.map_or(true, |id| id > applied_max_msg_id))
+                        .collect();
+                    if fresh.is_empty() {
+                        continue;
+                    }
+                    applied_max_msg_id = applied_max_msg_id.max(
+                        fresh
+                            .iter()
+                            .filter_map(|message| message.msg_id)
+                            .max()
+                            .unwrap_or(0),
+                    );
+                    self.apply_persist_op(&qaqh_message::PersistOp::Append {
+                        seed: op_seed,
+                        messages: fresh,
+                        model,
+                        effort,
+                        compact_skip,
+                        turn_count,
+                    });
+                }
+                other => self.apply_persist_op(&other),
+            }
+        }
+        qaqh_message::wal::checkpoint_file(&dir);
     }
 
     /// Persist a new checkpoint without rewriting the raw history archive.
@@ -1017,6 +1152,149 @@ mod skill_persistence_tests {
         assert!(
             manager.load_for_resume("past-archive").is_none(),
             "archive_message_count past the archive must fail closed"
+        );
+        std::fs::remove_dir_all(root).expect("remove test directory");
+    }
+}
+
+#[cfg(test)]
+mod wal_recovery_tests {
+    use super::*;
+    use qaqh_message::PersistOp;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    static TEST_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+
+    fn manager() -> (PathBuf, SessionManager) {
+        let root = std::env::temp_dir().join(format!(
+            "qaqh-session-wal-{}-{}-{}",
+            std::process::id(),
+            TEST_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos(),
+        ));
+        let sessions_dir = root.join("sessions");
+        std::fs::create_dir_all(&sessions_dir).expect("create test sessions");
+        let manager = SessionManager {
+            sessions_dir,
+            active_path: root.join(".active_session"),
+            session_locks: Mutex::new(HashMap::new()),
+        };
+        (root, manager)
+    }
+
+    fn user_msg(id: u64, text: &str) -> Message {
+        Message {
+            msg_id: Some(id),
+            role: "user".into(),
+            name: None,
+            content: vec![qaqh_types::ContentBlock::text(text)],
+        }
+    }
+
+    fn append_op(seed: &str, messages: Vec<Message>) -> PersistOp {
+        PersistOp::Append {
+            seed: seed.to_string(),
+            messages,
+            model: "m".into(),
+            effort: None,
+            compact_skip: 0,
+            turn_count: 1,
+        }
+    }
+
+    /// Simulate the crash window: flush_meta logged the ops into the WAL, the
+    /// process died before the host-side drain applied them.
+    fn write_wal(dir: &std::path::Path, ops: &[PersistOp]) {
+        let mut writer = qaqh_message::WalWriter::open(dir).expect("open wal");
+        for op in ops {
+            writer.log_op(op).expect("log op");
+        }
+        writer.sync().expect("sync wal");
+    }
+
+    #[test]
+    fn un_drained_wal_ops_are_replayed_into_the_archive() {
+        let (root, manager) = manager();
+        let seed = "wal-replay";
+        let dir = root.join("sessions").join(seed);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        manager.save_full(seed, &[user_msg(1, "archived")], "m", None, 0, 1);
+        write_wal(
+            &dir,
+            &[append_op(
+                seed,
+                vec![user_msg(2, "round-a"), user_msg(3, "round-b")],
+            )],
+        );
+
+        let (_, messages, _) = manager.load_for_resume(seed).expect("resume");
+        assert_eq!(messages.len(), 3, "WAL ops must fold into the archive");
+        assert_eq!(messages[1].msg_id, Some(2));
+
+        // The WAL is checkpointed after replay: a second load must not
+        // duplicate, and the log file is back to a bare header.
+        let (_, again, _) = manager.load_for_resume(seed).expect("resume again");
+        assert_eq!(again.len(), 3);
+        assert!(qaqh_message::wal::read_ops(&dir).is_empty());
+        std::fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn crash_between_apply_and_checkpoint_converges() {
+        let (root, manager) = manager();
+        let seed = "wal-dedupe";
+        let dir = root.join("sessions").join(seed);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        manager.save_full(seed, &[user_msg(1, "archived")], "m", None, 0, 1);
+        // Op applied to the archive, WAL checkpoint never ran (crash window).
+        manager.apply_persist_op(&append_op(
+            seed,
+            vec![user_msg(2, "applied-but-wal-not-cleared")],
+        ));
+        write_wal(
+            &dir,
+            &[append_op(
+                seed,
+                vec![user_msg(2, "applied-but-wal-not-cleared")],
+            )],
+        );
+
+        let (_, messages, _) = manager.load_for_resume(seed).expect("resume");
+        assert_eq!(
+            messages.len(),
+            2,
+            "msg_id dedupe must converge instead of double-applying"
+        );
+        std::fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn torn_wal_tail_preserves_prefix() {
+        let (root, manager) = manager();
+        let seed = "wal-torn";
+        let dir = root.join("sessions").join(seed);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        manager.save_full(seed, &[user_msg(1, "archived")], "m", None, 0, 1);
+        write_wal(&dir, &[append_op(seed, vec![user_msg(2, "complete-line")])]);
+        let wal_path = dir.join("messages.wal");
+        {
+            use std::io::Write as _;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&wal_path)
+                .expect("open wal for torn tail");
+            file.write_all(b"{\"seq\":2,\"op\":{\"App")
+                .expect("write torn tail");
+        }
+
+        let (_, messages, _) = manager.load_for_resume(seed).expect("resume");
+        assert_eq!(
+            messages.len(),
+            2,
+            "ops before the torn tail must survive the crash"
         );
         std::fs::remove_dir_all(root).expect("remove test directory");
     }

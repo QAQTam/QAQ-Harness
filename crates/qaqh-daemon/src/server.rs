@@ -240,6 +240,56 @@ pub async fn run_with(config: ServerNetworkConfig) -> Result<(), String> {
         });
     }
     let (shutdown, _) = watch::channel(false);
+    // L1 durability: the daemon previously had NO OS signal handling — Ctrl+C
+    // or a terminal close killed the process without running the graceful
+    // path below, so in-flight turns never reached messages.jsonl (the whole
+    // turn's rounds lived only in the worker's in-memory persist queue).
+    // Forward SIGINT/SIGTERM into the same watch channel the /control/v1/stop
+    // endpoint uses, so every death mode runs the graceful shutdown:
+    // service.shutdown() (cancel + SessionShutdown + join) → seal orphans →
+    // flush timeline persistence.
+    spawn_signal_shutdown(shutdown.clone());
+    // E: idle 会话卸载周期任务（docs/memory-governance-plan.md §E）。
+    // 每 60s 读一次 config（热生效），对空闲超过阈值的 Session worker 走
+    // 优雅 close（join + bundle drop + final flush/drain）。registry.close
+    // 是阻塞 join，必须放 spawn_blocking，避免卡死 tokio worker 线程。
+    {
+        let service = service.clone();
+        let mut shutdown_rx = shutdown.subscribe();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let idle_secs = qaqh_config::watch::authoritative()
+                            .map(|config| config.session_idle_unload_secs)
+                            .unwrap_or(0);
+                        if idle_secs > 0 {
+                            let service = service.clone();
+                            let _ = tokio::task::spawn_blocking(move || {
+                                let unloaded = service.unload_idle_sessions(idle_secs);
+                                if !unloaded.is_empty() {
+                                    log::info!(
+                                        "[daemon] idle-unloaded {} session(s): {:?}",
+                                        unloaded.len(),
+                                        unloaded
+                                    );
+                                }
+                            })
+                            .await;
+                        }
+                    }
+                    changed = shutdown_rx.changed() => {
+                        if changed.is_err() || *shutdown_rx.borrow() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     // F4: worker reader 线程 panic/崩溃时，registry 会把死实例标记为可重生；
     // 此周期任务负责真正重新拉起，避免单条事件流故障永久饿死会话。
     {
@@ -275,12 +325,15 @@ pub async fn run_with(config: ServerNetworkConfig) -> Result<(), String> {
     };
     let app = crate::axum_server::build_router(app_state);
     let mut shutdown_rx = shutdown.subscribe();
-    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
-        .with_graceful_shutdown(async move {
-            let _ = shutdown_rx.changed().await;
-        })
-        .await
-        .map_err(stringify)?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        let _ = shutdown_rx.changed().await;
+    })
+    .await
+    .map_err(stringify)?;
     service.shutdown();
     // 退出前主动收尾孤儿（stop 协议已在 handler 做过；此处兜底其他退出
     // 路径，如生命周期接管/信号退出。幂等：已 seal 的 turn 跳过）。
@@ -302,6 +355,46 @@ pub fn random_hex() -> String {
         .map(|byte| format!("{byte:02x}"))
         .collect()
 }
+
+/// Install SIGINT/SIGTERM handlers that forward into the graceful-shutdown
+/// watch channel (same path as `POST /control/v1/stop`). Without this, the
+/// default OS disposition killed the daemon instantly and every un-drained
+/// turn in the in-process workers was lost.
+fn spawn_signal_shutdown(shutdown: watch::Sender<bool>) {
+    tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            let ctrl_c = tokio::signal::ctrl_c();
+            let sigterm = async move {
+                match signal(SignalKind::terminate()) {
+                    Ok(mut stream) => {
+                        stream.recv().await;
+                    }
+                    Err(error) => {
+                        log::error!("[daemon] SIGTERM handler install failed: {error}");
+                        // Degrade to Ctrl+C only: park forever on this branch.
+                        std::future::pending::<()>().await;
+                    }
+                }
+            };
+            tokio::select! {
+                _ = ctrl_c => {}
+                _ = sigterm => {}
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            if tokio::signal::ctrl_c().await.is_err() {
+                log::error!("[daemon] ctrl_c handler unavailable");
+                return;
+            }
+        }
+        log::info!("[daemon] termination signal received — entering graceful shutdown");
+        let _ = shutdown.send(true);
+    });
+}
+
 fn stringify(error: impl std::fmt::Display) -> String {
     error.to_string()
 }

@@ -21,10 +21,10 @@ use std::time::{Duration, Instant};
 use qaqh_domain::{
     ControlCommand, ControlEvent, ConversationCommand, ConversationEvent, SessionState,
 };
-use qaqh_runtime::agent::state::agent::AgentState;
 use qaqh_ringing::{
     RingingCommand, RingingEvent, RingingWorkerCommandEnvelope, RingingWorkerEventEnvelope,
 };
+use qaqh_runtime::agent::state::agent::AgentState;
 use serde_json::json;
 use tiny_http::{Header, Response, Server};
 

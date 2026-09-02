@@ -27,10 +27,7 @@ static INIT: Once = Once::new();
 fn data_dir() -> PathBuf {
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!(
-            "qaqh-persist-effects-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("qaqh-persist-effects-{}", std::process::id()));
         SessionManager::init(dir.clone());
         dir
     })
@@ -121,7 +118,10 @@ fn flush_ops_enqueue_in_legacy_call_order() {
     // Before the seed is assigned, flush is a no-op — the legacy guard.
     store.push_user("pre-seed");
     store.flush_meta("model-a", "high");
-    assert!(store.take_persist_ops().is_empty(), "empty seed must not enqueue");
+    assert!(
+        store.take_persist_ops().is_empty(),
+        "empty seed must not enqueue"
+    );
 
     let mut store = MessageStore::new("ops-order-seed");
     store.push_user("first");
@@ -157,7 +157,10 @@ fn flush_ops_enqueue_in_legacy_call_order() {
     store.flush_meta("model-a", "high");
     let ops = store.take_persist_ops();
     assert_eq!(ops.len(), 1);
-    assert!(matches!(ops[0], PersistOp::UpdateMeta { turn_count: 1, .. }));
+    assert!(matches!(
+        ops[0],
+        PersistOp::UpdateMeta { turn_count: 1, .. }
+    ));
 
     // Full snapshot without checkpoint → SaveFull; pending_save is cleared
     // so a follow-up flush falls into the UpdateMeta branch (legacy shape).
@@ -277,7 +280,10 @@ fn legacy_session_dir_replays_and_appends_byte_identical() {
     }
     let (_, msgs) = sm.load(seed_replay).expect("legacy session loads");
     let (mut store, repairs) = MessageStore::from_messages(seed_replay, &msgs, 0);
-    assert!(repairs.is_empty(), "clean legacy dir must replay without repairs");
+    assert!(
+        repairs.is_empty(),
+        "clean legacy dir must replay without repairs"
+    );
     store.push_user("u3");
     store.push_assistant(assistant("a3"));
     store.flush_meta("model-a", "high");
@@ -287,10 +293,7 @@ fn legacy_session_dir_replays_and_appends_byte_identical() {
     //    appended exactly these rows.
     sm.save_append(
         seed_legacy,
-        &[
-            stamped(Message::user("u3"), 5),
-            stamped(assistant("a3"), 6),
-        ],
+        &[stamped(Message::user("u3"), 5), stamped(assistant("a3"), 6)],
         "model-a",
         Some("high"),
         0,

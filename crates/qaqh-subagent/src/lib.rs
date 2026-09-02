@@ -37,7 +37,6 @@ use qaqh_workspace::{ToolCallCtx, ToolHandler, ToolManager, ToolResult, ToolRisk
 mod host;
 pub use host::{ContentRef, EventBatch, SubagentHost, host, install_host};
 
-
 /// 子代理固定身份提示：注入到子代理任务文本的 `[SYSTEM]` 段。
 /// 子代理的 base system prompt（`backend_prompt.md`）与主代理同源（同 config
 /// 加载），前缀天然一致、可命中 provider 前缀缓存；本段补充子代理专属身份约束。
@@ -321,7 +320,6 @@ fn register_subagent_process(name: &str) -> RegistryRef {
     log::info!("[SUBAGENT] '{name}' registered in local registry id={id}");
     RegistryRef::Local { id }
 }
-
 
 /// 子代理命令/事件传输抽象：宿主直连与 HTTP/SSE 回连共用同一套 collect 流程。
 /// 子代理命令/事件传输抽象（PR-4-2：legacy HTTP/SSE 回连已删除，仅宿主直连）。

@@ -842,6 +842,31 @@ impl RingingHub {
             .remove(seed);
     }
 
+    /// D-1：会话关闭后丢弃该 seed 的全部常驻内存态（channel×seed 的
+    /// 投影/journal/router、活交互表、live_workers、大内容条目）。
+    ///
+    /// 磁盘索引（disk_seeds / disk_timeline_seeds）**保留**——下次访问照常
+    /// 走 lazy-load 重放 journal，行为与 daemon 重启后的恢复路径完全一致。
+    /// 调用约束：必须晚于该 seed 的终态（Closed）发布，否则 publish 会触发
+    /// lazy-load 把刚丢弃的状态原样重建回来；且调用方必须已 join worker，
+    /// 避免存活 worker 继续写回脏状态。
+    pub fn forget_seed(&self, seed: &str) {
+        if let Ok(mut channels) = self.channels.lock() {
+            for per_seed in channels.values_mut() {
+                per_seed.remove(seed);
+            }
+        }
+        if let Ok(mut live) = self.live_interactions.lock() {
+            live.remove(seed);
+        }
+        if let Ok(mut workers) = self.live_workers.lock() {
+            workers.remove(seed);
+        }
+        if let Ok(mut content) = self.content_store.lock() {
+            content.release_session(seed);
+        }
+    }
+
     pub fn seal_orphan_channel_state(&self, seed: &str, force: bool) -> bool {
         // B9/H3 liveness gate：force=false 的 bootstrap 路径在 worker 仍
         // 存活时整体跳过——活 worker 的 running/pending 状态不是孤儿。
@@ -1506,9 +1531,10 @@ impl RingingHub {
     /// Conversation 频道完整快照：领域投影摘要 + 持久化消息构建的 turns。
     pub fn conversation_snapshot(&self, seed: &str) -> RingingChannelSnapshot {
         let mut snap = self.snapshot(RingingChannel::Conversation, seed);
-        if let Some(state) =
-            super::conversation_snapshot::persisted_conversation_state(self.sessions.as_deref(), seed)
-        {
+        if let Some(state) = super::conversation_snapshot::persisted_conversation_state(
+            self.sessions.as_deref(),
+            seed,
+        ) {
             merge_persisted_conversation_state(&mut snap.state, state);
         }
         snap
@@ -2859,5 +2885,52 @@ mod tests {
         assert!(hub.snapshot(RingingChannel::Control, "s").state["pending_interaction"].is_null());
         // 收尾后活表清空：后续 bootstrap 路径不再保护（幂等）。
         assert!(!hub.seal_orphan_channel_state("s", false));
+    }
+
+    #[test]
+    fn forget_seed_drops_per_seed_resident_state() {
+        let hub = RingingHub::new("forget-seed-test");
+        hub.publish("s1", round_delta(1));
+        hub.mark_worker_live("s1");
+        hub.live_interactions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert("s1".to_string(), "interaction-1".to_string());
+        let content_id = hub.put_content("s1", "text/plain", b"hello".to_vec(), false);
+        assert!(hub.get_content("s1", &content_id).is_some());
+        let holds_seed = |hub: &RingingHub, seed: &str| {
+            hub.channels
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .any(|per_seed| per_seed.contains_key(seed))
+        };
+        assert!(holds_seed(&hub, "s1"));
+
+        hub.forget_seed("s1");
+
+        assert!(!holds_seed(&hub, "s1"), "channels state must be dropped");
+        assert!(
+            !hub.live_workers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains("s1"),
+            "live_workers entry must be dropped"
+        );
+        assert!(
+            !hub.live_interactions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key("s1"),
+            "live_interactions entry must be dropped"
+        );
+        assert!(
+            hub.get_content("s1", &content_id).is_none(),
+            "content_store entry must be released"
+        );
+
+        // 其他 seed 的常驻状态不受影响。
+        hub.publish("s2", round_delta(2));
+        assert!(holds_seed(&hub, "s2"));
     }
 }

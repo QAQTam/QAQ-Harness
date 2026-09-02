@@ -5,7 +5,7 @@
 //! - `system` is a **top-level `system` field**, not a leading `messages`
 //!   entry. `proxybun` verified `glm-5.3-flash` via
 //!   `https://open.bigmodel.cn/api/anthropic/v1/messages` with this shape
-//!   (`200`). `qaqh-gate:openai.rs:convert_messages` treating `system` as
+//!   (`200`). `qaqh-gate:chat_completions_api.rs:convert_messages` treating `system` as
 //!   first message is OpenAI-specific and must not be reused here.
 //! - `messages` role alternation with `user`/`assistant` only; consecutive
 //!   same-role messages are merged to satisfy Anthropic's strict alternation.
@@ -107,7 +107,7 @@ fn map_anthropic_stop_reason(s: &str) -> String {
     }
 }
 
-// ── helpers copied from openai.rs (stateful + skill envelope) ──
+// ── helpers copied from chat_completions_api.rs (stateful + skill envelope) ──
 
 fn filter_stateful_messages(messages: Vec<Message>) -> (Vec<Message>, usize) {
     if messages.is_empty() {
@@ -122,7 +122,12 @@ fn filter_stateful_messages(messages: Vec<Message>) -> (Vec<Message>, usize) {
     let dropped_images = messages[..start]
         .iter()
         .flat_map(|m| m.content.iter())
-        .filter(|b| matches!(b, ContentBlock::Image { .. }))
+        .filter(|b| {
+            matches!(
+                b,
+                ContentBlock::Image { .. } | ContentBlock::ImageRef { .. }
+            )
+        })
         .count();
     let mut out: Vec<Message> = Vec::new();
     for msg in &messages[start..] {
@@ -211,7 +216,22 @@ fn convert_messages_to_anthropic(
                                 data.len(),
                                 img_idx
                             );
-                            content_parts.push(serde_json::json!({"type":"text","text": placeholder}));
+                            content_parts
+                                .push(serde_json::json!({"type":"text","text": placeholder}));
+                            img_idx += 1;
+                        }
+                        ContentBlock::ImageRef {
+                            mime_type,
+                            bytes_len,
+                            ..
+                        } => {
+                            // A-2 L0：外置图片仅持索引，占位符用 bytes_len 显示。
+                            let placeholder = format!(
+                                "[Image #{}: {}, ~{bytes_len} bytes — call read_image(image_index={}) to view it yourself]",
+                                img_idx, mime_type, img_idx
+                            );
+                            content_parts
+                                .push(serde_json::json!({"type":"text","text": placeholder}));
                             img_idx += 1;
                         }
                         ContentBlock::ToolResult { .. } => {}
@@ -237,7 +257,8 @@ fn convert_messages_to_anthropic(
                             // permissive ones (ZCode) accept it. Fallback to text
                             // would also work, but `thinking` keeps stream
                             // parity with `thinking_delta` events.
-                            parts.push(serde_json::json!({"type":"thinking","thinking": reasoning}));
+                            parts
+                                .push(serde_json::json!({"type":"thinking","thinking": reasoning}));
                         }
                         ContentBlock::ToolUse { id, name, input } => {
                             parts.push(serde_json::json!({"type":"tool_use","id": id, "name": name, "input": input}));
@@ -256,7 +277,10 @@ fn convert_messages_to_anthropic(
                 let mut tr_parts: Vec<serde_json::Value> = Vec::new();
                 for block in &msg.content {
                     match block {
-                        ContentBlock::ToolResult { tool_use_id, result } => {
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            result,
+                        } => {
                             let content_str = result.render_xml_envelope();
                             let is_error = !result.is_success();
                             tr_parts.push(serde_json::json!({
@@ -277,6 +301,20 @@ fn convert_messages_to_anthropic(
                                 "type": "image",
                                 "source": {"type":"base64","media_type": mime_type, "data": data}
                             }));
+                        }
+                        ContentBlock::ImageRef {
+                            sha256, mime_type, ..
+                        } => {
+                            // A-2 L0：按需读盘后走同一 base64 source 路径。
+                            match qaqh_types::image_store::load_image_b64(sha256, mime_type) {
+                                Ok(data) => tr_parts.push(serde_json::json!({
+                                    "type": "image",
+                                    "source": {"type":"base64","media_type": mime_type, "data": data}
+                                })),
+                                Err(e) => log::warn!(
+                                    "[gate] image {sha256} load failed, dropped from anthropic request: {e}"
+                                ),
+                            }
                         }
                         _ => {}
                     }
@@ -303,12 +341,18 @@ fn convert_messages_to_anthropic(
                 let last_is_tool = last
                     .get("content")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().any(|p| p.get("type").and_then(|t| t.as_str()) == Some("tool_result")))
+                    .map(|arr| {
+                        arr.iter()
+                            .any(|p| p.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+                    })
                     .unwrap_or(false);
                 let cur_is_tool = msg
                     .get("content")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().any(|p| p.get("type").and_then(|t| t.as_str()) == Some("tool_result")))
+                    .map(|arr| {
+                        arr.iter()
+                            .any(|p| p.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+                    })
                     .unwrap_or(false);
                 // Merge only when kinds match (both tool or both non-tool)
                 if last_is_tool == cur_is_tool {
@@ -329,7 +373,12 @@ fn convert_messages_to_anthropic(
     // Ensure the sequence starts with a user message: Anthropic forbids
     // leading assistant. If the first merged entry is assistant (can happen
     // when history was tool-heavy), drop it or prepend a no-op user.
-    if merged.first().and_then(|v| v.get("role")).and_then(|v| v.as_str()) == Some("assistant") {
+    if merged
+        .first()
+        .and_then(|v| v.get("role"))
+        .and_then(|v| v.as_str())
+        == Some("assistant")
+    {
         log::warn!("anthropic: dropping leading assistant block to satisfy user-first constraint");
         merged.remove(0);
     }
@@ -386,7 +435,11 @@ fn handle_anthropic_frame(
     let ev: serde_json::Value = match serde_json::from_str(data_str) {
         Ok(v) => v,
         Err(e) => {
-            log::warn!("Anthropic SSE: deserialize fail: {} — data: {}", e, data_str);
+            log::warn!(
+                "Anthropic SSE: deserialize fail: {} — data: {}",
+                e,
+                data_str
+            );
             return Ok(FrameAction::Continue);
         }
     };
@@ -395,7 +448,10 @@ fn handle_anthropic_frame(
         "message_start" => {
             if let Some(msg) = ev.get("message") {
                 if let Some(usage) = msg.get("usage") {
-                    let pt = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    let pt = usage
+                        .get("input_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as u32;
                     *prompt_tokens_acc = pt;
                     // Anthropic 2024 prompt caching: ZCode bun 已透传
                     // cache_read_input_tokens / cache_creation_input_tokens
@@ -411,7 +467,10 @@ fn handle_anthropic_frame(
                         .unwrap_or(0) as u32;
                     // created 不计入 hit，单算写入；兼容 bun 将两者或计入 cache_read 的旧逻辑
                     let hit = cached;
-                    let reported = cached != 0 || created != 0 || usage.get("cache_read_input_tokens").is_some() || usage.get("cache_creation_input_tokens").is_some();
+                    let reported = cached != 0
+                        || created != 0
+                        || usage.get("cache_read_input_tokens").is_some()
+                        || usage.get("cache_creation_input_tokens").is_some();
                     if pt != 0 || reported {
                         let u = UsageInfo {
                             prompt_tokens: pt,
@@ -434,8 +493,16 @@ fn handle_anthropic_frame(
             if let Some(block) = ev.get("content_block") {
                 let bt = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 if bt == "tool_use" {
-                    let id = block.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let id = block
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let name = block
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     tool_states.insert(
                         idx,
                         ToolState {
@@ -520,12 +587,27 @@ fn handle_anthropic_frame(
                 }
             }
             if let Some(usage) = ev.get("usage") {
-                let ot = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let ot = usage
+                    .get("output_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
                 let pt = *prompt_tokens_acc;
                 // delta 阶段也可能携带最终 cache 计费（部分上游延迟上报）
-                let delta_cached = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).map(|v| v as u32);
-                let hit = delta_cached.unwrap_or_else(|| usage_info.as_ref().map(|u| u.prompt_cache_hit_tokens).unwrap_or(0));
-                let reported = delta_cached.is_some() || usage_info.as_ref().and_then(|u| u.cache_usage_reported).unwrap_or(false);
+                let delta_cached = usage
+                    .get("cache_read_input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32);
+                let hit = delta_cached.unwrap_or_else(|| {
+                    usage_info
+                        .as_ref()
+                        .map(|u| u.prompt_cache_hit_tokens)
+                        .unwrap_or(0)
+                });
+                let reported = delta_cached.is_some()
+                    || usage_info
+                        .as_ref()
+                        .and_then(|u| u.cache_usage_reported)
+                        .unwrap_or(false);
                 let u = UsageInfo {
                     prompt_tokens: pt,
                     completion_tokens: ot,
@@ -682,7 +764,9 @@ fn stream_sse_anthropic(
         if reasoning_buf.is_empty() && text_buf.is_empty() && tool_states.is_empty() {
             return Err(anyhow::Error::new(EmptyStreamEof));
         }
-        log::warn!("Anthropic SSE: upstream closed stream without message_stop — partial output kept");
+        log::warn!(
+            "Anthropic SSE: upstream closed stream without message_stop — partial output kept"
+        );
     }
     let mut blocks: Vec<ContentBlock> = Vec::new();
     if !reasoning_buf.is_empty() {
@@ -770,10 +854,7 @@ pub fn chat_stream_anthropic(
 
     let mut body_map = serde_json::Map::new();
     body_map.insert("model".into(), serde_json::json!(model));
-    body_map.insert(
-        "messages".into(),
-        serde_json::Value::Array(api_messages),
-    );
+    body_map.insert("messages".into(), serde_json::Value::Array(api_messages));
     body_map.insert("stream".into(), serde_json::json!(true));
     body_map.insert("max_tokens".into(), serde_json::json!(max_toks));
     if let Some(sys) = system {
@@ -963,7 +1044,11 @@ pub fn chat_sync_anthropic(
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
         let text = block_on(resp.text()).unwrap_or_default();
-        return Err(format!("anthropic HTTP {}: {}", status, safe_provider_error_body(&text, &provider.api_key)));
+        return Err(format!(
+            "anthropic HTTP {}: {}",
+            status,
+            safe_provider_error_body(&text, &provider.api_key)
+        ));
     }
     let json: serde_json::Value =
         block_on(resp.json()).map_err(|e| format!("compact parse failed: {e}"))?;
@@ -999,10 +1084,7 @@ mod tests {
 
     #[test]
     fn system_is_top_level_not_message() {
-        let msgs = vec![
-            Message::system("you are helpful"),
-            Message::user("hi"),
-        ];
+        let msgs = vec![Message::system("you are helpful"), Message::user("hi")];
         let (system, api) = convert_messages_to_anthropic(msgs, 0);
         assert_eq!(system.as_deref(), Some("you are helpful"));
         assert_eq!(api.len(), 1);
@@ -1024,10 +1106,7 @@ mod tests {
 
     #[test]
     fn developer_also_goes_to_system() {
-        let msgs = vec![
-            Message::developer("injected skills"),
-            Message::user("hi"),
-        ];
+        let msgs = vec![Message::developer("injected skills"), Message::user("hi")];
         let (system, _) = convert_messages_to_anthropic(msgs, 0);
         assert_eq!(system.as_deref(), Some("injected skills"));
     }
@@ -1044,12 +1123,23 @@ mod tests {
             }],
         };
         // need provider; but conversion doesn't need provider directly
-        let (system, api) = convert_messages_to_anthropic(vec![Message::user("call tool"), Message {
-            msg_id: None,
-            role: "assistant".into(),
-            name: None,
-            content: vec![ContentBlock::ToolUse { id: "toolu_1".into(), name: "exec".into(), input: serde_json::json!({"cmd":"echo 42"}) }],
-        }, tool_msg], 0);
+        let (system, api) = convert_messages_to_anthropic(
+            vec![
+                Message::user("call tool"),
+                Message {
+                    msg_id: None,
+                    role: "assistant".into(),
+                    name: None,
+                    content: vec![ContentBlock::ToolUse {
+                        id: "toolu_1".into(),
+                        name: "exec".into(),
+                        input: serde_json::json!({"cmd":"echo 42"}),
+                    }],
+                },
+                tool_msg,
+            ],
+            0,
+        );
         assert_eq!(system, None);
         // messages: user, assistant, user(tool_result)
         assert_eq!(api.len(), 3);
@@ -1067,13 +1157,19 @@ mod tests {
                 msg_id: None,
                 role: "tool".into(),
                 name: None,
-                content: vec![ContentBlock::ToolResult { tool_use_id: "a".into(), result: qaqh_types::ToolResult::ok("1") }],
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "a".into(),
+                    result: qaqh_types::ToolResult::ok("1"),
+                }],
             },
             Message {
                 msg_id: None,
                 role: "tool".into(),
                 name: None,
-                content: vec![ContentBlock::ToolResult { tool_use_id: "b".into(), result: qaqh_types::ToolResult::ok("2") }],
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "b".into(),
+                    result: qaqh_types::ToolResult::ok("2"),
+                }],
             },
         ];
         let (_, api) = convert_messages_to_anthropic(msgs, 0);
@@ -1093,7 +1189,17 @@ mod tests {
         let mut events = Vec::new();
         let delta = serde_json::json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}});
         let s = delta.to_string();
-        let action = handle_anthropic_frame(&s, &mut text_buf, &mut reasoning, &mut tools, &mut usage, &mut pt, &mut sr, &mut |e| events.push(e)).unwrap();
+        let action = handle_anthropic_frame(
+            &s,
+            &mut text_buf,
+            &mut reasoning,
+            &mut tools,
+            &mut usage,
+            &mut pt,
+            &mut sr,
+            &mut |e| events.push(e),
+        )
+        .unwrap();
         assert!(matches!(action, FrameAction::Continue));
         assert_eq!(text_buf, "Hello");
         assert!(matches!(&events[0], StreamEvent::ContentDelta(d) if d=="Hello"));
@@ -1101,8 +1207,23 @@ mod tests {
 
     #[test]
     fn anthropic_url_builder() {
-        assert_eq!(build_anthropic_url("https://api.anthropic.com", None), "https://api.anthropic.com/v1/messages");
-        assert_eq!(build_anthropic_url("https://open.bigmodel.cn", Some("/api/anthropic/v1/messages")), "https://open.bigmodel.cn/api/anthropic/v1/messages");
-        assert_eq!(build_anthropic_url("https://open.bigmodel.cn/", Some("/api/anthropic/v1/messages")), "https://open.bigmodel.cn/api/anthropic/v1/messages");
+        assert_eq!(
+            build_anthropic_url("https://api.anthropic.com", None),
+            "https://api.anthropic.com/v1/messages"
+        );
+        assert_eq!(
+            build_anthropic_url(
+                "https://open.bigmodel.cn",
+                Some("/api/anthropic/v1/messages")
+            ),
+            "https://open.bigmodel.cn/api/anthropic/v1/messages"
+        );
+        assert_eq!(
+            build_anthropic_url(
+                "https://open.bigmodel.cn/",
+                Some("/api/anthropic/v1/messages")
+            ),
+            "https://open.bigmodel.cn/api/anthropic/v1/messages"
+        );
     }
 }

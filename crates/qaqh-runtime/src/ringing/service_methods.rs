@@ -28,9 +28,18 @@ pub struct MethodInfo {
     pub requires_seed: bool,
 }
 
-const READ: MethodInfo = MethodInfo { kind: MethodKind::Read, requires_seed: false };
-const READ_SEEDED: MethodInfo = MethodInfo { kind: MethodKind::Read, requires_seed: true };
-const WRITE: MethodInfo = MethodInfo { kind: MethodKind::Write, requires_seed: false };
+const READ: MethodInfo = MethodInfo {
+    kind: MethodKind::Read,
+    requires_seed: false,
+};
+const READ_SEEDED: MethodInfo = MethodInfo {
+    kind: MethodKind::Read,
+    requires_seed: true,
+};
+const WRITE: MethodInfo = MethodInfo {
+    kind: MethodKind::Write,
+    requires_seed: false,
+};
 
 /// 方法表：未列出的名字返回 `None`（HTTP 404）。
 pub fn lookup(method: &str) -> Option<MethodInfo> {

@@ -2,6 +2,7 @@
 
 use qaqh_domain::{ControlCommand, ConversationCommand, ToolCommand};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")] use ts_rs::TS;
 
 use qaqh_domain::RingingChannel;
 
@@ -15,6 +16,7 @@ pub type RingingToolCommand = ToolCommand;
 /// 统一 Ringing 命令（envelope `command` 字段）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "channel", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum RingingCommand {
     Control(RingingControlCommand),
     Conversation(RingingConversationCommand),

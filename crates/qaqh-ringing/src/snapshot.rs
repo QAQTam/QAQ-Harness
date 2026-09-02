@@ -2,6 +2,7 @@
 
 use qaqh_domain::RingingChannel;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")] use ts_rs::TS;
 
 use crate::protocol::{RINGING_SCHEMA, RINGING_VERSION};
 
@@ -9,13 +10,16 @@ use crate::protocol::{RINGING_SCHEMA, RINGING_VERSION};
 /// （PLAN 硬规则）。`state` 为对应频道的领域快照 payload
 /// （Conversation/Tool/Control snapshot projection 在 transport 层注入强类型）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct RingingChannelSnapshot {
     pub schema: String,
     pub version: u32,
     pub channel: RingingChannel,
     pub seed: String,
     /// 快照覆盖到的 stream_seq 基线（其后的可靠事件需从 cursor 回放）。
+    #[cfg_attr(feature = "ts", ts(as = "u32"))]
     pub baseline_stream_seq: u64,
+    #[cfg_attr(feature = "ts", ts(as = "u32"))]
     pub state_revision: u64,
     pub snapshot_version: u32,
     pub state: serde_json::Value,
@@ -44,6 +48,7 @@ impl RingingChannelSnapshot {
 
 /// 原子恢复一个 session 所需的完整三频道快照。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct RingingSessionBootstrap {
     pub schema: String,
     pub version: u32,

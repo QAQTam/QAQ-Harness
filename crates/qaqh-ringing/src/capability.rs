@@ -5,11 +5,13 @@
 //! `version` 比对（不兼容时 `unsupported_version` 426）。
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")] use ts_rs::TS;
 
 use crate::protocol::{RINGING_SCHEMA, RINGING_VERSION};
 
 /// 客户端 open 请求。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct ClientOpenRequest {
     pub schema: String,
     pub version: u32,
@@ -29,6 +31,7 @@ impl ClientOpenRequest {
 
 /// 服务端 open 响应。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct ClientOpenResponse {
     pub schema: String,
     pub version: u32,
@@ -38,7 +41,9 @@ pub struct ClientOpenResponse {
     /// 服务端 epoch（SSE stream_seq 基准）。
     pub server_epoch: String,
     /// 逻辑 lease 的 TTL（毫秒）。
+    #[cfg_attr(feature = "ts", ts(as = "u32"))]
     pub lease_ttl_ms: u64,
     /// 建议的 lease renew 间隔（毫秒，< TTL）。
+    #[cfg_attr(feature = "ts", ts(as = "u32"))]
     pub renew_interval_ms: u64,
 }

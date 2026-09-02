@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")] use ts_rs::TS;
 
 /// Ringing 协议族的频道。
 ///
@@ -6,6 +7,7 @@ use serde::{Deserialize, Serialize};
 /// （Control / Conversation / Tool 物理隔离）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum RingingChannel {
     /// 会话/agent 生命周期、interaction、skills、系统通知与失败终态。
     Control,

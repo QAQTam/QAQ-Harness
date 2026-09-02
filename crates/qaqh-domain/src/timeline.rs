@@ -5,10 +5,12 @@
 //! projection of a legacy message protocol.
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")] use ts_rs::TS;
 
 /// A display block in one model round.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum TimelineBlockKind {
     Reasoning,
     Text,
@@ -19,6 +21,7 @@ pub enum TimelineBlockKind {
 /// Lifecycle of a display block. Markdown is rendered only after `Sealed`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum TimelineBlockState {
     Open,
     Sealed,
@@ -27,6 +30,7 @@ pub enum TimelineBlockState {
 /// State updates for a tool block; all updates retain the block's position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum TimelineToolState {
     Prepared,
     Running,
@@ -38,6 +42,7 @@ pub enum TimelineToolState {
 /// a cancelled or failed turn may have valid, already-sealed Markdown blocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum TimelineTurnState {
     Running,
     Completed,
@@ -47,6 +52,7 @@ pub enum TimelineTurnState {
 
 /// Sanitised failure information retained with a transcript terminal event.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct TimelineFailure {
     pub code: String,
     pub message: String,
@@ -55,6 +61,7 @@ pub struct TimelineFailure {
 /// Tool permission data belongs to the transcript tool block, while the
 /// interaction request/response lifecycle stays on the native control plane.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct TimelineToolPermission {
     pub reason: String,
     pub paths: Vec<String>,
@@ -66,6 +73,7 @@ pub struct TimelineToolPermission {
 
 /// Immutable identity and mutable presentation state for one tool block.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct TimelineTool {
     pub tool_call_id: String,
     pub name: String,
@@ -94,6 +102,7 @@ pub struct TimelineTool {
 
 /// Fully materialized display block saved in timeline snapshots.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct TimelineBlock {
     pub block_id: String,
     /// Stable order within one round. It never changes when the block updates.
@@ -107,6 +116,7 @@ pub struct TimelineBlock {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct TimelineRound {
     pub round_num: u32,
     pub sealed: bool,
@@ -115,12 +125,14 @@ pub struct TimelineRound {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct TimelineTurn {
     pub turn_id: String,
     /// seq of the TurnOpened entry that created this turn — the authoritative
     /// time order across snapshots. `0` means unknown (legacy persisted data);
     /// consumers fall back to the turn_id numeric suffix in that case.
     #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "u32"))]
     pub created_seq: u64,
     pub user_text: String,
     pub sealed: bool,
@@ -132,8 +144,10 @@ pub struct TimelineTurn {
 
 /// Authoritative recovery state, not an event array.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct TimelineSnapshot {
     /// The largest timeline sequence included in `turns`.
+    #[cfg_attr(feature = "ts", ts(as = "u32"))]
     pub watermark: u64,
     pub turns: Vec<TimelineTurn>,
 }
@@ -141,6 +155,7 @@ pub struct TimelineSnapshot {
 /// One mutation of the ordered transcript.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum TimelineEvent {
     TurnOpened {
         user_text: String,
@@ -151,6 +166,7 @@ pub enum TimelineEvent {
     /// `fragment_seq` is monotonic within a text/reasoning block.
     TextDelta {
         block_id: String,
+        #[cfg_attr(feature = "ts", ts(as = "u32"))]
         fragment_seq: u64,
         delta: String,
     },
@@ -187,8 +203,10 @@ pub enum TimelineEvent {
 
 /// A globally ordered record for one session seed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct TimelineEntry {
     /// Strictly monotonic for one `(server epoch, seed)` across all display kinds.
+    #[cfg_attr(feature = "ts", ts(as = "u32"))]
     pub timeline_seq: u64,
     pub turn_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -205,6 +223,7 @@ pub struct TimelineEntry {
 /// channel, delivery, SSE, or legacy message fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum TimelineIntent {
     TurnOpened {
         turn_id: String,

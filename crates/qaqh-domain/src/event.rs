@@ -5,6 +5,7 @@
 //! - 本模块不得引用 legacy 类型（`Agent2Ui`）或 wire 类型（`Ringing*Envelope`）。
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")] use ts_rs::TS;
 
 use qaqh_types::UsageInfo;
 pub use qaqh_types::{ContentRef, ToolResult};
@@ -19,6 +20,7 @@ use crate::delivery::Delivery;
 /// RoundDelta 的流式块种类（决策记录 Q2：保留 kind 作 replaceable 合并键）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum RoundDeltaKind {
     Thinking,
     ToolCalling,
@@ -28,6 +30,7 @@ pub enum RoundDeltaKind {
 /// provider 内建/服务端工具状态（决策记录 Q3 定稿：封闭枚举，禁止自由字符串）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum ProviderToolState {
     InProgress,
     Searching,
@@ -37,6 +40,7 @@ pub enum ProviderToolState {
 /// compact 终态（PLAN：completed/skipped/failed/cancelled 明确状态）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum CompactStatus {
     Completed,
     Skipped,
@@ -47,6 +51,7 @@ pub enum CompactStatus {
 /// 通知级别。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum NoticeLevel {
     Info,
     Warn,
@@ -56,6 +61,7 @@ pub enum NoticeLevel {
 /// 工具权限分类（legacy `category: "read"|"write"|"exec"|"net"`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum PermissionCategory {
     Read,
     Write,
@@ -66,6 +72,7 @@ pub enum PermissionCategory {
 /// 工具动作内在影响等级。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum PermissionRisk {
     Low,
     Medium,
@@ -75,6 +82,7 @@ pub enum PermissionRisk {
 /// 会话生命周期状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum SessionState {
     Created,
     Resumed,
@@ -87,6 +95,7 @@ pub enum SessionState {
 /// 会话活动状态（与 legacy `SessionActivityState` 同义，domain 化）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum ActivityState {
     Starting,
     Idle,
@@ -99,6 +108,7 @@ pub enum ActivityState {
 /// `SessionActivityChanged(Idle)`，transport 状态另由客户端健康判定）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum AgentLifecycleState {
     Booting,
     Ready,
@@ -109,6 +119,7 @@ pub enum AgentLifecycleState {
 /// A document visible in the dashboard. This intentionally mirrors only the
 /// renderer-facing tracking state, not the legacy protocol type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct DashboardDocument {
     pub tag: String,
     pub path: String,
@@ -118,6 +129,7 @@ pub struct DashboardDocument {
 
 /// One persisted task row for the native dashboard activity snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct DashboardTask {
     pub id: String,
     pub subject: String,
@@ -131,6 +143,7 @@ pub struct DashboardTask {
 /// the transcript and is sufficient for the Electron dashboard without an
 /// `Agent2Ui::Dashboard` projection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct DashboardSnapshot {
     pub seed: String,
     pub documents: Vec<DashboardDocument>,
@@ -142,6 +155,7 @@ pub struct DashboardSnapshot {
 
 /// 失败终态的错误域（PLAN：错误带 scope、code、retryable、dedupe_key）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct DomainError {
     /// 唯一错误实例 id，用于 toast 去重与日志关联。
     pub error_id: String,
@@ -159,6 +173,7 @@ pub struct DomainError {
 /// 错误归属域（用于 OperationFailed 的 scope 字段）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum ErrorScope {
     Control,
     Conversation,
@@ -169,6 +184,7 @@ pub enum ErrorScope {
 /// ask_user 的提问模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum AskMode {
     Single,
     Batch,
@@ -177,6 +193,7 @@ pub enum AskMode {
 /// ask_user 交互如何离队。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum AskResolution {
     Answered,
     Dismissed,
@@ -184,6 +201,7 @@ pub enum AskResolution {
 
 /// ask_user 中的单个问题。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct AskQuestion {
     /// 本 ask 内唯一（如 "q1"）。
     pub id: String,
@@ -203,6 +221,7 @@ fn default_true() -> bool {
 
 /// todo_activate 评审项。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct TodoItem {
     pub id: String,
     pub title: String,
@@ -213,6 +232,7 @@ pub struct TodoItem {
 
 /// skill 目录条目。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct SkillInfo {
     pub name: String,
     pub description: String,
@@ -224,6 +244,7 @@ pub struct SkillInfo {
 
 /// skill 运行时条目（catalog/requested/active/unavailable 生命周期状态）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct SkillRuntimeInfo {
     pub name: String,
     pub description: String,
@@ -240,6 +261,7 @@ pub struct SkillRuntimeInfo {
 
 /// 技能面板全量状态（frontend skills panel 展示）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct SkillsStatus {
     /// 全部可发现技能。
     pub available: Vec<SkillInfo>,
@@ -248,8 +270,10 @@ pub struct SkillsStatus {
     #[serde(default)]
     pub catalog_revision: String,
     #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "u32"))]
     pub context_epoch: u64,
     #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "u32"))]
     pub operation_revision: u64,
     #[serde(default)]
     pub token_budget: usize,
@@ -268,6 +292,7 @@ pub struct SkillsStatus {
 /// Conversation 频道领域事件。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum ConversationEvent {
     /// 新回合开始（`ConversationSendMessage` accepted 后的权威开始事件）。
     TurnStarted { turn_id: String, user_text: String },
@@ -320,6 +345,7 @@ pub enum ConversationEvent {
         round_num: u32,
         attempt: u32,
         max_retries: u32,
+        #[cfg_attr(feature = "ts", ts(as = "u32"))]
         delay_secs: u64,
         error_message: String,
     },
@@ -386,6 +412,7 @@ impl ConversationEvent {
 /// Tool 频道领域事件。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum ToolEvent {
     /// 流式响应中检测到工具调用（决策记录 Q1：replaceable 预览，可被 ToolStarted 覆盖）。
     ToolCallPrepared {
@@ -486,12 +513,14 @@ impl ToolEvent {
 /// Control 频道领域事件。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum ControlEvent {
     /// 会话生命周期状态变更。
     SessionStateChanged { seed: String, state: SessionState },
     /// 全局配置已变更（P2-D2）：`rev` = daemon 侧配置版本（每次 config.save
     /// 自增）。消费者收到后重拉 `config.load`；seed 惯例为空串（全局广播，
     /// 与 SessionStateChanged 的 per-seed 区分）。T20 axum SSE 同源复用。
+    #[cfg_attr(feature = "ts", ts(as = "u32"))]
     ConfigChanged { rev: u64 },
     /// 会话活动状态变更（WaitingUser 汇总 interaction/permission 挂起）。
     SessionActivityChanged {
@@ -499,7 +528,9 @@ pub enum ControlEvent {
         state: ActivityState,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
+        #[cfg_attr(feature = "ts", ts(as = "u32"))]
         seq: u64,
+        #[cfg_attr(feature = "ts", ts(as = "u32"))]
         updated_at: u64,
     },
     /// 会话元数据变更（标题生成/重命名）——前端收到后重拉 session.list。
@@ -555,6 +586,7 @@ pub enum ControlEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         catalog_revision: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(as = "u32"))]
         operation_revision: Option<u64>,
         #[serde(default)]
         context_epoch: usize,
@@ -619,6 +651,7 @@ impl ControlEvent {
 /// `delivery()` 声明可靠性等级，供 wire envelope 与 daemon 队列使用。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "channel", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum DomainEvent {
     Control(ControlEvent),
     Conversation(ConversationEvent),

@@ -5,6 +5,7 @@
 //! never have to infer failure from the shape of textual output.
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")] use ts_rs::TS;
 
 pub const TOOL_SUMMARY_MAX_CHARS: usize = 512;
 // Keep the model projection near the planned six-thousand-token budget.
@@ -14,6 +15,7 @@ pub const TOOL_MODEL_MAX_CHARS: usize = 24_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum ToolStatus {
     Ok,
     Error,
@@ -33,6 +35,7 @@ impl ToolStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct ContentRef {
     pub content_id: String,
     pub media_type: String,
@@ -41,21 +44,25 @@ pub struct ContentRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct ToolContinuation {
     pub tool: String,
     pub args: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct ToolModelPayload {
     pub text: String,
     pub truncated: bool,
+    #[cfg_attr(feature = "ts", ts(as = "u32"))]
     pub total_tokens: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation: Option<ToolContinuation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct ToolError {
     pub code: String,
     pub message: String,
@@ -71,6 +78,7 @@ pub struct ToolError {
 /// serialized into the model text projection — the gate lowers images
 /// to provider-native media parts at request-build time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct ToolImage {
     pub mime_type: String,
     /// Raw base64 payload (no `data:` prefix).
@@ -78,6 +86,7 @@ pub struct ToolImage {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct ToolResult {
     pub status: ToolStatus,
     pub summary: String,

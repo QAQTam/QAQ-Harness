@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")] use ts_rs::TS;
 
 // ── Usage ──
 
@@ -7,6 +8,7 @@ use serde::{Deserialize, Serialize};
 /// Captures both standard token counts and provider-specific fields
 /// like cache hit/miss and reasoning tokens.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct UsageInfo {
     /// Tokens consumed by the input (prompt + conversation history).
     pub prompt_tokens: u32,

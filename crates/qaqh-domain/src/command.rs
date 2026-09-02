@@ -5,12 +5,14 @@
 //! Agent core 只消费本类型，不感知来源协议。
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")] use ts_rs::TS;
 
 use crate::channel::RingingChannel;
 use crate::event::ContentRef;
 
 /// 用户消息中的图片附件（multimodal）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct ImageBlock {
     /// MIME type（如 "image/png"）。
     pub mime_type: String,
@@ -20,6 +22,7 @@ pub struct ImageBlock {
 
 /// ask_user 表单中的单个答案。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct AskAnswer {
     pub question_id: String,
     pub answer: String,
@@ -29,6 +32,7 @@ pub struct AskAnswer {
 /// 只有 Plan / Code 两个有效模式；`Code` 是默认值（旧值 `normal` 兼容反序列化）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum ConversationMode {
     Plan,
     #[serde(rename = "code", alias = "normal")]
@@ -38,6 +42,7 @@ pub enum ConversationMode {
 /// Control 频道命令。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum ControlCommand {
     /// 创建新会话。`close_current = true` 表示先结束当前会话
     /// （合并 legacy `CreateSession` 与 `NewSession` 语义，见决策记录 Q7）。
@@ -112,6 +117,7 @@ pub enum ControlCommand {
 /// Conversation 频道命令。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum ConversationCommand {
     /// 发送用户消息。accepted 仅代表输入已被 session actor 接收；
     /// `TurnStarted` 是开始执行的权威事件。
@@ -157,6 +163,7 @@ fn default_load_count() -> u32 {
 /// Tool 频道命令。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum ToolCommand {
     /// 前端主动触发工具执行（UI 按钮/内联操作）。
     ToolInvoke {
@@ -178,6 +185,7 @@ pub enum ToolCommand {
 /// 统一领域命令入口。`channel()` 决定命令进入哪个 actor/router。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "channel", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum DomainCommand {
     Control(ControlCommand),
     Conversation(ConversationCommand),

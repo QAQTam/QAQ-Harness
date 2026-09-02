@@ -2,6 +2,7 @@
 
 use qaqh_domain::{Delivery, RingingChannel};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")] use ts_rs::TS;
 
 use crate::command::RingingCommand;
 use crate::event::RingingEvent;
@@ -13,16 +14,20 @@ use crate::protocol::{RINGING_SCHEMA, RINGING_VERSION, is_safe_integer};
 /// 版本由端点 URL 承担，epoch/channel 由 SSE 帧 id 承担，batch 级字段承担
 /// 聚合上下文；`seed` 保留（单频道连接承载多 seed，必须逐事件路由）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct RingingEventEnvelope {
     /// 可靠性等级：由领域事件定义显式声明，wire 不决定。
     pub delivery: Delivery,
     /// 会话标识。
     pub seed: String,
     /// 每 (server_epoch, channel) 全局递增，供单条 SSE 连接恢复。
+    #[cfg_attr(feature = "ts", ts(as = "u32"))]
     pub stream_seq: u64,
     /// 每 (seed, channel) 递增，供领域状态乱序检测。
+    #[cfg_attr(feature = "ts", ts(as = "u32"))]
     pub channel_seq: u64,
     /// 每 session/channel 因果序（保留 legacy session_seq 语义）。
+    #[cfg_attr(feature = "ts", ts(as = "u32"))]
     pub session_seq: u64,
     /// 事件唯一 id；同 id 至少一次投递但只允许应用一次（幂等）。
     pub event_id: String,
@@ -34,11 +39,13 @@ pub struct RingingEventEnvelope {
     pub correlation_id: Option<String>,
     /// 领域状态修订号；terminal 到达后旧 revision 的 replaceable 立即作废。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(as = "u32"))]
     pub state_revision: Option<u64>,
     /// 服务器发布时间（unix 毫秒）。诊断/遥测用：配合客户端本地到达时间
     /// 可测端到端延迟（provider → daemon → SSE → drain → 渲染），定位
     /// 流式"攒感"在链路的哪一段。可选——旧事件/回放不保证存在。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(as = "u32"))]
     pub server_ts: Option<u64>,
     pub event: RingingEvent,
 }
@@ -100,6 +107,7 @@ impl RingingEventEnvelope {
 
 /// 命令信封（PLAN 固定字段）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct RingingCommandEnvelope {
     pub schema: String,
     pub version: u32,
@@ -114,6 +122,7 @@ pub struct RingingCommandEnvelope {
     pub seed: Option<String>,
     /// 乐观并发修订（可选）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(as = "u32"))]
     pub expected_revision: Option<u64>,
     pub command: RingingCommand,
 }
@@ -183,12 +192,14 @@ impl RingingCommandEnvelope {
 /// 业务完成必须通过 `causation_id = command_id` 的可靠事件返回。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum RingingCommandAckStatus {
     Accepted,
     Rejected,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct RingingCommandAck {
     pub command_id: String,
     pub status: RingingCommandAckStatus,
@@ -199,12 +210,14 @@ pub struct RingingCommandAck {
     pub message: Option<String>,
     /// 限流/退避提示（rejected 时）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(as = "u32"))]
     pub retry_after_ms: Option<u64>,
 }
 
 /// 可持久化的命令执行状态。ACK 丢失时客户端用原 command_id 查询它。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub enum RingingCommandState {
     Accepted,
     Running,
@@ -214,6 +227,7 @@ pub enum RingingCommandState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct RingingCommandStatus {
     pub command_id: String,
     pub state: RingingCommandState,
@@ -226,13 +240,16 @@ pub struct RingingCommandStatus {
 
 /// 事件批次（main→renderer 必须整 batch 传递，禁止展开为逐事件）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct RingingEventBatch {
     pub schema: String,
     pub version: u32,
     pub channel: RingingChannel,
     pub seed: String,
     pub server_epoch: String,
+    #[cfg_attr(feature = "ts", ts(as = "u32"))]
     pub from_stream_seq: u64,
+    #[cfg_attr(feature = "ts", ts(as = "u32"))]
     pub to_stream_seq: u64,
     pub envelopes: Vec<RingingEventEnvelope>,
 }

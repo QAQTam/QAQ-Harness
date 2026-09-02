@@ -88,6 +88,3 @@
 - 不忽略错误或吞掉异常。
 - 不在代码中硬编码密钥、密码、Token。
 - 不引入未授权的第三方依赖。
-
-# 执行环境
-- Windows11 26H2 ；Pwsh7.6；git for Windows；Nodejs/npm/pnpm；Python 3.14；rustup/rustc 1.98

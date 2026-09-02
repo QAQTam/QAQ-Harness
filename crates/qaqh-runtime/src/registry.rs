@@ -65,22 +65,31 @@ pub fn detect_os_info() {
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| format!("{} {}", std::env::consts::OS, std::env::consts::ARCH));
     let _ = crate::agent::prompt::OS_INFO.set(info);
+    // Toolchain snapshot. Each probe lists candidate program names tried in
+    // order (first success wins): e.g. Windows ships `python` while most
+    // Linux distros only provide `python3`.
+    let tool_probes: [(&[&str], &[&str]); 6] = [
+        (&["git"], &["--version"]),
+        (&["cargo"], &["--version"]),
+        (&["node"], &["--version"]),
+        (&["python", "python3"], &["--version"]),
+        (&["rustc"], &["--version"]),
+        (&["pnpm"], &["--version"]),
+    ];
     let mut tools = Vec::new();
-    for (program, args) in [
-        ("git", vec!["--version"]),
-        ("cargo", vec!["--version"]),
-        ("node", vec!["--version"]),
-        ("python", vec!["--version"]),
-    ] {
-        if let Ok(output) = background_command(program).args(args).output() {
-            let value = if output.stdout.is_empty() {
-                &output.stderr
-            } else {
-                &output.stdout
-            };
-            let value = String::from_utf8_lossy(value).trim().to_string();
-            if !value.is_empty() {
-                tools.push(value)
+    for (programs, args) in tool_probes {
+        for program in programs {
+            if let Ok(output) = background_command(program).args(args).output() {
+                let value = if output.stdout.is_empty() {
+                    &output.stderr
+                } else {
+                    &output.stdout
+                };
+                let value = String::from_utf8_lossy(value).trim().to_string();
+                if !value.is_empty() {
+                    tools.push(value);
+                    break;
+                }
             }
         }
     }

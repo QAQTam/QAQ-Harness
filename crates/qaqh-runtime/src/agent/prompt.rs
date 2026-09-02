@@ -1,7 +1,7 @@
 //! System prompt — compiled from embedded markdown.
 //!
 //! `backend_prompt.md`  defines the agent identity and rules.
-//! `os_env.md`           carries runtime environment info (OS, shells, date).
+//! `os_env.md`           carries runtime environment info (OS, shells, toolchains).
 
 use std::sync::OnceLock;
 
@@ -157,6 +157,29 @@ mod tests {
         // 完整 prompt 显著长于已退役的极简句（长度守卫双保险）。
         assert!(system_prompt_for_mode("standard").len() > MINIMAL_DSH_PROMPT.len());
         assert!(system_prompt_for_mode("").len() > MINIMAL_DSH_PROMPT.len());
+    }
+
+    #[test]
+    fn backend_prompt_must_not_hardcode_host_env() {
+        // 回归守卫：执行环境只能来自 os_env.md 动态注入（{{OS}}/{{SHELLS}}/
+        // {{TOOLS}}）。曾因在 backend_prompt.md 硬编码 "Windows11 26H2；
+        // Pwsh7.6" 导致 Linux 会话被告知运行在 Windows 11。
+        let base = full_system_prompt();
+        assert!(!base.contains("Windows11"));
+        assert!(!base.contains("Pwsh7.6"));
+        assert!(!base.contains("# 执行环境"));
+    }
+
+    #[test]
+    fn env_template_renders_all_placeholders() {
+        let prompt = full_system_prompt_with_env("probe-os-debian-linux");
+        // 环境块必须存在，且 OS 探测值被注入。
+        assert!(prompt.contains("执行环境"));
+        assert!(prompt.contains("probe-os-debian-linux"));
+        // 占位符禁止原样漏出（模板与渲染必须一一对应）。
+        assert!(!prompt.contains("{{"));
+        // OS_INFO 未初始化时降级为 std::env::consts::OS，而非留空。
+        assert!(full_system_prompt_with_env("").contains(std::env::consts::OS));
     }
 
     #[test]

@@ -599,19 +599,27 @@ impl QaqhService {
     /// interaction waiting for its lease owner. Used by lifecycle takeover so
     /// an updater cannot race a newly-started turn.
     pub fn has_active_work(&self) -> bool {
-        self.registry
+        self.activity_snapshot().0
+    }
+
+    /// 只读活动快照（/activity 观测端点，冻结事故 P0）：逐会话活动状态 +
+    /// 是否有活跃工作。单次加锁保证 flag 与列表一致；僵尸会话（如
+    /// 2026-09-02 的 running 冻结）可直接从外部探测，不再依赖人肉轮询。
+    pub fn activity_snapshot(&self) -> (bool, Vec<qaqh_proto::SessionActivity>) {
+        let activities = self
+            .registry
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .activities()
-            .iter()
-            .any(|activity| {
-                matches!(
-                    activity.state,
-                    SessionActivityState::Starting
-                        | SessionActivityState::Working
-                        | SessionActivityState::WaitingUser
-                )
-            })
+            .activities();
+        let has_active_work = activities.iter().any(|activity| {
+            matches!(
+                activity.state,
+                SessionActivityState::Starting
+                    | SessionActivityState::Working
+                    | SessionActivityState::WaitingUser
+            )
+        });
+        (has_active_work, activities)
     }
 
     pub(crate) fn registry(&self) -> Result<std::sync::MutexGuard<'_, AgentRegistry>, String> {

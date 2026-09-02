@@ -292,14 +292,26 @@ pub async fn run_with(config: ServerNetworkConfig) -> Result<(), String> {
 
     // F4: worker reader 线程 panic/崩溃时，registry 会把死实例标记为可重生；
     // 此周期任务负责真正重新拉起，避免单条事件流故障永久饿死会话。
+    // 冻结事故（2026-09-02）P0：同一 tick 顺带巡检僵尸 receipt（accepted/running
+    // 无终态），让冻结路径在 30s 内于日志可见，不再依赖人肉轮询。
     {
         let service = service.clone();
+        let pending_commands = pending_commands.clone();
         let mut shutdown_rx = shutdown.subscribe();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
             loop {
                 tokio::select! {
-                    _ = interval.tick() => service.respawn_dead_agents(),
+                    _ = interval.tick() => {
+                        service.respawn_dead_agents();
+                        pending_commands
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .warn_stale_running(
+                                std::time::Duration::from_secs(30),
+                                std::time::Duration::from_secs(60),
+                            );
+                    }
                     changed = shutdown_rx.changed() => {
                         if changed.is_err() || *shutdown_rx.borrow() {
                             break;

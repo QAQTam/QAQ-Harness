@@ -30,7 +30,16 @@ pub enum TimelineJournalOp {
     /// 之后的增量条目。
     Snapshot { snapshot: TimelineSnapshot },
     /// 一条已分配 seq 的 timeline 记录（每次 persist 追加大于 watermark 的尾部）。
-    Append { entry: TimelineEntry },
+    ///
+    /// `ts`：落盘时刻（epoch 毫秒，`append_journal` 写入时注入；backfill 与
+    /// 旧行反序列化为 None）。冻结事故（2026-09-02，session 692d1605）中
+    /// journal 无时间戳，67 分钟空窗只能靠 audit/daemon 日志旁证定位——
+    /// 此字段让"事件何时落盘"可直接审计。
+    Append {
+        entry: TimelineEntry,
+        #[serde(default)]
+        ts: Option<u64>,
+    },
 }
 
 /// Timeline 持久化：`ringing-timeline/{seed}.json` 缓存 + `timeline-journal/{seed}.jsonl` 权威日志。
@@ -171,6 +180,8 @@ impl TimelineStore {
                 &mut file,
                 &TimelineJournalOp::Append {
                     entry: (*entry).clone(),
+                    // 落盘时刻在写入层注入：内存态与快照不受影响，仅审计用途
+                    ts: Some(epoch_millis()),
                 },
             )?;
         }
@@ -217,7 +228,7 @@ impl TimelineStore {
             .iter()
             .filter_map(|op| match op {
                 TimelineJournalOp::Snapshot { snapshot } => Some(snapshot.watermark),
-                TimelineJournalOp::Append { entry } => Some(entry.timeline_seq),
+                TimelineJournalOp::Append { entry, .. } => Some(entry.timeline_seq),
             })
             .max()
             .unwrap_or(0);
@@ -256,7 +267,7 @@ impl TimelineStore {
             .into_iter()
             .filter_map(|op| match op {
                 TimelineJournalOp::Snapshot { snapshot } => Some(snapshot.watermark),
-                TimelineJournalOp::Append { entry } => Some(entry.timeline_seq),
+                TimelineJournalOp::Append { entry, .. } => Some(entry.timeline_seq),
             })
             .max()
             .unwrap_or(0)
@@ -266,6 +277,13 @@ impl TimelineStore {
         self.journal_root
             .join(format!("{}.jsonl", sanitize_seed(seed)))
     }
+}
+
+fn epoch_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn write_journal_line(file: &mut std::fs::File, op: &TimelineJournalOp) -> std::io::Result<()> {
@@ -412,10 +430,17 @@ mod tests {
         }
         let loaded = TimelineStore::new(&root).unwrap();
         let ops = loaded.read_journal("s").unwrap();
+        // 冻结事故 P0：append_journal 写入的每行必须携带落盘时间戳。
+        assert!(
+            ops.iter().all(
+                |op| matches!(op, TimelineJournalOp::Append { ts: Some(_), .. })
+            ),
+            "every appended journal line must carry a wall-clock ts"
+        );
         let appends: Vec<_> = ops
             .iter()
             .filter_map(|op| match op {
-                TimelineJournalOp::Append { entry } => Some(entry.clone()),
+                TimelineJournalOp::Append { entry, .. } => Some(entry.clone()),
                 _ => None,
             })
             .collect();
@@ -434,7 +459,7 @@ mod tests {
             .chain(
                 entries
                     .into_iter()
-                    .map(|entry| TimelineJournalOp::Append { entry }),
+                    .map(|entry| TimelineJournalOp::Append { entry, ts: None }),
             )
             .collect();
         {

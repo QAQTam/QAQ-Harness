@@ -17,6 +17,15 @@ pub struct PendingCommandStore {
     persistence_path: Option<PathBuf>,
 }
 
+/// 冻结告警条目：Accepted/Running 超时无终态的 receipt 快照。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaleRunningReceipt {
+    pub command_id: String,
+    pub state: RingingCommandState,
+    pub age_secs: u64,
+    pub client_session_id: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 struct CommandReceipt {
     fingerprint: String,
@@ -25,6 +34,9 @@ struct CommandReceipt {
     state: RingingCommandState,
     terminal_event_id: Option<String>,
     error_code: Option<String>,
+    /// 上次冻结告警时刻（epoch ms，仅内存不持久化）：同一 receipt 的重复
+    /// 告警按间隔限频，避免周期巡检刷屏。
+    last_stale_warn_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -88,6 +100,7 @@ impl PendingCommandStore {
                     state: receipt.state,
                     terminal_event_id: receipt.terminal_event_id,
                     error_code: receipt.error_code,
+                    last_stale_warn_ms: None,
                 },
             );
         }
@@ -175,6 +188,7 @@ impl PendingCommandStore {
                 state: RingingCommandState::Accepted,
                 terminal_event_id: None,
                 error_code: None,
+                last_stale_warn_ms: None,
             },
         );
         while self.accepted.len() > self.max_entries {
@@ -282,6 +296,58 @@ impl PendingCommandStore {
         }
     }
 
+    /// 巡检 Accepted/Running 超时无终态的 receipt 并告警（返回告警清单）。
+    ///
+    /// 冻结事故（2026-09-02，session 692d1605 t7）："ConversationCancel accepted
+    /// 但永无终态"的僵尸只能靠人肉轮询发现。此方法由 daemon 周期任务调用：
+    /// 超过 `warn_after` 未达终态即 WARN，同一 receipt 按 `repeat_interval`
+    /// 限频重复告警，直至终态折叠。纯内存限频状态，不触发 persist。
+    pub fn warn_stale_running(
+        &mut self,
+        warn_after: Duration,
+        repeat_interval: Duration,
+    ) -> Vec<StaleRunningReceipt> {
+        let now = Instant::now();
+        let now_ms = unix_millis();
+        let repeat_ms = repeat_interval.as_millis() as u64;
+        let mut stale = Vec::new();
+        for (command_id, receipt) in self.accepted.iter_mut() {
+            if !matches!(
+                receipt.state,
+                RingingCommandState::Accepted | RingingCommandState::Running
+            ) {
+                continue;
+            }
+            let age = now.saturating_duration_since(receipt.accepted_at);
+            if age < warn_after {
+                continue;
+            }
+            let warned_recently = receipt
+                .last_stale_warn_ms
+                .is_some_and(|last| now_ms.saturating_sub(last) < repeat_ms);
+            if warned_recently {
+                continue;
+            }
+            receipt.last_stale_warn_ms = Some(now_ms);
+            stale.push(StaleRunningReceipt {
+                command_id: command_id.clone(),
+                state: receipt.state,
+                age_secs: age.as_secs(),
+                client_session_id: receipt.client_session_id.clone(),
+            });
+        }
+        for entry in &stale {
+            log::warn!(
+                "[ringing] command receipt stuck in {:?} for {}s (no terminal event): {} client_session={:?} — possible frozen worker/seal path",
+                entry.state,
+                entry.age_secs,
+                entry.command_id,
+                entry.client_session_id
+            );
+        }
+        stale
+    }
+
     pub fn status_for_session(
         &self,
         command_id: &str,
@@ -373,5 +439,33 @@ mod tests {
             .expect("status");
         assert_eq!(status.state, RingingCommandState::Succeeded);
         assert_eq!(status.terminal_event_id.as_deref(), Some("event-1"));
+    }
+}
+
+#[cfg(test)]
+mod stale_running_tests {
+    use super::*;
+
+    /// 冻结事故（2026-09-02）回归：Accepted/Running 超时无终态必须被巡检
+    /// 告警；终态折叠后不再告警；限频间隔内不重复告警。
+    #[test]
+    fn stale_running_receipts_are_warned_and_rate_limited() {
+        let mut store = PendingCommandStore::new();
+        assert!(store.record("cmd-stuck"));
+        // 0s 阈值：任何 Accepted/Running 立即命中。
+        let first = store.warn_stale_running(Duration::ZERO, Duration::from_secs(60));
+        assert_eq!(first.len(), 1, "stale receipt must be reported once");
+        assert_eq!(first[0].command_id, "cmd-stuck");
+        assert_eq!(first[0].state, RingingCommandState::Accepted);
+        // 限频：重复间隔内再次巡检不再报告。
+        let second = store.warn_stale_running(Duration::ZERO, Duration::from_secs(60));
+        assert!(second.is_empty(), "repeat within interval must be suppressed");
+        // 限频归零（间隔 0）：再次报告。
+        let third = store.warn_stale_running(Duration::ZERO, Duration::ZERO);
+        assert_eq!(third.len(), 1, "repeat_interval=0 re-warns");
+        // 终态折叠后不再告警。
+        store.mark_terminal("cmd-stuck", RingingCommandState::Succeeded, None, None);
+        let fourth = store.warn_stale_running(Duration::ZERO, Duration::ZERO);
+        assert!(fourth.is_empty(), "terminal receipts are never stale");
     }
 }

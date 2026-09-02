@@ -814,7 +814,7 @@ pub fn materialize_timeline_from_journal(
     // 幂等的（push_str 会双写）。seq 必须严格递增，重复/乱序条目直接跳过。
     let mut last_seq = 0u64;
     for op in ops {
-        if let TimelineJournalOp::Append { entry } = op {
+        if let TimelineJournalOp::Append { entry, .. } = op {
             if entry.timeline_seq <= last_seq {
                 log::warn!(
                     "[timeline] skipping non-monotonic journal entry seq={} (last={})",
@@ -1468,6 +1468,7 @@ mod tests {
             .iter()
             .map(|entry| TimelineJournalOp::Append {
                 entry: entry.clone(),
+                ts: None,
             })
             .collect();
         let (rebuilt, journal) =
@@ -1502,6 +1503,7 @@ mod tests {
         }];
         ops.extend(tail.iter().map(|entry| TimelineJournalOp::Append {
             entry: entry.clone(),
+            ts: None,
         }));
         let (rebuilt, _) = materialize_timeline_from_journal(&ops).unwrap();
         assert_eq!(
@@ -1519,7 +1521,7 @@ mod tests {
             appender
                 .replay_since("s", native.watermark)
                 .into_iter()
-                .map(|entry| TimelineJournalOp::Append { entry }),
+                .map(|entry| TimelineJournalOp::Append { entry, ts: None }),
         );
         let (rebuilt2, _) = materialize_timeline_from_journal(&ops).unwrap();
         assert_eq!(rebuilt2.turns[0].rounds[0].blocks[0].text, "hello!");
@@ -1546,10 +1548,12 @@ mod tests {
             .iter()
             .map(|entry| TimelineJournalOp::Append {
                 entry: entry.clone(),
+                ts: None,
             })
             .collect();
         ops.extend(entries.iter().map(|entry| TimelineJournalOp::Append {
             entry: entry.clone(),
+            ts: None,
         }));
         let (rebuilt, journal) = materialize_timeline_from_journal(&ops).unwrap();
         let text = &rebuilt.turns[0].rounds[0].blocks[0].text;

@@ -603,7 +603,7 @@ impl RingingHub {
                 .iter()
                 .filter_map(|op| match op {
                     TimelineJournalOp::Snapshot { snapshot } => Some(snapshot.watermark),
-                    TimelineJournalOp::Append { entry } => Some(entry.timeline_seq),
+                    TimelineJournalOp::Append { entry, .. } => Some(entry.timeline_seq),
                 })
                 .max()
                 .unwrap_or(0);
@@ -730,8 +730,10 @@ impl RingingHub {
             snapshot: persisted.snapshot.clone(),
         });
         for entry in &persisted.journal {
+            // 缓存重建路径：原始落盘 ts 不在缓存内，置 None（诚实缺省）
             ops.push(TimelineJournalOp::Append {
                 entry: entry.clone(),
+                ts: None,
             });
         }
         let mut store = self

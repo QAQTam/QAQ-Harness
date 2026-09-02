@@ -162,6 +162,22 @@ mod axum_impl {
         )
     }
 
+    /// 只读活动快照（冻结事故 P0 观测项）：暴露 has_active_work 与逐会话
+    /// 活动状态，冻结会话可直接从外部探测。与 /health 同级免鉴权，仅含
+    /// seed/state/turn_id/seq/updated_at，无用户内容。
+    async fn activity(State(state): State<AppState>) -> impl IntoResponse {
+        let (has_active_work, activities) = state.service.activity_snapshot();
+        let body = serde_json::json!({
+            "has_active_work": has_active_work,
+            "activities": activities,
+        });
+        (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            body.to_string(),
+        )
+    }
+
     async fn not_found() -> impl IntoResponse {
         (StatusCode::NOT_FOUND, "not found")
     }
@@ -1699,6 +1715,7 @@ mod axum_impl {
     pub fn build_router(state: AppState) -> Router {
         Router::new()
             .route("/health", get(health))
+            .route("/activity", get(activity))
             .route("/ringing/v1/clients/open", post(handle_open))
             .route("/ringing/v1/leases/renew", post(handle_renew))
             .route(
@@ -1930,6 +1947,24 @@ mod axum_tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn activity_exposes_has_active_work() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/activity")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // test_state() 无 agent：has_active_work 必须为 false，activities 为空表。
+        assert_eq!(value["has_active_work"], serde_json::json!(false));
+        assert_eq!(value["activities"], serde_json::json!([]));
     }
 
     #[tokio::test]

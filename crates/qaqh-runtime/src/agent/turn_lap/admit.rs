@@ -144,7 +144,14 @@ pub(crate) fn execute_admitted_batch(
             handles.push((call_id, tool_name, handle));
         }
         drop(progress_tx);
-        tool.drain_progress_external(ctx, progress_rx, turn_id, round_num);
+        tool.drain_progress_external(
+            ctx,
+            progress_rx,
+            turn_id,
+            round_num,
+            // 全部工具线程结束后有界收尾（冻结事故 P0，见 drain_bounded）
+            || handles.iter().all(|(_, _, h)| h.is_finished()),
+        );
 
         let cancelled = ctx.cancel.is_set();
         for (call_id, tool_name, handle) in handles {
@@ -249,7 +256,9 @@ pub(crate) fn execute_admitted_batch(
                 }
             })
             .expect("tool thread spawn");
-        tool.drain_progress_external(ctx, progress_rx, turn_id, round_num);
+        tool.drain_progress_external(ctx, progress_rx, turn_id, round_num, || {
+            handle.is_finished()
+        });
         match handle.join() {
             Ok((content, success, canonical_result, code_delta, skill_effects)) => {
                 ctx.agent.msg.push_tool_result_direct_with_attachments(
@@ -568,8 +577,14 @@ pub(crate) fn admit_and_dispatch(
         }
         drop(progress_tx);
 
-        // Drain progress
-        tool.drain_progress_external(ctx, progress_rx, turn_id, round_num);
+        // Drain progress（全部工具线程结束后有界收尾，冻结事故 P0）
+        tool.drain_progress_external(
+            ctx,
+            progress_rx,
+            turn_id,
+            round_num,
+            || handles.iter().all(|(_, _, h)| h.is_finished()),
+        );
 
         // Collect results
         let cancelled = ctx.cancel.is_set();
@@ -677,7 +692,9 @@ pub(crate) fn admit_and_dispatch(
                 }
             })
             .expect("tool thread spawn");
-        tool.drain_progress_external(ctx, progress_rx, turn_id, round_num);
+        tool.drain_progress_external(ctx, progress_rx, turn_id, round_num, || {
+            handle.is_finished()
+        });
         match handle.join() {
             Ok((content, success, canonical_result, code_delta, skill_effects)) => {
                 ctx.agent.msg.push_tool_result_direct_with_attachments(

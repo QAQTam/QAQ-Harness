@@ -658,6 +658,48 @@ fn token_truncate(text: &str, max_tokens: u32) -> String {
     }
 }
 
+/// 读线程排空节奏与总预算（收集去 EOF 化，2026-09-02 冻结事故 P0-1）。
+///
+/// TICK 是预算内的轮询粒度；正常路径读线程在子进程退出瞬间即 EOF 并送出
+/// 汇总（首次 recv 立即返回，零额外等待），预算只是异常路径（孙进程持有
+/// 管道写端、EOF 永不出现）的上限。
+const READER_SETTLE_TICK: std::time::Duration = std::time::Duration::from_millis(50);
+const READER_SETTLE_BUDGET: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// 有界收集单条流：等待读线程的最终汇总（读线程在 EOF 时发送一次）。
+///
+/// 预算耗尽或读线程意外消失（Disconnected 且无消息）时回退注册表快照
+/// （读线程按块 append_output，数据同源）；快照也不可得时给出 WARN 占位。
+/// 回退产物一律标记 truncated，与旧兜底一致地提示模型输出可能不完整。
+fn recv_stream_bounded(
+    rx: &std::sync::mpsc::Receiver<(Vec<u8>, bool)>,
+    deadline: std::time::Instant,
+    snapshot: Option<&String>,
+    stream_label: &str,
+) -> (Vec<u8>, bool) {
+    let fallback = || -> (Vec<u8>, bool) {
+        match snapshot {
+            Some(captured) => (captured.clone().into_bytes(), true),
+            None => (
+                format!("[WARN] {stream_label} pipe reader did not finish in budget\n")
+                    .into_bytes(),
+                true,
+            ),
+        }
+    };
+    loop {
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return fallback();
+        }
+        match rx.recv_timeout(READER_SETTLE_TICK.min(deadline - now)) {
+            Ok(pair) => return pair,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return fallback(),
+        }
+    }
+}
+
 /// Direct command execution: argv array, no shell.
 /// Uses background threads for pipe reading and poll-based timeout.
 fn direct_exec(
@@ -872,26 +914,25 @@ fn direct_exec(
         crate::process_registry::ProcessRegistry::mark_exited(proc_id, code);
     }
 
-    // Collect pipe output (threads finish after child exits)
-    // W-low①：收集超时不再伪造占位——回退注册表已捕获部分（H6 修复后
-    // EOF 正常到达，此分支仅极端场景兜底）。
+    // Collect pipe output（P0 去 EOF 化，2026-09-02 冻结事故）：
+    // 子进程退出 ≠ 管道 EOF——孙进程持有写端时 EOF 永不出现，读线程永不返回，
+    // 旧实现 recv_timeout(2s) 在该场景每次固定白等 2s（事故 audit 实测 +2.0s）。
+    // 现语义：有界排空预算内等待读线程的最终汇总；预算耗尽即以注册表快照
+    // 为权威返回。W-low① 兜底退役——任何路径不得依赖管道 EOF。
+    let collect_deadline = std::time::Instant::now() + READER_SETTLE_BUDGET;
     let registry_snapshot = crate::process_registry::ProcessRegistry::captured(proc_id);
-    let (stdout_out, stdout_trunc) = stdout_rx
-        .recv_timeout(std::time::Duration::from_secs(2))
-        .unwrap_or_else(|_| {
-            registry_snapshot
-                .as_ref()
-                .map(|(o, _)| (o.clone().into_bytes(), true))
-                .unwrap_or((b"[WARN] stdout pipe timed out\n".to_vec(), true))
-        });
-    let (stderr_out, stderr_trunc) = stderr_rx
-        .recv_timeout(std::time::Duration::from_secs(2))
-        .unwrap_or_else(|_| {
-            registry_snapshot
-                .clone()
-                .map(|(_, e)| (e.into_bytes(), true))
-                .unwrap_or((b"[WARN] stderr pipe timed out\n".to_vec(), true))
-        });
+    let (stdout_out, stdout_trunc) = recv_stream_bounded(
+        &stdout_rx,
+        collect_deadline,
+        registry_snapshot.as_ref().map(|(o, _)| o),
+        "stdout",
+    );
+    let (stderr_out, stderr_trunc) = recv_stream_bounded(
+        &stderr_rx,
+        collect_deadline,
+        registry_snapshot.as_ref().map(|(e, _)| e),
+        "stderr",
+    );
 
     let stdout_out = decode_captured(&stdout_out);
     let stderr_out = decode_captured(&stderr_out);
@@ -1665,6 +1706,54 @@ mod tests {
         assert!(
             result.cancelled,
             "per-call cancellation should stop the child"
+        );
+    }
+
+    /// 2026-09-02 冻结事故回归（P0-1）：孙进程持有管道写端时，子进程退出后
+    /// EOF 永不出现；收集必须在有界预算内以注册表快照完成，不得依赖 EOF。
+    /// 旧实现 recv_timeout(2s)×2 在此场景固定多等 ~4s（事故 audit 实测 +2.0s）。
+    #[cfg(not(windows))]
+    #[test]
+    fn grandchild_holding_pipe_write_end_collects_bounded() {
+        let argv = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "sleep 5 & echo GRANDCHILD-HOLDS-PIPE".to_string(),
+        ];
+        let start = std::time::Instant::now();
+        let result = direct_exec(&argv, None, None, 10000, 10, None, None, None, "test");
+        let elapsed = start.elapsed();
+        assert!(
+            result.output.contains("GRANDCHILD-HOLDS-PIPE"),
+            "registry snapshot must retain child output: {}",
+            result.output
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "collect must not wait for grandchild-held pipe EOF, took {elapsed:?}"
+        );
+    }
+
+    /// Windows 等效回归：`start /b` 在同一控制台派生后台子进程并继承管道写端。
+    #[cfg(windows)]
+    #[test]
+    fn grandchild_holding_pipe_write_end_collects_bounded() {
+        let argv = vec![
+            "cmd".to_string(),
+            "/C".to_string(),
+            "start /b cmd /c \"timeout /t 5 >NUL\" & echo GRANDCHILD-HOLDS-PIPE".to_string(),
+        ];
+        let start = std::time::Instant::now();
+        let result = direct_exec(&argv, None, None, 10000, 10, None, None, None, "test");
+        let elapsed = start.elapsed();
+        assert!(
+            result.output.contains("GRANDCHILD-HOLDS-PIPE"),
+            "registry snapshot must retain child output: {}",
+            result.output
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "collect must not wait for grandchild-held pipe EOF, took {elapsed:?}"
         );
     }
 

@@ -634,8 +634,8 @@ impl ToolEngine {
             })
             .expect("failed to spawn tool thread");
 
-        // Drain progress
-        self.drain_progress(ctx, progress_rx, &turn_id, 0);
+        // Drain progress（tool_done 有界收尾，冻结事故 P0，见 drain_bounded）
+        self.drain_progress_external(ctx, progress_rx, &turn_id, 0, || handle.is_finished());
 
         let (tid, result, code_delta, skill_effects) = handle.join().unwrap_or_else(|_| {
             (
@@ -754,54 +754,27 @@ impl ToolEngine {
 
     /// Drain tool progress from external caller (TurnEngine).
     /// Unlike the internal drain_progress, this takes RingContext directly.
+    ///
+    /// `tool_done`：全部工具线程是否已结束（`JoinHandle::is_finished` 的组合）。
+    ///
+    /// 冻结事故（2026-09-02，session 692d1605 t7）：exec 的读线程在孙进程持有
+    /// 管道写端时永不退出，并长期持有 progress sender 克隆 → 进度信道永不
+    /// Disconnected → 旧实现的无界 `recv_timeout` 循环把 actor 永久钉死在封口
+    /// 发射之前（journal 61+ 分钟零事件，kill 孙进程才解卡）。移交后台
+    /// （backgrounded）路径同理：读线程随存活进程持续持有 sender。
+    /// 因此排空必须在工具线程结束后强制收尾，绝不等待信道断开。
     pub fn drain_progress_external(
         &self,
         ctx: &mut RingContext,
         rx: std::sync::mpsc::Receiver<qaqh_workspace::ExecProgressEvent>,
         turn_id: &str,
         round_num: u32,
+        tool_done: impl Fn() -> bool,
     ) {
         // A2：渲染尾部协议——尾部状态按 (tool_call_id, stream) 维护，跨事件累积。
-        loop {
-            match rx.recv_timeout(std::time::Duration::from_millis(50)) {
-                Ok(first) => {
-                    let mut events = vec![first];
-                    while let Ok(event) = rx.try_recv() {
-                        events.push(event);
-                    }
-                    for event in events {
-                        Self::emit_progress_tail(ctx, turn_id, round_num, &event);
-                    }
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-        }
-    }
-
-    fn drain_progress(
-        &self,
-        ctx: &mut RingContext,
-        rx: std::sync::mpsc::Receiver<qaqh_workspace::ExecProgressEvent>,
-        turn_id: &str,
-        round_num: u32,
-    ) {
-        // A2：渲染尾部协议（与 drain_progress_external 共用发射 helper）。
-        loop {
-            match rx.recv_timeout(std::time::Duration::from_millis(50)) {
-                Ok(first) => {
-                    let mut events = vec![first];
-                    while let Ok(event) = rx.try_recv() {
-                        events.push(event);
-                    }
-                    for event in events {
-                        Self::emit_progress_tail(ctx, turn_id, round_num, &event);
-                    }
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-        }
+        drain_bounded(&rx, tool_done, |event| {
+            Self::emit_progress_tail(ctx, turn_id, round_num, event);
+        });
     }
 
     /// A2：渲染尾部协议——每 (tool_call_id, stream) 只保留最后 4KB 尾部，
@@ -909,6 +882,44 @@ impl ToolEngine {
     }
 }
 
+/// 进度排空（有界）。语义契约见 `ToolEngine::drain_progress_external` 文档。
+///
+/// - 事件到达即批量发射（A2 尾部协议不变）；
+/// - 信道 Disconnected（正常结束：读线程 EOF 退出）立即收尾；
+/// - `tool_done()` 为真后做最终 `try_recv` 排空并收尾——此后读线程仍可能产出
+///   在途/后续 chunk（孙进程持有写端、或 backgrounded 进程继续输出），一律
+///   丢弃：结果本体经 join 返回，后台输出经注册表 tail（process check）可查。
+fn drain_bounded(
+    rx: &std::sync::mpsc::Receiver<qaqh_workspace::ExecProgressEvent>,
+    tool_done: impl Fn() -> bool,
+    mut emit: impl FnMut(&qaqh_workspace::ExecProgressEvent),
+) {
+    const TICK: std::time::Duration = std::time::Duration::from_millis(50);
+    loop {
+        match rx.recv_timeout(TICK) {
+            Ok(first) => {
+                let mut events = vec![first];
+                while let Ok(event) = rx.try_recv() {
+                    events.push(event);
+                }
+                for event in &events {
+                    emit(event);
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if tool_done() {
+                    // 工具线程已结束：残留 sender 只可能卡在存活的读线程手里。
+                    // 最终排空一轮在途事件后收尾，绝不等待 Disconnected。
+                    while let Ok(event) = rx.try_recv() {
+                        emit(&event);
+                    }
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+}
 // ═══════════════════════════════════════════════════════
 // Batch admission and permission response contracts
 // ═══════════════════════════════════════════════════════
@@ -928,4 +939,66 @@ pub enum PermissionDisposition {
         call_id: String,
         admitted: Option<AdmittedTool>,
     },
+}
+
+#[cfg(test)]
+mod drain_bounded_tests {
+    use super::*;
+
+    fn event(chunk: &str) -> qaqh_workspace::ExecProgressEvent {
+        qaqh_workspace::ExecProgressEvent {
+            tool_call_id: "call-test".to_string(),
+            stream: qaqh_workspace::ExecOutputStream::Stdout,
+            seq: 0,
+            chunk: chunk.to_string(),
+        }
+    }
+
+    /// 冻结事故回归（2026-09-02，H-B）：sender 被存活的读线程长期持有
+    /// （永不 Disconnected）时，工具线程结束后 drain 必须有界收尾。
+    /// 旧实现在此场景无限循环，把 actor 永久钉死在封口发射之前。
+    #[test]
+    fn drain_bounded_returns_after_tool_done_even_when_senders_linger() {
+        let (tx, rx) = std::sync::mpsc::channel::<qaqh_workspace::ExecProgressEvent>();
+        let linger = tx.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            drop(linger);
+        });
+        let start = std::time::Instant::now();
+        drain_bounded(&rx, || true, |_event| {});
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "drain must stop after tool_done even with lingering senders"
+        );
+    }
+
+    /// 收尾前已入队的事件必须全部发射（最终 try_recv 排空）。
+    #[test]
+    fn drain_bounded_flushes_queued_events_before_stopping() {
+        let (tx, rx) = std::sync::mpsc::channel::<qaqh_workspace::ExecProgressEvent>();
+        tx.send(event("a")).unwrap();
+        tx.send(event("b")).unwrap();
+        let seen: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        drain_bounded(&rx, || true, |e| {
+            seen.lock().unwrap().push(e.chunk.clone());
+        });
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["a".to_string(), "b".to_string()]
+        );
+    }
+
+    /// 工具未结束时持续排空（保住运行中工具的实时输出），断开即收尾。
+    #[test]
+    fn drain_bounded_keeps_streaming_until_disconnect() {
+        let (tx, rx) = std::sync::mpsc::channel::<qaqh_workspace::ExecProgressEvent>();
+        tx.send(event("x")).unwrap();
+        drop(tx);
+        let seen = std::sync::atomic::AtomicUsize::new(0);
+        drain_bounded(&rx, || false, |_event| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
 }

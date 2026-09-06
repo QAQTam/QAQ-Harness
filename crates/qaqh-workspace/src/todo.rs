@@ -1035,16 +1035,6 @@ fn handle_todo(ctx: ToolCallCtx) -> ToolResult {
             action,
         )
         .and_then(|_| exec_todo_list(&ctx.args)),
-        // V1 compatibility aliases. They are accepted but no longer advertised.
-        "create_batch" => exec_todo_create(&ctx.args, false),
-        "update" => exec_todo_set(&ctx.args),
-        "cancel" => {
-            let mut args = ctx.args.clone();
-            if let Some(object) = args.as_object_mut() {
-                object.insert("status".into(), Value::String("cancelled".into()));
-            }
-            exec_todo_set(&args)
-        }
         _ => Err(json_err(
             "INVALID_INPUT",
             "todo.action must be create, insert, set, or list",
@@ -1477,6 +1467,27 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn v1_aliases_retired() {
+        // P2-6：create_batch/update/cancel V1 别名退役。web/TUI/测试零引用、
+        // 工具描述从未宣传、journal 只存结果不重放调用——分发表只认
+        // create/insert/set/list，别名必须落 INVALID_INPUT（防回归守卫）。
+        for alias in ["create_batch", "update", "cancel"] {
+            let ctx = crate::ToolCallCtx {
+                id: format!("test-{alias}"),
+                name: "todo".into(),
+                action: alias.into(),
+                args: serde_json::json!({ "action": alias }),
+                tx_progress: None,
+                timeout_secs: None,
+                cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                skill_effects: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            };
+            let out = handle_todo(ctx);
+            assert!(out.error.is_some(), "别名 {alias} 必须返回错误");
+        }
     }
 
     #[test]

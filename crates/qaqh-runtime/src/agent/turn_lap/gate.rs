@@ -145,6 +145,35 @@ pub(crate) fn emit_stream_block_checkpoint(
     );
 }
 
+/// A1 收口：seal 前补发最终 BlockCheckpoint（绕过节流窗口）。
+///
+/// `maybe_emit_block_checkpoint` 按 64 token / 2s 节流，seal 前的最后一段
+/// 文本可能永远等不到权威整流值——客户端一旦丢过尾部增量，sealed 块将
+/// 永久缺字。在块封口前（kind 切换 / 工具块开启 / 流结束后的各 terminal
+/// seal）用当前块完整文本补发一次 checkpoint。仅当 checkpoint 状态与
+/// active 块一致且文本非空时发射（幂等防御，避免给空块/旧块乱发）。
+pub(crate) fn emit_final_block_checkpoint(
+    emitter: &dyn Emitter,
+    turn_id: &str,
+    round_num: u32,
+    active: &Option<(qaqh_domain::TimelineBlockKind, String)>,
+    checkpoint_block_id: &Option<String>,
+    checkpoint_text: &str,
+) {
+    let Some((_, block_id)) = active else {
+        return;
+    };
+    if checkpoint_block_id.as_deref() != Some(block_id.as_str()) || checkpoint_text.is_empty() {
+        return;
+    }
+    emitter.emit_timeline(qaqh_domain::TimelineIntent::BlockCheckpoint {
+        turn_id: turn_id.to_string(),
+        round_num,
+        block_id: block_id.clone(),
+        text: checkpoint_text.to_string(),
+    });
+}
+
 /// Run-lap 级 BUG-015 不变量断言（debug only）：验证一次 gate 结果的块级隔离。
 pub(crate) fn debug_assert_gate_invariants(result: &GateRequestResult, round_num: u32) {
     if cfg!(not(debug_assertions)) {
@@ -265,12 +294,23 @@ pub(crate) fn ensure_stream_block(
     active: &mut Option<(qaqh_domain::TimelineBlockKind, String)>,
     segment: &mut u32,
     kind: qaqh_domain::TimelineBlockKind,
+    checkpoint_block_id: &Option<String>,
+    checkpoint_text: &str,
 ) -> String {
     if let Some((active_kind, block_id)) = active {
         if *active_kind == kind {
             return block_id.clone();
         }
     }
+    // kind 切换封口前，旧块先补最终 checkpoint（尾部文本权威化）。
+    emit_final_block_checkpoint(
+        ctx.emitter,
+        turn_id,
+        round_num,
+        active,
+        checkpoint_block_id,
+        checkpoint_text,
+    );
     seal_active_stream_block(ctx, turn_id, round_num, active);
     let label = match kind {
         qaqh_domain::TimelineBlockKind::Reasoning => "reasoning",
@@ -367,6 +407,8 @@ pub(crate) fn gate_request(
                     &mut active_stream_block,
                     &mut timeline_segment,
                     qaqh_domain::TimelineBlockKind::Text,
+                    &stream_block_id,
+                    &stream_block_text,
                 );
                 ctx.emitter
                     .emit_timeline(qaqh_domain::TimelineIntent::TextDelta {
@@ -411,6 +453,8 @@ pub(crate) fn gate_request(
                     &mut active_stream_block,
                     &mut timeline_segment,
                     qaqh_domain::TimelineBlockKind::Reasoning,
+                    &stream_block_id,
+                    &stream_block_text,
                 );
                 ctx.emitter
                     .emit_timeline(qaqh_domain::TimelineIntent::TextDelta {
@@ -515,6 +559,14 @@ pub(crate) fn gate_request(
                 args_so_far,
             } => {
                 let block_id = format!("tool:{id}");
+                emit_final_block_checkpoint(
+                    ctx.emitter,
+                    turn_id,
+                    round_num,
+                    &active_stream_block,
+                    &stream_block_id,
+                    &stream_block_text,
+                );
                 seal_active_stream_block(ctx, turn_id, round_num, &mut active_stream_block);
                 reset_stream_block_checkpoint(&mut stream_block_id, &mut stream_block_text);
                 if timeline_tools_open.insert(id.clone()) {
@@ -616,6 +668,17 @@ pub(crate) fn gate_request(
             }
         },
     );
+    // A1 收口：流结束、deltas 冻结后，为仍开着的块补最终 checkpoint。
+    // 覆盖此后全部 seal 点（parse 尾封 / cancel / 失败终态 / 续写封口）——
+    // 它们只改块状态不再追加文本，此处一次补发即可全部受益。
+    emit_final_block_checkpoint(
+        ctx.emitter,
+        turn_id,
+        round_num,
+        &active_stream_block,
+        &stream_block_id,
+        &stream_block_text,
+    );
     let out = GateRequestResult {
         content,
         reasoning,
@@ -716,5 +779,97 @@ pub(crate) fn provider_for(ctx: &RingContext, request_tag: &str) -> qaqh_gate::P
             p.require_provider_parameters = endpoint.require_provider_parameters;
         }
         p.with_opencode_headers(&ctx.agent.session.seed, request_tag)
+    }
+}
+
+#[cfg(test)]
+mod final_checkpoint_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// 记录 timeline intent 的最小 mock（Emitter 其余方法走默认空实现）。
+    #[derive(Default)]
+    struct RecordingEmitter {
+        timeline: Mutex<Vec<qaqh_domain::TimelineIntent>>,
+    }
+
+    impl Emitter for RecordingEmitter {
+        fn emit_timeline(&self, intent: qaqh_domain::TimelineIntent) {
+            self.timeline
+                .lock()
+                .expect("timeline mutex poisoned")
+                .push(intent);
+        }
+    }
+
+    fn active_text_block(id: &str) -> Option<(qaqh_domain::TimelineBlockKind, String)> {
+        Some((qaqh_domain::TimelineBlockKind::Text, id.to_string()))
+    }
+
+    #[test]
+    fn final_checkpoint_emits_full_block_text_before_seal() {
+        let emitter = RecordingEmitter::default();
+        let active = active_text_block("round-0:text:1");
+        emit_final_block_checkpoint(
+            &emitter,
+            "t1",
+            0,
+            &active,
+            &Some("round-0:text:1".to_string()),
+            "完整文本",
+        );
+        let intents = emitter.timeline.lock().expect("lock");
+        assert_eq!(intents.len(), 1, "seal 前必须恰好补发一次 checkpoint");
+        match &intents[0] {
+            qaqh_domain::TimelineIntent::BlockCheckpoint {
+                turn_id,
+                round_num,
+                block_id,
+                text,
+            } => {
+                assert_eq!(turn_id, "t1");
+                assert_eq!(*round_num, 0);
+                assert_eq!(block_id, "round-0:text:1");
+                assert_eq!(text, "完整文本");
+            }
+            _ => panic!("expected TimelineIntent::BlockCheckpoint"),
+        }
+    }
+
+    #[test]
+    fn final_checkpoint_skips_on_guard_conditions() {
+        let emitter = RecordingEmitter::default();
+        let active = active_text_block("round-0:text:2");
+        // checkpoint 状态还停在旧块（刚切换、尚未追加新块增量）
+        emit_final_block_checkpoint(
+            &emitter,
+            "t1",
+            0,
+            &active,
+            &Some("round-0:text:1".to_string()),
+            "旧块文本",
+        );
+        // 空文本块不发
+        emit_final_block_checkpoint(
+            &emitter,
+            "t1",
+            0,
+            &active,
+            &Some("round-0:text:2".to_string()),
+            "",
+        );
+        // 无 active 块（已被工具块切换 seal）不发
+        emit_final_block_checkpoint(
+            &emitter,
+            "t1",
+            0,
+            &None,
+            &Some("round-0:text:1".to_string()),
+            "孤儿文本",
+        );
+        assert!(
+            emitter.timeline.lock().expect("lock").is_empty(),
+            "守卫命中时不得发射"
+        );
     }
 }

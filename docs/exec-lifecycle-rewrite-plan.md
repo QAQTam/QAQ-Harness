@@ -102,12 +102,17 @@
 ### 阶段 3：绞杀 + 删除（0.5 天）
 
 - [ ] 3.1 新路径 soak 后删除 exec 前台直读管道代码与 W-low① 兜底；compat 注册收敛。
+  （进展 2026-09-06：旧管道汇总代码与 W-low① 已随阶段 2 重写删除；剩余=清扫 `ProcessRegistry::captured()`（已零调用方）与 compat 注册（`register_exec_for_compat`，删/留需确认内部调用方）收敛。）
 - [ ] 3.2 双端冒烟（**pwsh 路径必测**）。
-
 ### 并行观测线（不阻塞主线）
 
-- [ ] fd 持有复现任务（P1）：spawn 假 daemon + `/proc/*/fd` 对管道 inode，精确回答"哪个 fd 持有写端"。
+- [x] fd 持有复现任务（P1）：spawn 假 daemon + `/proc/*/fd` 对管道 inode，精确回答"哪个 fd 持有写端"。
+  （已完成 2026-09-06：证据文档 `docs/incidents/2026-09-06-fd-hold-repro.md`。结论：**裸 `cmd &`（无重定向）的孙进程持 fd1/fd2=写端**，孤儿化 reparent 至 subreaper 长期滞留；事故记载的 `nohup … > log 2>&1 &` 全重定向形态本身**不产生**写端持有——真实现场的持写端后代必存在未重定向输出。副产品：孤儿 reparent 目标为 harness subreaper（非 init），佐证多会话互踩主题。）
 - [ ] journal writer 停摆独立调查（源自 1.3.1）：确认停摆点与 emit→writer→hub 管道的关系。
+- [x] 纪律：长驻服务禁止 bash `nohup &`；评估 exec 层对 `nohup.*&` 模式的强提示。
+  （已完成 2026-09-06：exec/bash/pwsh 工具层检测后台派生（剥除 `&&`/`>&`/`&>` 后残留 `&`），前台完成的结果追加强提示（模型可见）引导 `background_after_secs` + process 工具受控路径；判定边界测试 + 工具层 e2e。）
+- [x] meta.json 反斜杠 cwd 残留（abb2038 关联类）排入清理。
+  （已完成 2026-09-06 根因修复：`grouping::canonical_cwd` 历史实现**无条件** `/`→`\`（Windows 时代残留），Linux 上把 meta.cwd 写坏为 `\home\...` → `cannot cd` WARN。修复：写侧平台化（Windows 保留 `\` 归一 + verbatim 前缀剥离，非 Windows 原生 `/`）+ 读侧 `repair_legacy_backslash_cwd` 存量修复（workspace_cwd 返回前归一）。注：存量 workspaces.json 中已损坏的归属路径需重建或手修。）
 - [ ] 纪律：长驻服务禁止 bash `nohup &`；评估 exec 层对 `nohup.*&` 模式的强提示。
 - [ ] meta.json 反斜杠 cwd 残留（abb2038 关联类）排入清理。
 

@@ -1210,7 +1210,8 @@ fn available_shells() -> String {
 fn handle_run_with_shell(ctx: ToolCallCtx, fixed: Option<Shell>) -> ToolResult {
     // ── Resolve argv ──
     // Two modes: `command` (auto-wrapped in platform shell) or `argv` (direct exec).
-    let argv: Vec<String> = if let Some(command) = ctx.get_str("command") {
+    let shell_command: Option<String> = ctx.get_str("command").map(String::from);
+    let argv: Vec<String> = if let Some(command) = shell_command.as_deref() {
         if command.is_empty() {
             return ToolResult::error(crate::json_err(
                 "EMPTY_COMMAND",
@@ -1334,7 +1335,6 @@ fn handle_run_with_shell(ctx: ToolCallCtx, fixed: Option<Shell>) -> ToolResult {
                 Some(ws)
             }
         });
-    let cwd_ref: Option<&str> = cwd.as_deref();
     // 可选环境变量覆盖（传入完整 env 供子进程使用）。
     let env: Option<Vec<(String, String)>> = ctx
         .args
@@ -1346,7 +1346,8 @@ fn handle_run_with_shell(ctx: ToolCallCtx, fixed: Option<Shell>) -> ToolResult {
                 .collect()
         })
         .filter(|pairs: &Vec<(String, String)>| !pairs.is_empty());
-    let result = direct_exec(
+    let cwd_ref: Option<&str> = cwd.as_deref();
+    let mut result = direct_exec(
         &argv,
         env.as_deref(),
         cwd_ref,
@@ -1357,6 +1358,14 @@ fn handle_run_with_shell(ctx: ToolCallCtx, fixed: Option<Shell>) -> ToolResult {
         ctx.tx_progress.clone(),
         &ctx.id,
     );
+    // 观测线纪律（事故 2026-09-02 预防）：检测 shell 命令中的后台派生 `&`，
+    // 以强提示引导走 background_after_secs + process 工具的受控路径。
+    if let Some(command) = shell_command.as_deref()
+        && result.status == "completed"
+        && detect_background_derivation(command)
+    {
+        result.output.push_str(BACKGROUND_DERIVATION_HINT);
+    }
     let success = match result.exit_code {
         Some(0) => true,
         Some(_) => false,
@@ -1377,6 +1386,24 @@ fn handle_run_with_shell(ctx: ToolCallCtx, fixed: Option<Shell>) -> ToolResult {
     } else {
         ToolResult::error(json)
     }
+}
+
+/// 后台派生强提示（观测线纪律，fd 持有复现实验 2026-09-06）：裸 `cmd &` 的
+/// 孙进程持 fd1/fd2 = 管道写端，孤儿化 reparent 后长期滞留——阶段 2 的
+/// settle 机制保证读线程有界退出，但输出完整性仍以重定向到文件 + 受控移交
+/// （background_after_secs + process 工具）为正道。
+const BACKGROUND_DERIVATION_HINT: &str = "\n[!] 后台派生检测：命令包含 `&`（后台任务）。后台/孙进程可能持有输出管道，导致本结果遗漏其后继输出。长驻服务请改用 background_after_secs 参数移交后台，并以 process 工具（check/wait/kill）接管；后台命令应将 stdout/stderr 重定向到文件（证据：docs/incidents/2026-09-06-fd-hold-repro.md）。\n";
+
+/// 检测 shell 命令中的后台派生操作符。
+/// 剥除逻辑与（`&&`）与重定向组合（`>&`/`&>`，覆盖 `2>&1`）后残留的
+/// `&` 才是后台派生；引号内的 `&`（sed/awk 等）会误报——提示为建议性
+/// 输出，宁滥勿缺。
+fn detect_background_derivation(command: &str) -> bool {
+    command
+        .replace("&&", "")
+        .replace(">&", "")
+        .replace("&>", "")
+        .contains('&')
 }
 
 // ── Output helpers ──
@@ -2079,6 +2106,94 @@ mod tests {
             "取消必须立即打破 wait_for 阻塞"
         );
         assert_eq!(info["wait_interrupted_by_cancel"], serde_json::json!(true));
+    }
+
+    /// Linux 侧 3.2 冒烟：工具层全生命周期（真 handler 调用，非 direct_exec 直调）。
+    /// 前台执行 → background_after_secs 快速移交 → 注册表 check → kill → 终态。
+    /// 验证的是 bash 工具 → handle_run_with_shell → direct_exec → registry 的完整链路。
+    #[cfg(not(windows))]
+    #[test]
+    fn bash_tool_full_lifecycle_smoke_foreground_handoff_kill() {
+        if !shell_available(Shell::Bash) {
+            eprintln!("skipping: bash not available");
+            return;
+        }
+        let cwd = std::env::current_dir().unwrap();
+        // ① 前台：echo 经完整 tool 层（spawn → poll → seal → 汇聚）
+        let ctx = make_ctx(
+            "bash",
+            serde_json::json!({ "command": "echo SMOKE-FOREGROUND-OK", "cwd": cwd }),
+        );
+        let r = handle_run_bash(ctx);
+        assert!(r.is_success(), "foreground: {}", r.model_text());
+        assert!(r.model_text().contains("SMOKE-FOREGROUND-OK"));
+
+        // ② 快速移交：30s 长任务 + 1s 观察窗 → backgrounded + process_id
+        let ctx = make_ctx(
+            "bash",
+            serde_json::json!({ "command": "sleep 30", "cwd": cwd, "background_after_secs": 1 }),
+        );
+        let r = handle_run_bash(ctx);
+        let v: serde_json::Value = serde_json::from_str(r.model_text())
+            .expect("bash 工具结果必须是 ExecOutput JSON");
+        assert_eq!(v["status"], "backgrounded", "移交状态: {v}");
+        let pid = v["process_id"].as_u64().expect("移交必须携带 process_id") as u32;
+
+        // ③ check：running（try_wait 刷新终态，不依赖管道 EOF）
+        let info = crate::process_registry::ProcessRegistry::get_info(pid)
+            .expect("移交后条目必须在注册表");
+        assert_eq!(info["status"], "running");
+
+        // ④ kill 整树 + 终态收敛（killpg 组杀：bash 与 sleep 同组）
+        assert!(
+            crate::process_registry::ProcessRegistry::kill(pid),
+            "kill 应成功"
+        );
+        let after = crate::process_registry::ProcessRegistry::get_info(pid).expect("仍被跟踪");
+        assert_eq!(after["status"], "killed");
+
+        // ⑤ wait_for 对 Killed 终态立即返回（有界，不空等到 timeout）
+        let final_info = crate::process_registry::ProcessRegistry::wait_for(pid, 10, None)
+            .expect("wait_for 必须返回");
+        assert_eq!(final_info["status"], "killed");
+    }
+
+    /// 观测线纪律：后台派生检测的判定口径。
+    #[test]
+    fn background_derivation_detection_boundaries() {
+        assert!(detect_background_derivation("nohup ./x run > log 2>&1 &"));
+        assert!(detect_background_derivation("sleep 30 &"));
+        assert!(detect_background_derivation("a & b"));
+        // 逻辑与、重定向组合不得误报
+        assert!(!detect_background_derivation("cargo test && cargo clippy"));
+        assert!(!detect_background_derivation("cmd >f 2>&1"));
+        assert!(!detect_background_derivation("cmd &>f"));
+        assert!(!detect_background_derivation("echo ok"));
+    }
+
+    /// 工具层 e2e：后台派生命令的前台结果携带强提示（模型可见）。
+    /// `sleep 1 &` 同时覆盖"孙进程持写端 → settle 有界封口"路径。
+    #[cfg(not(windows))]
+    #[test]
+    fn bash_tool_appends_background_derivation_hint() {
+        if !shell_available(Shell::Bash) {
+            eprintln!("skipping: bash not available");
+            return;
+        }
+        let ctx = make_ctx(
+            "bash",
+            serde_json::json!({
+                "command": "sleep 1 & echo HINT-E2E",
+                "cwd": std::env::current_dir().unwrap()
+            }),
+        );
+        let r = handle_run_bash(ctx);
+        assert!(r.is_success(), "result: {}", r.model_text());
+        assert!(r.model_text().contains("HINT-E2E"));
+        assert!(
+            r.model_text().contains("[!] 后台派生检测"),
+            "强提示必须随结果输出"
+        );
     }
 
     #[test]

@@ -410,7 +410,9 @@ impl SessionManager {
     pub fn workspace_cwd(&self, seed: &str) -> Option<String> {
         let meta = self.load_meta(seed)?;
         if let Some(cwd) = meta.cwd.as_deref().filter(|c| !c.is_empty()) {
-            return Some(cwd.to_string());
+            // 存量修复：历史版本在非 Windows 上写入的 `\` 形态（事故
+            // 692d1605 meta.json 反斜杠 cwd，2026-09-06 排查项）。
+            return Some(crate::grouping::repair_legacy_backslash_cwd(cwd));
         }
         // 惰性迁移：旧 workspace.txt → meta.cwd
         let txt_path = qaqh_types::platform::sessions_dir()

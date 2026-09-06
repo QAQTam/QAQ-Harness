@@ -29,19 +29,50 @@ fn generate_id(path: &str) -> String {
     format!("ws-{ms}-{short}-{n}")
 }
 
-/// canonicalize 并归一化为可比较路径串：Windows 下去掉 `\\?\` 扩展前缀
+/// canonicalize 并归一化为可比较路径串。Windows 下去掉 `\\?\` verbatim 前缀
 /// （`std::fs::canonicalize` 在 Windows 返回 verbatim 路径，与用户输入/前端
-/// 传入路径不匹配会导致归属判定失效），分隔符统一 `\`。失败返回原样字符串。
+/// 传入路径不匹配会导致归属判定失效），分隔符统一 `\`；非 Windows 保持
+/// 原生 `/`。失败返回原样字符串。
+///
+/// 历史实现无条件把 `/` 替换为 `\`，在 Linux 上把 meta.cwd 写坏为
+/// `\home\...` → `set_process_workspace: cannot cd` WARN（session 692d1605
+/// meta.json 反斜杠 cwd 残留的根因，abb2038 未覆盖此处，2026-09-06 修复）。
 pub fn canonical_cwd(path: &Path) -> String {
-    match std::fs::canonicalize(path) {
-        Ok(p) => {
-            let mut s = p.to_string_lossy().replace('/', "\\");
-            if let Some(stripped) = s.strip_prefix("\\\\?\\") {
-                s = stripped.to_string();
+    #[cfg(windows)]
+    {
+        match std::fs::canonicalize(path) {
+            Ok(p) => {
+                let mut s = p.to_string_lossy().replace('/', "\\");
+                if let Some(stripped) = s.strip_prefix("\\\\?\\") {
+                    s = stripped.to_string();
+                }
+                s
             }
-            s
+            Err(_) => path.to_string_lossy().replace('/', "\\"),
         }
-        Err(_) => path.to_string_lossy().replace('/', "\\"),
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::canonicalize(path)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| path.to_string_lossy().into_owned())
+    }
+}
+
+/// 存量修复：历史版本在非 Windows 上写坏的 `\` 形态 cwd，读取时归一化为
+/// `/`。Windows 分支原样返回（`\` 是其原生分隔符）。
+pub fn repair_legacy_backslash_cwd(cwd: &str) -> String {
+    #[cfg(windows)]
+    {
+        cwd.to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        if cwd.contains('\\') {
+            cwd.replace('\\', "/")
+        } else {
+            cwd.to_string()
+        }
     }
 }
 
@@ -361,3 +392,37 @@ mod tests {
 //
 // PR-3-3：解析权威收敛为 `SessionManager::workspace_cwd`（实例方法，经注入
 // 句柄调用）；本模块不再持有会话 cwd 的读取入口。
+
+#[cfg(test)]
+mod canonical_cwd_tests {
+    use super::*;
+
+    /// 非 Windows：canonical_cwd 保持原生 `/`（历史实现无条件 `\` 化，
+    /// 在 Linux 写坏 meta.cwd——事故 692d1605 残留根因）。
+    #[cfg(not(windows))]
+    #[test]
+    fn canonical_cwd_keeps_posix_separators() {
+        let dir = std::env::temp_dir().join("qaqh-canonical-cwd-selftest");
+        std::fs::create_dir_all(&dir).unwrap();
+        let s = canonical_cwd(&dir);
+        assert!(s.starts_with('/'), "posix 绝对路径: {s}");
+        assert!(!s.contains('\\'), "不得出现反斜杠: {s}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 存量修复：历史坏数据 `\` 形态读取时归一化。
+    #[cfg(not(windows))]
+    #[test]
+    fn repair_legacy_backslash_cwd_fixes_corrupted_store() {
+        assert_eq!(repair_legacy_backslash_cwd("\\home\\u\\proj"), "/home/u/proj");
+        assert_eq!(repair_legacy_backslash_cwd("/already/fine"), "/already/fine");
+    }
+
+    /// Windows：`\` 为原生分隔符，repair 必须原样返回（编译期验证为主，
+    /// 行为语义由 Windows 真机 3.2 冒烟覆盖）。
+    #[cfg(windows)]
+    #[test]
+    fn repair_is_identity_on_windows() {
+        assert_eq!(repair_legacy_backslash_cwd("C:\\x\\y"), "C:\\x\\y");
+    }
+}

@@ -69,6 +69,11 @@ pub struct TodoStore {
     pub auto_turns: u32,
     #[serde(default = "default_max_auto")]
     pub max_auto_turns: u32,
+    /// 高水位：下一个待分配的 T<n> 号。持久化以取代 max+1 推导——
+    /// 旧文件无此字段（default 0）时首次分配自动迁移；未来引入
+    /// 删除/归档后已用号也不会被复用（IDs stable 契约）。
+    #[serde(default)]
+    pub next_id: u32,
 }
 
 fn default_max_auto() -> u32 {
@@ -113,6 +118,7 @@ fn read_store_for(seed: &str) -> Result<TodoStore, String> {
             current_id: None,
             auto_turns: 0,
             max_auto_turns: 24,
+            next_id: 0,
         });
     }
     let content = std::fs::read_to_string(&path).map_err(|e| format!("read todo.json: {e}"))?;
@@ -290,6 +296,7 @@ fn read_store() -> Result<TodoStore, String> {
             current_id: None,
             auto_turns: 0,
             max_auto_turns: 24,
+            next_id: 0,
         });
     }
     let content = std::fs::read_to_string(&path).map_err(|e| format!("read todo.json: {e}"))?;
@@ -344,13 +351,22 @@ fn write_store(store: &TodoStore) -> Result<(), String> {
 // ID generation
 // ═══════════════════════════════════════════════════════
 
-fn next_id(items: &[TodoItem]) -> u32 {
-    items
+/// 高水位分配器：持久化的 `next_id` 是"下一个待分配号"。分配前取
+/// max(持久值, 现存最大号+1)：旧文件（next_id=0）自动迁移到手改文件/
+/// 高水位落后的场景也不会发出重复 ID。
+fn alloc_id(store: &mut TodoStore) -> String {
+    let max_existing = store
+        .items
         .iter()
         .filter_map(|item| item.id.strip_prefix('T')?.parse::<u32>().ok())
         .max()
-        .unwrap_or(0)
-        + 1
+        .unwrap_or(0);
+    if store.next_id < max_existing + 1 {
+        store.next_id = max_existing + 1;
+    }
+    let id = format!("T{}", store.next_id);
+    store.next_id += 1;
+    id
 }
 
 fn parse_todo_id(value: Option<&Value>) -> Option<String> {
@@ -602,17 +618,15 @@ fn exec_todo_create(args: &Value, positioned: bool) -> Result<String, String> {
 
     // IDs are permanent monotonically assigned identities. Inserting a subtask
     // changes display order only; existing IDs are never renumbered.
-    let mut next = next_id(&store.items);
     let mut created = Vec::with_capacity(pending.len());
     for todo in pending {
         created.push(TodoItem {
-            id: format!("T{next}"),
+            id: alloc_id(&mut store),
             title: todo.title,
             description: todo.description,
             status: TodoStatus::Pending,
             evidence: None,
         });
-        next += 1;
     }
     store
         .items
@@ -644,135 +658,196 @@ fn parse_status(value: &str) -> Option<TodoStatus> {
     }
 }
 
+/// 可选文本编辑字段：absent → None（不修改）；提供则 trim 后校验长度。
+/// title 不允许空（1-100）；description 允许空（显式清空）。
+fn parse_edit_field(
+    value: Option<&Value>,
+    label: &str,
+    max_chars: usize,
+    allow_empty: bool,
+) -> Result<Option<String>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let text = value.as_str().unwrap_or_default().trim().to_string();
+    if text.is_empty() {
+        if allow_empty {
+            return Ok(Some(text));
+        }
+        return Err(json_err(
+            "INVALID_INPUT",
+            format!("{label} must be 1-{max_chars} chars when provided"),
+            "Omit the field to leave it unchanged.",
+        ));
+    }
+    if text.chars().count() > max_chars {
+        return Err(json_err(
+            "INVALID_INPUT",
+            format!("{label} max {max_chars} chars"),
+            "",
+        ));
+    }
+    Ok(Some(text))
+}
+
 fn exec_todo_set(args: &Value) -> Result<String, String> {
     let _guard = TODO_LOCK
         .lock()
         .map_err(|_| "todo lock poisoned".to_string())?;
     let mut store = read_store()?;
 
-    /// 一次状态变更（支持单条 / ids 批量 / updates 并行三种来源）。
+    /// 一次变更（支持单条 / ids 批量 / updates 并行三种来源）。
+    /// status 为 None 表示纯编辑（title/description/evidence）。
     struct PendingSet {
         id: String,
-        status: TodoStatus,
+        status: Option<TodoStatus>,
         evidence: Option<String>,
+        title: Option<String>,
+        description: Option<String>,
     }
 
-    let pending: Vec<PendingSet> =
-        if let Some(updates) = args.get("updates").and_then(Value::as_array) {
-            if updates.is_empty() {
-                return Err(json_err(
+    let pending: Vec<PendingSet> = if let Some(updates) =
+        args.get("updates").and_then(Value::as_array)
+    {
+        if updates.is_empty() {
+            return Err(json_err(
+                "INVALID_INPUT",
+                "updates must not be empty",
+                "Provide at least one {id, status} entry.",
+            ));
+        }
+        let mut list = Vec::new();
+        for update in updates {
+            let id = parse_todo_id(update.get("id")).ok_or_else(|| {
+                json_err(
                     "INVALID_INPUT",
-                    "updates must not be empty",
-                    "Provide at least one {id, status} entry.",
-                ));
-            }
-            let mut list = Vec::new();
-            for update in updates {
-                let id = parse_todo_id(update.get("id")).ok_or_else(|| {
-                    json_err(
-                        "INVALID_INPUT",
-                        "updates[].id missing or invalid",
-                        "Provide the assigned ID, e.g. T1.",
-                    )
-                })?;
-                let requested = update
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let status = parse_status(requested).ok_or_else(|| {
+                    "updates[].id missing or invalid",
+                    "Provide the assigned ID, e.g. T1.",
+                )
+            })?;
+            let requested = update
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            // 纯编辑（title/description）时 status 可省略；提供则必须合法。
+            let status = if requested.is_empty() {
+                None
+            } else {
+                Some(parse_status(requested).ok_or_else(|| {
                     json_err(
                         "INVALID_INPUT",
                         format!("unknown status: {requested}"),
                         "Use idle, in_progress, completed, or cancelled.",
                     )
-                })?;
-                let evidence = update
-                    .get("evidence")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string);
-                list.push(PendingSet {
-                    id,
-                    status,
-                    evidence,
-                });
-            }
-            list
-        } else if let Some(ids) = args.get("ids") {
-            let requested = args
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let status = parse_status(requested).ok_or_else(|| {
-                json_err(
-                    "INVALID_INPUT",
-                    format!("unknown status: {requested}"),
-                    "Use idle, in_progress, completed, or cancelled.",
-                )
-            })?;
-            let mut list = Vec::new();
-            for expr in ids.as_array().ok_or_else(|| {
-                json_err(
-                    "INVALID_INPUT",
-                    "ids must be an array of strings",
-                    "Use ids: [\"T1\", \"T1-T3\"]",
-                )
-            })? {
-                let expr = expr.as_str().ok_or_else(|| {
-                    json_err(
-                        "INVALID_INPUT",
-                        "ids entries must be strings",
-                        "Use ids: [\"T1\", \"T1-T3\"]",
-                    )
-                })?;
-                for id in expand_todo_ids(expr)? {
-                    list.push(PendingSet {
-                        id,
-                        status: status.clone(),
-                        evidence: None,
-                    });
-                }
-            }
-            list
-        } else {
-            let id = parse_todo_id(args.get("id")).ok_or_else(|| {
-                json_err(
-                    "INVALID_INPUT",
-                    "missing or invalid id",
-                    "Provide the assigned ID, e.g. T1.",
-                )
-            })?;
-            let requested = args
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let status = parse_status(requested).ok_or_else(|| {
-                json_err(
-                    "INVALID_INPUT",
-                    format!("unknown status: {requested}"),
-                    "Use idle, in_progress, completed, or cancelled.",
-                )
-            })?;
-            let evidence = args
+                })?)
+            };
+            let evidence = update
                 .get("evidence")
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(str::to_string);
-            if args.get("evidence").is_some() && evidence.is_none() {
+            let title = parse_edit_field(update.get("title"), "updates[].title", 100, false)?;
+            let description = parse_edit_field(
+                update.get("description"),
+                "updates[].description",
+                200,
+                true,
+            )?;
+            if status.is_none() && title.is_none() && description.is_none() && evidence.is_none() {
                 return Err(json_err(
                     "INVALID_INPUT",
-                    "evidence must be a non-empty string when provided",
-                    "Omit evidence unless there is a concrete result summary.",
+                    format!("updates[] entry for {id} changes nothing"),
+                    "Provide status, evidence, title, or description.",
                 ));
             }
-            vec![PendingSet {
+            list.push(PendingSet {
                 id,
                 status,
                 evidence,
-            }]
-        };
+                title,
+                description,
+            });
+        }
+        list
+    } else if let Some(ids) = args.get("ids") {
+        let requested = args
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let status = parse_status(requested).ok_or_else(|| {
+            json_err(
+                "INVALID_INPUT",
+                format!("unknown status: {requested}"),
+                "Use idle, in_progress, completed, or cancelled.",
+            )
+        })?;
+        let mut list = Vec::new();
+        for expr in ids.as_array().ok_or_else(|| {
+            json_err(
+                "INVALID_INPUT",
+                "ids must be an array of strings",
+                "Use ids: [\"T1\", \"T1-T3\"]",
+            )
+        })? {
+            let expr = expr.as_str().ok_or_else(|| {
+                json_err(
+                    "INVALID_INPUT",
+                    "ids entries must be strings",
+                    "Use ids: [\"T1\", \"T1-T3\"]",
+                )
+            })?;
+            for id in expand_todo_ids(expr)? {
+                list.push(PendingSet {
+                    id,
+                    status: Some(status.clone()),
+                    evidence: None,
+                    title: None,
+                    description: None,
+                });
+            }
+        }
+        list
+    } else {
+        let id = parse_todo_id(args.get("id")).ok_or_else(|| {
+            json_err(
+                "INVALID_INPUT",
+                "missing or invalid id",
+                "Provide the assigned ID, e.g. T1.",
+            )
+        })?;
+        let requested = args
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let status = parse_status(requested).ok_or_else(|| {
+            json_err(
+                "INVALID_INPUT",
+                format!("unknown status: {requested}"),
+                "Use idle, in_progress, completed, or cancelled.",
+            )
+        })?;
+        let evidence = args
+            .get("evidence")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if args.get("evidence").is_some() && evidence.is_none() {
+            return Err(json_err(
+                "INVALID_INPUT",
+                "evidence must be a non-empty string when provided",
+                "Omit evidence unless there is a concrete result summary.",
+            ));
+        }
+        vec![PendingSet {
+            id,
+            status: Some(status),
+            evidence,
+            title: None,
+            description: None,
+        }]
+    };
 
     // 宽松应用：未知 ID 记入 not_found，不中断其余更新。
     let mut updated: Vec<serde_json::Value> = Vec::new();
@@ -780,15 +855,23 @@ fn exec_todo_set(args: &Value) -> Result<String, String> {
     let mut last_updated_idx: Option<usize> = None;
     for pending in &pending {
         if let Some(idx) = store.items.iter().position(|item| item.id == pending.id) {
-            store.items[idx].status = pending.status.clone();
+            if let Some(status) = &pending.status {
+                store.items[idx].status = status.clone();
+            }
             if pending.evidence.is_some() {
                 store.items[idx].evidence = pending.evidence.clone();
+            }
+            if let Some(title) = &pending.title {
+                store.items[idx].title = title.clone();
+            }
+            if let Some(description) = &pending.description {
+                store.items[idx].description = description.clone();
             }
             // V1 clients may still send schema-filled empty strings. Status changes
             // are deliberately ID-only and must never erase task metadata.
             updated.push(serde_json::json!({
                 "id": pending.id,
-                "status": status_name(&pending.status),
+                "status": status_name(&store.items[idx].status),
             }));
             last_updated_idx = Some(idx);
         } else {
@@ -811,9 +894,13 @@ fn exec_todo_set(args: &Value) -> Result<String, String> {
         // 单条路径保持兼容返回（V1 客户端/前端依赖 item + message）。
         let item_json = todo_item_json(&store.items[last_updated_idx.expect("single update")]);
         let id = &pending[0].id;
+        let message = match &pending[0].status {
+            Some(status) => format!("Todo {id} is now {}.", status_name(status)),
+            None => format!("Todo {id} updated."),
+        };
         Ok(json_ok(serde_json::json!({
             "item": item_json,
-            "message": format!("Todo {id} is now {}.", status_name(&pending[0].status))
+            "message": message
         })))
     } else {
         Ok(json_ok(serde_json::json!({
@@ -974,7 +1061,7 @@ pub fn register(mgr: &mut crate::ToolManager) {
     mgr.register_with_placement(
         ToolHandler {
             key: "todo".to_string(),
-            description: "Task list (session-scoped, T1..). create(title/items)/insert(after_id/before_id)/set(id/ids/updates+status)/list. IDs stable, create returns IDs for set.",
+            description: "Task list (session-scoped, T1..). IDs auto-assigned & stable, never renumbered; blocked in plan mode. create/insert(after_id,before_id) add tasks (bulk ≤20). set: batch same status via ids:[\"T1\",\"T4-T6\"]+status; per-item {id,status?,evidence?,title?,description?} via updates (edit title/description mid-task there). list(status?) inspects. Provide evidence when marking completed.",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1023,14 +1110,16 @@ pub fn register(mgr: &mut crate::ToolManager) {
                                 "status": {
                                     "type": "string",
                                     "enum": ["idle", "in_progress", "completed", "cancelled"],
-                                    "description": "目标状态"
+                                    "description": "目标状态；仅编辑 title/description 时可省略"
                                 },
-                                "evidence": {"type": "string", "description": "完成摘要（可选，非空字符串）"}
+                                "evidence": {"type": "string", "description": "完成摘要（可选，非空字符串）"},
+                                "title": {"type": "string", "description": "新标题（1-100 字，可选；中途修改任务描述）"},
+                                "description": {"type": "string", "description": "新描述/验收（≤200 字，可选；传空串清空）"}
                             },
-                            "required": ["id", "status"],
+                            "required": ["id"],
                             "additionalProperties": false
                         },
-                        "description": "Parallel per-item {id,status,evidence?}"
+                        "description": "Per-item edit: {id, status?, evidence?, title?, description?} — status 可批量同状态用 ids 表达式"
                     },
                     "status": {
                         "type": "string",
@@ -1388,5 +1477,92 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn high_water_id_survives_item_removal() {
+        // 回归：max+1 推导在"删除最大项后新建"会复用 ID，破坏 IDs stable。
+        // 高水位持久化后：T1-T3 建成 → next_id=4 落盘 → 移除 T3 → 新建仍得 T4。
+        with_isolated_todo(|_seed| {
+            exec_todo_create(
+                &serde_json::json!({"items": [{"title": "a"}, {"title": "b"}, {"title": "c"}]}),
+                false,
+            )
+            .unwrap();
+            assert_eq!(read_store().unwrap().next_id, 4);
+            let mut store = load_todo().unwrap();
+            store.items.pop(); // 模拟未来的删除/归档：移除 T3
+            save_todo(&store).unwrap();
+            exec_todo_create(&serde_json::json!({"items": [{"title": "d"}]}), false).unwrap();
+            assert_eq!(read_store().unwrap().items.last().unwrap().id, "T4");
+        });
+    }
+
+    #[test]
+    fn legacy_store_without_next_id_migrates() {
+        // 旧格式文件（无 next_id 字段）→ 首次分配按现存最大号 +1 迁移。
+        with_isolated_todo(|_seed| {
+            let legacy = serde_json::json!({
+                "items": [
+                    {"id": "T1", "title": "a", "description": "", "status": "completed"},
+                    {"id": "T2", "title": "b", "description": "", "status": "pending"}
+                ],
+                "mode": "manual",
+                "current_id": null,
+                "auto_turns": 0,
+                "max_auto_turns": 24
+            });
+            let path = todo_path().expect("test ctx has session");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, legacy.to_string()).unwrap();
+            exec_todo_create(&serde_json::json!({"items": [{"title": "c"}]}), false).unwrap();
+            let store = read_store().unwrap();
+            assert_eq!(store.items.last().unwrap().id, "T3");
+            assert_eq!(store.next_id, 4);
+        });
+    }
+
+    #[test]
+    fn set_edits_title_description_without_status() {
+        // 纯编辑：updates 项可省略 status，仅改 title/description。
+        with_isolated_todo(|_seed| {
+            exec_todo_create(
+                &serde_json::json!({"items": [{"title": "原始", "description": "初版描述"}]}),
+                false,
+            )
+            .unwrap();
+            let result =
+                exec_todo_set(&serde_json::json!({"updates": [{"id": "T1", "title": "改名", "description": "新验收标准"}]}))
+                    .unwrap();
+            // 单条更新走 V1 兼容路径（item+message），非批量形态。
+            assert!(result.contains("Todo T1 updated."));
+            let store = read_store().unwrap();
+            assert_eq!(store.items[0].title, "改名");
+            assert_eq!(store.items[0].description, "新验收标准");
+            assert_eq!(store.items[0].status, TodoStatus::Pending, "纯编辑不改状态");
+
+            // description 传空串 = 显式清空；title 空串拒绝。
+            exec_todo_set(&serde_json::json!({"updates": [{"id": "T1", "description": ""}]}))
+                .unwrap();
+            assert_eq!(read_store().unwrap().items[0].description, "");
+            assert!(
+                exec_todo_set(&serde_json::json!({"updates": [{"id": "T1", "title": ""}]}))
+                    .is_err()
+            );
+            // 什么都不改的条目拒绝。
+            assert!(exec_todo_set(&serde_json::json!({"updates": [{"id": "T1"}]})).is_err());
+        });
+    }
+
+    #[test]
+    fn set_edit_rejects_oversized_title() {
+        with_isolated_todo(|_seed| {
+            exec_todo_create(&serde_json::json!({"items": [{"title": "a"}]}), false).unwrap();
+            let long = "x".repeat(101);
+            assert!(
+                exec_todo_set(&serde_json::json!({"updates": [{"id": "T1", "title": long}]}))
+                    .is_err()
+            );
+        });
     }
 }

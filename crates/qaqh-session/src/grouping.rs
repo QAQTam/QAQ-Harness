@@ -414,8 +414,14 @@ mod canonical_cwd_tests {
     #[cfg(not(windows))]
     #[test]
     fn repair_legacy_backslash_cwd_fixes_corrupted_store() {
-        assert_eq!(repair_legacy_backslash_cwd("\\home\\u\\proj"), "/home/u/proj");
-        assert_eq!(repair_legacy_backslash_cwd("/already/fine"), "/already/fine");
+        assert_eq!(
+            repair_legacy_backslash_cwd("\\home\\u\\proj"),
+            "/home/u/proj"
+        );
+        assert_eq!(
+            repair_legacy_backslash_cwd("/already/fine"),
+            "/already/fine"
+        );
     }
 
     /// Windows：`\` 为原生分隔符，repair 必须原样返回（编译期验证为主，

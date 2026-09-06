@@ -2,7 +2,8 @@
 
 use qaqh_domain::{ControlCommand, ConversationCommand, ToolCommand};
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")] use ts_rs::TS;
+#[cfg(feature = "ts")]
+use ts_rs::TS;
 
 use qaqh_domain::RingingChannel;
 

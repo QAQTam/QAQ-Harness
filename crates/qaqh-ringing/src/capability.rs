@@ -5,7 +5,8 @@
 //! `version` 比对（不兼容时 `unsupported_version` 426）。
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")] use ts_rs::TS;
+#[cfg(feature = "ts")]
+use ts_rs::TS;
 
 use crate::protocol::{RINGING_SCHEMA, RINGING_VERSION};
 

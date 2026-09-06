@@ -5,7 +5,8 @@
 //! projection of a legacy message protocol.
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")] use ts_rs::TS;
+#[cfg(feature = "ts")]
+use ts_rs::TS;
 
 /// A display block in one model round.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

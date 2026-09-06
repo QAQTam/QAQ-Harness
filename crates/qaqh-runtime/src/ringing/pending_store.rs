@@ -459,7 +459,10 @@ mod stale_running_tests {
         assert_eq!(first[0].state, RingingCommandState::Accepted);
         // 限频：重复间隔内再次巡检不再报告。
         let second = store.warn_stale_running(Duration::ZERO, Duration::from_secs(60));
-        assert!(second.is_empty(), "repeat within interval must be suppressed");
+        assert!(
+            second.is_empty(),
+            "repeat within interval must be suppressed"
+        );
         // 限频归零（间隔 0）：再次报告。
         let third = store.warn_stale_running(Duration::ZERO, Duration::ZERO);
         assert_eq!(third.len(), 1, "repeat_interval=0 re-warns");

@@ -5,7 +5,8 @@
 
 use qaqh_domain::{ControlEvent, ConversationEvent, ToolEvent};
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")] use ts_rs::TS;
+#[cfg(feature = "ts")]
+use ts_rs::TS;
 
 use qaqh_domain::{Delivery, RingingChannel};
 

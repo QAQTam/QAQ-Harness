@@ -5,7 +5,8 @@
 //! Agent core 只消费本类型，不感知来源协议。
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")] use ts_rs::TS;
+#[cfg(feature = "ts")]
+use ts_rs::TS;
 
 use crate::channel::RingingChannel;
 use crate::event::ContentRef;

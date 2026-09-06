@@ -4,7 +4,8 @@
 //! 读取对应频道的权威 snapshot，并以 snapshot 的 `baseline_stream_seq` 继续。
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")] use ts_rs::TS;
+#[cfg(feature = "ts")]
+use ts_rs::TS;
 
 use qaqh_domain::RingingChannel;
 

@@ -432,9 +432,8 @@ mod tests {
         let ops = loaded.read_journal("s").unwrap();
         // 冻结事故 P0：append_journal 写入的每行必须携带落盘时间戳。
         assert!(
-            ops.iter().all(
-                |op| matches!(op, TimelineJournalOp::Append { ts: Some(_), .. })
-            ),
+            ops.iter()
+                .all(|op| matches!(op, TimelineJournalOp::Append { ts: Some(_), .. })),
             "every appended journal line must carry a wall-clock ts"
         );
         let appends: Vec<_> = ops

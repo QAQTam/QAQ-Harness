@@ -980,9 +980,13 @@ mod drain_bounded_tests {
         tx.send(event("a")).unwrap();
         tx.send(event("b")).unwrap();
         let seen: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-        drain_bounded(&rx, || true, |e| {
-            seen.lock().unwrap().push(e.chunk.clone());
-        });
+        drain_bounded(
+            &rx,
+            || true,
+            |e| {
+                seen.lock().unwrap().push(e.chunk.clone());
+            },
+        );
         assert_eq!(
             *seen.lock().unwrap(),
             vec!["a".to_string(), "b".to_string()]
@@ -996,9 +1000,13 @@ mod drain_bounded_tests {
         tx.send(event("x")).unwrap();
         drop(tx);
         let seen = std::sync::atomic::AtomicUsize::new(0);
-        drain_bounded(&rx, || false, |_event| {
-            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        });
+        drain_bounded(
+            &rx,
+            || false,
+            |_event| {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            },
+        );
         assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

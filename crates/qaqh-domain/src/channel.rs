@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")] use ts_rs::TS;
+#[cfg(feature = "ts")]
+use ts_rs::TS;
 
 /// Ringing 协议族的频道。
 ///

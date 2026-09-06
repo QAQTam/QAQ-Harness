@@ -5,7 +5,8 @@
 //! - 本模块不得引用 legacy 类型（`Agent2Ui`）或 wire 类型（`Ringing*Envelope`）。
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")] use ts_rs::TS;
+#[cfg(feature = "ts")]
+use ts_rs::TS;
 
 use qaqh_types::UsageInfo;
 pub use qaqh_types::{ContentRef, ToolResult};

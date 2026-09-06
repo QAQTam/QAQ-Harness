@@ -2,7 +2,8 @@
 
 use qaqh_domain::RingingChannel;
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")] use ts_rs::TS;
+#[cfg(feature = "ts")]
+use ts_rs::TS;
 
 use crate::protocol::{RINGING_SCHEMA, RINGING_VERSION};
 

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")] use ts_rs::TS;
+#[cfg(feature = "ts")]
+use ts_rs::TS;
 
 /// 事件的可靠性等级。由**领域事件定义**显式声明（PLAN 硬规则：
 /// "可靠性由事件定义显式声明；Wire 不决定业务可靠性"）。

@@ -578,13 +578,9 @@ pub(crate) fn admit_and_dispatch(
         drop(progress_tx);
 
         // Drain progress（全部工具线程结束后有界收尾，冻结事故 P0）
-        tool.drain_progress_external(
-            ctx,
-            progress_rx,
-            turn_id,
-            round_num,
-            || handles.iter().all(|(_, _, h)| h.is_finished()),
-        );
+        tool.drain_progress_external(ctx, progress_rx, turn_id, round_num, || {
+            handles.iter().all(|(_, _, h)| h.is_finished())
+        });
 
         // Collect results
         let cancelled = ctx.cancel.is_set();

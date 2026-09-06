@@ -5,7 +5,8 @@
 //! never have to infer failure from the shape of textual output.
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")] use ts_rs::TS;
+#[cfg(feature = "ts")]
+use ts_rs::TS;
 
 pub const TOOL_SUMMARY_MAX_CHARS: usize = 512;
 // Keep the model projection near the planned six-thousand-token budget.

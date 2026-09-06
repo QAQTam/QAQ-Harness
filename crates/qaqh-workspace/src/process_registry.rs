@@ -29,6 +29,46 @@ fn char_safe_tail(s: &str, max_bytes: usize) -> &str {
     s.get(start..).unwrap_or(s)
 }
 
+/// 前台 seal 的权威完整捕获缓冲（exec 生命周期重写阶段 2，2026-09）。
+///
+/// 与 `output`/`stderr` 的 tail 视图（process check 用，≤数千字符）分离：
+/// 读线程把每个解码后的 chunk 同时写入 tail 与 full 捕获，seal 以
+/// `captured_full` 为唯一权威结果源——任何路径不得等待管道 EOF / 流关闭。
+/// 写满 `FULL_CAPTURE_BYTE_CAP` 后丢弃后续 chunk（读线程以 capped 信号上报）。
+#[derive(Default)]
+pub struct FullCapture {
+    text: String,
+}
+
+/// 完整捕获字节上限：与旧 exec 前台 HARD_BYTE_CAP 同值，防长驻进程
+/// （backgrounded 移交后读线程继续追加）内存无界。
+pub const FULL_CAPTURE_BYTE_CAP: usize = 5 * 1024 * 1024;
+
+impl FullCapture {
+    fn push(&mut self, chunk: &str) {
+        let remaining = FULL_CAPTURE_BYTE_CAP.saturating_sub(self.text.len());
+        if remaining == 0 {
+            return;
+        }
+        if chunk.len() <= remaining {
+            self.text.push_str(chunk);
+        } else {
+            // 边界整块截断（不按字节硬切，避免劈开多字节字符）：上游按
+            // 8KB 粒度追加，边界丢一块对 5MB 级输出无感知差异，capped
+            // 由读线程上报。
+            let cut = chunk
+                .char_indices()
+                .map(|(i, _)| i)
+                .take_while(|&i| i <= remaining)
+                .last()
+                .unwrap_or(0);
+            if cut > 0 {
+                self.text.push_str(chunk.get(..cut).unwrap_or(chunk));
+            }
+        }
+    }
+}
+
 /// One tracked process entry.
 pub struct ProcEntry {
     pub id: u32,
@@ -37,6 +77,9 @@ pub struct ProcEntry {
     pub started: Instant,
     pub output: Arc<Mutex<String>>,
     pub stderr: Arc<Mutex<String>>,
+    /// 完整捕获（seal 权威数据源，见 `FullCapture`）。
+    pub full_output: Arc<Mutex<FullCapture>>,
+    pub full_stderr: Arc<Mutex<FullCapture>>,
     /// Final answer collected from subagent stdout.
     pub answer: Arc<Mutex<Option<String>>>,
     child: Arc<Mutex<Option<std::process::Child>>>,
@@ -106,6 +149,8 @@ impl ProcessRegistry {
                     id,
                     name: name.to_string(),
                     status: Arc::new(Mutex::new(ProcStatus::Running)),
+                    full_output: Arc::new(Mutex::new(FullCapture::default())),
+                    full_stderr: Arc::new(Mutex::new(FullCapture::default())),
                     started: Instant::now(),
                     output: Arc::new(Mutex::new(String::new())),
                     stderr: Arc::new(Mutex::new(String::new())),
@@ -222,6 +267,41 @@ impl ProcessRegistry {
         })
     }
 
+    /// 完整捕获快照（exec 生命周期重写阶段 2）：seal 的权威数据源。
+    /// 返回 (stdout, stderr)；条目不存在（已被惰性驱逐）返回 None。
+    pub fn captured_full(id: u32) -> Option<(String, String)> {
+        Self::with(|r| {
+            r.entries.get(&id).map(|e| {
+                (
+                    e.full_output
+                        .lock()
+                        .unwrap_or_else(|er| er.into_inner())
+                        .text
+                        .clone(),
+                    e.full_stderr
+                        .lock()
+                        .unwrap_or_else(|er| er.into_inner())
+                        .text
+                        .clone(),
+                )
+            })
+        })
+    }
+
+    /// 子进程是否仍在运行（读线程 settle 判定用）。
+    /// Killed/Exited/条目缺失均视为"不再运行"——status 单调，一旦离开
+    /// Running 不会回退。
+    pub fn is_running(id: u32) -> bool {
+        Self::with(|r| {
+            r.entries.get(&id).is_some_and(|e| {
+                matches!(
+                    *e.status.lock().unwrap_or_else(|er| er.into_inner()),
+                    ProcStatus::Running
+                )
+            })
+        })
+    }
+
     /// Mark a process as exited.
     pub fn mark_exited(id: u32, code: i32) {
         Self::with(|r| {
@@ -245,6 +325,11 @@ impl ProcessRegistry {
     pub fn append_output(id: u32, chunk: &str) {
         Self::with(|r| {
             if let Some(entry) = r.entries.get(&id) {
+                entry
+                    .full_output
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(chunk);
                 let mut out = entry.output.lock().unwrap_or_else(|e| e.into_inner());
                 out.push_str(chunk);
                 if out.chars().count() > 5000 {
@@ -260,6 +345,11 @@ impl ProcessRegistry {
     pub fn append_stderr(id: u32, chunk: &str) {
         Self::with(|r| {
             if let Some(entry) = r.entries.get(&id) {
+                entry
+                    .full_stderr
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(chunk);
                 let mut err = entry.stderr.lock().unwrap_or_else(|e| e.into_inner());
                 err.push_str(chunk);
                 if err.chars().count() > 3000 {
@@ -398,9 +488,30 @@ impl ProcessRegistry {
     /// 每次轮询先经 `try_wait` 刷新终态：子进程退出即返回，不依赖管道 EOF
     /// （孙进程可能持有管道写端，EOF 永不出现；原实现只查 status 字段，
     /// 而 backgrounded 路径的 mark_exited 在 EOF 后才执行 → 永远 running）。
-    pub fn wait_for(id: u32, timeout_secs: u64) -> Option<serde_json::Value> {
+    /// 取消检查（exec 生命周期重写阶段 2，报告 P1）：每次轮询同时检查
+    /// per-call 取消旗标与 ambient `is_cancel()`——非 exec 阻塞工具
+    /// （process wait）的飞行中取消必须立即返回，不得阻塞到 timeout。
+    /// 返回的 info 中 `wait_interrupted_by_cancel = true` 标记提前返回原因。
+    pub fn wait_for(
+        id: u32,
+        timeout_secs: u64,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Option<serde_json::Value> {
         let start = Instant::now();
         loop {
+            if cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
+                || crate::is_cancel()
+            {
+                let mut info = Self::get_info(id)
+                    .unwrap_or_else(|| serde_json::json!({ "id": id, "status": "missing" }));
+                if let serde_json::Value::Object(ref mut map) = info {
+                    map.insert(
+                        "wait_interrupted_by_cancel".to_string(),
+                        serde_json::json!(true),
+                    );
+                }
+                return Some(info);
+            }
             if start.elapsed().as_secs() > timeout_secs {
                 return Self::get_info(id);
             }
@@ -422,5 +533,39 @@ impl ProcessRegistry {
             }
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn captured_full_grows_with_appended_chunks() {
+        let id = ProcessRegistry::register("capture-test");
+        ProcessRegistry::append_output(id, "hello ");
+        ProcessRegistry::append_stderr(id, "warn");
+        ProcessRegistry::append_output(id, "world");
+        let (out, err) = ProcessRegistry::captured_full(id).expect("entry must exist");
+        assert_eq!(out, "hello world");
+        assert_eq!(err, "warn");
+    }
+
+    #[test]
+    fn full_capture_stops_at_byte_cap() {
+        let id = ProcessRegistry::register("capture-cap-test");
+        let big = "x".repeat(FULL_CAPTURE_BYTE_CAP + 4096);
+        ProcessRegistry::append_output(id, &big);
+        let (out, _) = ProcessRegistry::captured_full(id).expect("entry must exist");
+        assert_eq!(out.len(), FULL_CAPTURE_BYTE_CAP, "完整捕获必须封顶");
+    }
+
+    #[test]
+    fn is_running_transitions_to_false_on_terminal_status() {
+        let id = ProcessRegistry::register("running-test");
+        assert!(ProcessRegistry::is_running(id));
+        ProcessRegistry::mark_exited(id, 0);
+        assert!(!ProcessRegistry::is_running(id), "Exited 后不得再视为 running");
+        assert!(!ProcessRegistry::is_running(u32::MAX), "缺失条目视为不在运行");
     }
 }

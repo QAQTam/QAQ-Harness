@@ -78,11 +78,11 @@
 - [x] 1.2 **exec 完成路径去 EOF 化**：子进程退出后以短排空预算 + `captured()` 快照返回，`recv_timeout(2s)`（W-low①）整体退役（报告 P0-1）。
   （已完成：exec.rs 新增 `recv_stream_bounded` + READER_SETTLE_TICK/BUDGET（50ms/300ms）——正常路径读线程 EOF 即返回、零额外等待，异常路径预算耗尽以快照为权威返回；快照不可得时保留 WARN 占位并标记 truncated。）
 - [x] 1.3 **读线程生命周期绑定**：cancel/超时/封口时 `killpg` 整组（Windows `taskkill /T`），保证读线程必然退出、克隆必然 drop。
-  （部分完成：验证 `ProcessRegistry::kill` 已实现 Unix `killpg(SIGKILL)` / Windows `taskkill /T`（process_registry.rs:338-380），取消路径读线程必然退出；正常退出+孙进程存活的读线程驻留按阶段 2 registry-native 重写治理（poll 化读循环），阶段 1 由 1.1 保证其无害化。）
+  （已完成：阶段 1 验证 `ProcessRegistry::kill` 已实现 Unix `killpg(SIGKILL)` / Windows `taskkill /T`（process_registry.rs kill），取消路径读线程必然退出；"正常退出+孙进程存活"的读线程驻留已由阶段 2 poll 化读循环治愈（见 2.2），回归 `reader_threads_terminate_after_grandchild_settle_even_without_eof`。）
 - [x] 1.4 **观测三件套**（报告 P0-2）：journal 行加时间戳；receipt `running`>30s 告警；`GET /activity` 暴露 has_active_work。
   （已完成：① timeline_store.rs `TimelineJournalOp::Append` 增加 `ts` 字段（`serde(default)` 兼容旧行，`append_journal` 写入时注入，backfill/旧行为 None）；② pending_store.rs `warn_stale_running`（Accepted/Running 超 30s 无终态即 WARN，60s 限频，挂靠 daemon 既有 3s 周期任务）+ 限频/终态测试；③ axum_server.rs `GET /activity`（has_active_work + 逐会话 activity 快照，与 /health 同级免鉴权、仅含 seed/state/turn_id 无用户内容）+ 路由测试；service.rs `has_active_work` 重构为 `activity_snapshot()` 委托，单次加锁保证一致性。）
 - [x] 1.5 **新增回归测试**：孙进程持有管道写端 → 子进程退出 → 回合必须在有界时间内封口（本次事故的直接回归）；`wait_for` 补取消检查（报告 P1）。
-  （事故回归已完成：exec.rs `grandchild_holding_pipe_write_end_collects_bounded`（unix `sleep 5 &` / windows `start /b` 双平台）+ engine_tool.rs `drain_bounded_*` 三测；`wait_for` 补取消检查未实施，随阶段 2。）
+  （事故回归已完成：exec.rs `grandchild_holding_pipe_write_end_collects_bounded`（unix `sleep 5 &` / windows `start /b` 双平台）+ engine_tool.rs `drain_bounded_*` 三测；`wait_for` 取消检查已随阶段 2 落地（见 2.3 附带修复）。）
 - [x] 1.6 双平台跑既有契约测试：`timeout_transfers_process_to_background_registry`、`per_call_cancel_stops_only_the_running_command`（exec.rs:1613/1645/1865）全部保持通过。
   （Linux 侧已跑：exec::tests 全量 23 通过、qaqh-runtime 全量 165 通过、clippy 无新增告警；`timeout_transfers_process_to_background_registry` 为 #[cfg(windows)] 专属，留待 Windows 侧冒烟。）
 
@@ -90,9 +90,14 @@
 
 按原提案阶段 1 执行，六点设计不变（start/run-to-completion/seal/超时/取消/流式），
 
-- [ ] 2.1 契约：seal 以 registry 快照 `captured()` 为权威——**任何路径不得等待管道 EOF / 流关闭**（写入代码评审 checklist）。
-- [ ] 2.2 阶段 1 的 1.1–1.3 作为重写内建行为，不留兼容分支。
-- [ ] 2.3 若阶段 0 判定为 H-A（daemon/hub 层），本阶段范围**扩入** hub 广播背压修复（原提案已正确预警："若为 H-A，仅重写 exec 不够"）。
+- [x] 2.1 契约：seal 以 registry 快照 `captured()` 为权威——**任何路径不得等待管道 EOF / 流关闭**（写入代码评审 checklist）。
+  （已完成 2026-09-06：①评审清单落地 `docs/exec-lifecycle-review-checklist.md`（六节契约+测试矩阵）；②注册表新增**完整捕获**缓冲 `FullCapture`/`captured_full`（5MB 字节上限，`append_output/stderr` 同时写 tail 视图与 full 捕获）——快照从"4KB 尾部兜底"升级为权威完整数据源，孙进程场景不再丢头部；③seal 重写为 `captured_full` 权威 + 对读线程退出信号的**有界 join**（`SEAL_JOIN_BUDGET` 500ms）：正常路径读线程先于 seal 完成、首次 recv 即返零额外等待，异常路径信号来自 settle 到期。回归：`seal_uses_full_registry_capture_not_tail_when_grandchild_holds_pipe`（3000 行输出首尾俱全，旧兜底只剩 4KB 尾）。）
+- [x] 2.2 阶段 1 的 1.1–1.3 作为重写内建行为，不留兼容分支。
+  （已完成 2026-09-06：①**1.3 驻留治愈**——读线程 poll 化（unix `fcntl O_NONBLOCK` / Windows `PeekNamedPipe` 探测），退出条件完备（EOF/读错误/字节上限/settle 到期），"正常退出+孙进程持写端"时读线程确定性退出并 drop 全部 sender，回归 `reader_threads_terminate_after_grandchild_settle_even_without_eof`；②**1.1/1.2 内建化**——`recv_stream_bounded` 与汇总信道整体退役（数据源被 captured_full 取代），`drain_bounded` 语义保持；③读线程 handoff 善后块（100×50ms 轮询 mark_exited）判定为死代码删除——`try_wait` 已在任何查询路径自动置终态。字节上限语义保持：cap 触发后不再 sink 排空到 EOF（旧实现此处同样可被孙进程卡死），超限就地丢弃并受 settle 约束。）
+- [x] 2.3 判定：**不触发扩围**。阶段 0 结论为 H-A（journal 落盘停摆）属 timeline 持久化**写侧**且机制未定位（已挂并行观测线独立调查），并非 daemon/hub 广播层背压——原提案 2.3 的触发条件（H-A 判定为 daemon/hub 层）不成立。若后续 journal writer 调查实锤 hub 相关，再按本条扩围。
+  （附带修复随本阶段落地：报告 P1 `wait_for` 取消检查——`ProcessRegistry::wait_for` 增 per-call 旗标 + ambient `is_cancel()` 双检查，命中即返回并标记 `wait_interrupted_by_cancel`，process 工具 wait 动作接线；回归 `wait_for_returns_promptly_on_per_call_cancel`。）
+
+验证（Linux 侧，2026-09-06）：qaqh-workspace 307 通过（exec::tests 26 = 既有 23 + 新增 3）、qaqh-runtime 166 通过、qaqh-daemon 27 通过、clippy 零新增告警。Windows 专属测试（`timeout_transfers…`/`background_*` 双平台组）与 `PeekNamedPipe` 路径留待阶段 3.2 双端冒烟。
 
 ### 阶段 3：绞杀 + 删除（0.5 天）
 

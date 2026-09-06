@@ -125,7 +125,9 @@ fn handle_wait(ctx: ToolCallCtx) -> ToolResult {
         .and_then(|v| v.as_u64())
         .unwrap_or(120);
 
-    match ProcessRegistry::wait_for(id, timeout_secs) {
+    // 取消检查（报告 P1）：process wait 阻塞期间回合被取消时立即返回，
+    // 不再阻塞 actor 到 timeout_secs。
+    match ProcessRegistry::wait_for(id, timeout_secs, Some(&ctx.cancel)) {
         Some(info) => process_ok(process_info_ok(id, info)),
         None => process_error(
             "NOT_FOUND",

@@ -13,7 +13,7 @@
 
 use crate::{ExecOutputStream, ExecProgressEvent, ExecProgressSender, ToolCallCtx, ToolResult};
 use serde::Serialize;
-use std::io::Read;
+
 use std::sync::{
     Arc, OnceLock,
     atomic::{AtomicU64, Ordering},
@@ -339,65 +339,219 @@ fn is_executable_file(path: &std::path::Path) -> bool {
     true
 }
 
-/// Stream read from a pipe, capped at `max_bytes`.
-///
-/// Every retained chunk is also forwarded to the UI progress channel. Once the
-/// cap is reached, the rest of the pipe is drained without forwarding so the
-/// child cannot block on a full OS pipe.
-fn read_stream(
-    stream: impl Read,
-    max_bytes: usize,
+/// 读线程共享上下文（收拢参数列表，亦便于 per-stream 构造）。
+struct PipePumpCtx {
     progress_tx: Option<ExecProgressSender>,
     tool_call_id: String,
     output_stream: ExecOutputStream,
     progress_seq: Arc<AtomicU64>,
-    registry_id: Option<u32>,
-) -> (Vec<u8>, bool) {
-    let mut reader = std::io::BufReader::new(stream);
+    registry_id: u32,
+}
+/// 平台 readiness 探测结果（`drain_pipe_to_registry` 的平台胶水协议）。
+/// Empty/Closed 仅在 windows 探测路径构造（unix 走 read→WouldBlock）。
+#[cfg_attr(not(windows), allow(dead_code))]
+enum Readiness {
+    /// 有数据可读（或非阻塞 fd 的 read 即将返回数据/自身报告 Empty）。
+    Ready,
+    /// 管道当前为空（Windows PeekNamedPipe 为 0；unix 走 read→WouldBlock）。
+    Empty,
+    /// 管道异常关闭（如 Windows 探测失败）——按读端关闭处理，不得阻塞。
+    Closed,
+}
+
+/// 有界管道泵（读线程主循环，exec 生命周期重写阶段 2）。
+///
+/// 职责：把子进程输出解码后逐 chunk 推给 progress 通道（流式 UX），同时
+/// 写入注册表（tail 视图 + full 捕获——seal 以 `captured_full` 为权威）。
+///
+/// 退出条件（任一，读线程永不无限阻塞）：
+/// - EOF（`Ok(0)`）——正常路径，子进程退出即达，零额外等待；
+/// - 读错误（WouldBlock/Interrupted 除外）；
+/// - 字节预算（`max_bytes`）耗尽——超限数据就地丢弃（与旧实现一致），
+///   但不再 sink 排空到 EOF：旧实现在此同样可被孙进程卡死；
+/// - **settle 到期**：子进程终态（`is_running == false`）后继续排空
+///   `READER_SETTLE_BUDGET`，到期即退出——孙进程持有管道写端时读线程
+///   必须确定性退出、释放 progress sender（阶段 1 的 1.3 遗留驻留治愈）。
+///
+/// 返回 (saw_eof, capped)，seal 据此判定 truncated。
+fn drain_pipe_to_registry<S: std::io::Read>(
+    stream: &mut S,
+    max_bytes: usize,
+    ctx: &PipePumpCtx,
+    readiness: &mut dyn FnMut(&mut S) -> std::io::Result<Readiness>,
+) -> (bool, bool) {
     let mut buf = vec![0u8; 8192];
-    let mut out = Vec::new();
     let mut pending_utf8 = Vec::new();
-    let mut truncated = false;
+    let mut captured_bytes = 0usize;
+    let mut capped = false;
+    let mut saw_eof = false;
+    let mut exit_seen: Option<std::time::Instant> = None;
     loop {
-        match reader.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                let retained = n.min(max_bytes.saturating_sub(out.len()));
-                if retained > 0 {
-                    let chunk = &buf[..retained];
-                    out.extend_from_slice(chunk);
-                    forward_progress(
-                        &mut pending_utf8,
-                        chunk,
-                        progress_tx.as_ref(),
-                        &tool_call_id,
-                        output_stream,
-                        &progress_seq,
-                        registry_id,
-                    );
-                }
-                if retained < n {
-                    truncated = true;
-                    std::io::copy(&mut reader, &mut std::io::sink()).ok();
+        match readiness(stream) {
+            Ok(Readiness::Ready) => {}
+            Ok(Readiness::Empty) => {
+                if child_settled(&mut exit_seen, ctx) {
                     break;
                 }
+                std::thread::sleep(READER_POLL_TICK);
+                continue;
+            }
+            Ok(Readiness::Closed) => break,
+            Err(_) => break,
+        }
+        match stream.read(&mut buf) {
+            Ok(0) => {
+                saw_eof = true;
+                break;
+            }
+            Ok(n) => {
+                let retained = n.min(max_bytes.saturating_sub(captured_bytes));
+                if retained > 0 {
+                    forward_progress(
+                        &mut pending_utf8,
+                        &buf[..retained],
+                        ctx.progress_tx.as_ref(),
+                        &ctx.tool_call_id,
+                        ctx.output_stream,
+                        &ctx.progress_seq,
+                        Some(ctx.registry_id),
+                    );
+                    captured_bytes += retained;
+                }
+                if retained < n {
+                    capped = true;
+                }
+            }
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::Interrupted =>
+            {
+                if child_settled(&mut exit_seen, ctx) {
+                    break;
+                }
+                std::thread::sleep(READER_POLL_TICK);
+                continue;
             }
             Err(_) => break,
+        }
+        if child_settled(&mut exit_seen, ctx) {
+            break;
         }
     }
     if !pending_utf8.is_empty() {
         send_progress(
-            progress_tx.as_ref(),
-            &tool_call_id,
-            output_stream,
-            &progress_seq,
+            ctx.progress_tx.as_ref(),
+            &ctx.tool_call_id,
+            ctx.output_stream,
+            &ctx.progress_seq,
             String::from_utf8_lossy(&pending_utf8).into_owned(),
         );
-        if let Some(id) = registry_id {
-            append_registry(id, output_stream, &String::from_utf8_lossy(&pending_utf8));
-        }
+        append_registry(
+            ctx.registry_id,
+            ctx.output_stream,
+            &String::from_utf8_lossy(&pending_utf8),
+        );
     }
-    (out, truncated)
+    (saw_eof, capped)
+}
+
+/// 读线程 settle 判定：子进程终态后起算 `READER_SETTLE_BUDGET`，到期 true。
+/// status 单调（Running→Exited/Killed 不可逆），再见 Running 即重置计时
+/// （防御性；正常时序下不可达）。
+fn child_settled(exit_seen: &mut Option<std::time::Instant>, ctx: &PipePumpCtx) -> bool {
+    if crate::process_registry::ProcessRegistry::is_running(ctx.registry_id) {
+        *exit_seen = None;
+        return false;
+    }
+    let seen = exit_seen.get_or_insert_with(std::time::Instant::now);
+    seen.elapsed() >= READER_SETTLE_BUDGET
+}
+
+/// 生成读线程：泵循环 + 退出信号（seal 有界 join 的对象）。
+/// sender（progress 与 done 信道）随线程结束必然 drop——这是
+/// "读线程生命周期有界"的可观测保证。
+fn spawn_pipe_reader<S>(
+    stream: S,
+    max_bytes: usize,
+    ctx: PipePumpCtx,
+    readiness: impl FnMut(&mut S) -> std::io::Result<Readiness> + Send + 'static,
+    done_tx: std::sync::mpsc::Sender<(bool, bool)>,
+) where
+    S: std::io::Read + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let mut stream = stream;
+        let mut readiness = readiness;
+        let outcome = drain_pipe_to_registry(&mut stream, max_bytes, &ctx, &mut readiness);
+        let _ = done_tx.send(outcome);
+    });
+}
+
+/// unix：读端 fd 置非阻塞（poll 化读循环的前提）。
+/// O_NONBLOCK 挂在"打开文件描述"上——父进程的读端与子进程的写端是
+/// 两个独立描述，互不影响。
+#[cfg(unix)]
+fn set_pipe_nonblocking<P: std::os::fd::AsRawFd + ?Sized>(pipe: &P) {
+    let fd = pipe.as_raw_fd();
+    // SAFETY: fcntl on an fd we exclusively own; F_GETFL/F_SETFL are
+    // parameterless-in/out queries on that descriptor.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags >= 0 {
+        // SAFETY: same descriptor; enabling O_NONBLOCK only changes the
+        // blocking behaviour of our own read end.
+        unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+    }
+}
+
+/// windows：PeekNamedPipe 查询可读字节数（匿名管道不支持 O_NONBLOCK，
+/// 这是 poll 化读循环的等价物）。None = 探测失败（非管道句柄等），
+/// 调用方按 Closed 处理——宁可放弃也不退回无限阻塞读。
+#[cfg(windows)]
+fn pipe_available_bytes(handle: std::os::windows::io::RawHandle) -> Option<u32> {
+    // SAFETY: PeekNamedPipe is a well-known Kernel32 API with stable ABI.
+    // We pass null buffers and only request the total-bytes-available
+    // counter; the handle comes from std's piped stdio (a valid anonymous
+    // pipe handle we exclusively read from).
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn PeekNamedPipe(
+            named_pipe: *mut core::ffi::c_void,
+            buffer: *mut core::ffi::c_void,
+            buffer_size: u32,
+            bytes_read: *mut u32,
+            total_bytes_avail: *mut u32,
+            bytes_left_this_message: *mut u32,
+        ) -> i32;
+    }
+    let mut avail: u32 = 0;
+    let ok = unsafe {
+        PeekNamedPipe(
+            handle,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            &mut avail,
+            std::ptr::null_mut(),
+        )
+    };
+    (ok != 0).then_some(avail)
+}
+
+/// seal 侧有界 join：等待读线程退出信号 (saw_eof, capped)。
+/// 超时或读线程意外消失（panic → 信道 Disconnected）一律按 (false, false)
+/// 处理 → truncated 保守提示；数据本身以 captured_full 为权威，不受影响。
+fn wait_reader_done(
+    rx: &std::sync::mpsc::Receiver<(bool, bool)>,
+    deadline: std::time::Instant,
+) -> (bool, bool) {
+    let now = std::time::Instant::now();
+    if now >= deadline {
+        return (false, false);
+    }
+    match rx.recv_timeout(deadline - now) {
+        Ok(pair) => pair,
+        Err(_) => (false, false),
+    }
 }
 
 /// Forward only complete text units. A command may split one Chinese character
@@ -457,19 +611,6 @@ fn append_registry(id: u32, stream: ExecOutputStream, chunk: &str) {
             crate::process_registry::ProcessRegistry::append_stderr(id, chunk)
         }
     }
-}
-
-/// Decode the final capture using UTF-8 first, then the Windows console OEM
-/// code page (for example GBK/936 on Simplified-Chinese Windows).
-fn decode_captured(bytes: &[u8]) -> String {
-    if let Ok(utf8) = std::str::from_utf8(bytes) {
-        return utf8.to_owned();
-    }
-    #[cfg(windows)]
-    if let Some(oem) = decode_windows_oem(bytes) {
-        return oem;
-    }
-    String::from_utf8_lossy(bytes).into_owned()
 }
 
 #[cfg(windows)]
@@ -658,47 +799,19 @@ fn token_truncate(text: &str, max_tokens: u32) -> String {
     }
 }
 
-/// 读线程排空节奏与总预算（收集去 EOF 化，2026-09-02 冻结事故 P0-1）。
+/// 读线程生命周期（exec 生命周期重写阶段 2，registry-native）。
 ///
-/// TICK 是预算内的轮询粒度；正常路径读线程在子进程退出瞬间即 EOF 并送出
-/// 汇总（首次 recv 立即返回，零额外等待），预算只是异常路径（孙进程持有
-/// 管道写端、EOF 永不出现）的上限。
-const READER_SETTLE_TICK: std::time::Duration = std::time::Duration::from_millis(50);
+/// - `READER_POLL_TICK`：管道空的轮询粒度（unix 非阻塞 WouldBlock /
+///   Windows PeekNamedPipe 为 0 时的重试间隔）。
+/// - `READER_SETTLE_BUDGET`：观察到子进程终态后，读线程继续排空在途
+///   输出的预算；到期即退出（丢弃后续 chunk，与 drain_bounded 语义对齐），
+///   **绝不等待 EOF**——孙进程持有管道写端时读线程必须确定性退出，
+///   不再持有 progress sender（阶段 1 的 1.3 遗留驻留问题就此治愈）。
+/// - `SEAL_JOIN_BUDGET`：seal 侧对两个读线程退出信号的有界 join 预算，
+///   需覆盖"主循环观察到退出（≤50ms）+ settle（300ms）+ 调度余量"。
+const READER_POLL_TICK: std::time::Duration = std::time::Duration::from_millis(50);
 const READER_SETTLE_BUDGET: std::time::Duration = std::time::Duration::from_millis(300);
-
-/// 有界收集单条流：等待读线程的最终汇总（读线程在 EOF 时发送一次）。
-///
-/// 预算耗尽或读线程意外消失（Disconnected 且无消息）时回退注册表快照
-/// （读线程按块 append_output，数据同源）；快照也不可得时给出 WARN 占位。
-/// 回退产物一律标记 truncated，与旧兜底一致地提示模型输出可能不完整。
-fn recv_stream_bounded(
-    rx: &std::sync::mpsc::Receiver<(Vec<u8>, bool)>,
-    deadline: std::time::Instant,
-    snapshot: Option<&String>,
-    stream_label: &str,
-) -> (Vec<u8>, bool) {
-    let fallback = || -> (Vec<u8>, bool) {
-        match snapshot {
-            Some(captured) => (captured.clone().into_bytes(), true),
-            None => (
-                format!("[WARN] {stream_label} pipe reader did not finish in budget\n")
-                    .into_bytes(),
-                true,
-            ),
-        }
-    };
-    loop {
-        let now = std::time::Instant::now();
-        if now >= deadline {
-            return fallback();
-        }
-        match rx.recv_timeout(READER_SETTLE_TICK.min(deadline - now)) {
-            Ok(pair) => return pair,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return fallback(),
-        }
-    }
-}
+const SEAL_JOIN_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Direct command execution: argv array, no shell.
 /// Uses background threads for pipe reading and poll-based timeout.
@@ -719,8 +832,6 @@ fn direct_exec(
     } else {
         argv[0].clone()
     };
-    const HARD_BYTE_CAP: usize = 5 * 1024 * 1024;
-
     let mut cmd = std::process::Command::new(&argv[0]);
     if argv.len() > 1 {
         cmd.args(&argv[1..]);
@@ -764,81 +875,92 @@ fn direct_exec(
         }
     };
 
-    // 接线 ProcessRegistry：先注册（管道线程捕获 proc_id），take 管道后
+    // 接线 ProcessRegistry：先注册（读线程捕获 proc_id），take 管道后
     // 再把子进程句柄移入注册表（poll 经 try_wait、超时移交可查）。
     let proc_id = crate::process_registry::ProcessRegistry::register(&display_name);
-    // 移交标志：只有 backgrounded（超时移交）才需要管道线程善后写回状态；
-    // 正常路径 direct_exec 自己 mark_exited，线程不得空轮询。
-    let handoff = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-    // Start background pipe readers
-    let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
-    let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
+    // Start bounded pipe readers（registry-native，阶段 2）：
+    // - 读线程有界退出（EOF / settle 到期 / 读错误，任一原因发退出信号）；
+    // - 输出完整捕获进注册表（tail 视图 + captured_full 权威源）；
+    // - progress sender 随线程结束必然 drop（drain 的 Disconnected 快路径）。
+    // 旧"汇总信道 + handoff 善后轮询"退役：try_wait 已在任何查询路径
+    // 自动置终态，善后块是死代码；汇总数据源被 captured_full 取代。
+    let (stdout_done_tx, stdout_done_rx) = std::sync::mpsc::channel::<(bool, bool)>();
+    let (stderr_done_tx, stderr_done_rx) = std::sync::mpsc::channel::<(bool, bool)>();
     let progress_seq = Arc::new(AtomicU64::new(0));
+    let byte_cap = crate::process_registry::FULL_CAPTURE_BYTE_CAP;
+    let stdout_ctx = PipePumpCtx {
+        progress_tx: progress_tx.clone(),
+        tool_call_id: tool_call_id.to_string(),
+        output_stream: ExecOutputStream::Stdout,
+        progress_seq: progress_seq.clone(),
+        registry_id: proc_id,
+    };
+    let stderr_ctx = PipePumpCtx {
+        progress_tx: progress_tx.clone(),
+        tool_call_id: tool_call_id.to_string(),
+        output_stream: ExecOutputStream::Stderr,
+        progress_seq: progress_seq.clone(),
+        registry_id: proc_id,
+    };
     if let Some(p) = child.stdout.take() {
-        let progress_tx = progress_tx.clone();
-        let tool_call_id = tool_call_id.to_string();
-        let progress_seq = progress_seq.clone();
-        let handoff = handoff.clone();
-        std::thread::spawn(move || {
-            let (s, t) = read_stream(
-                p,
-                HARD_BYTE_CAP,
-                progress_tx,
-                tool_call_id,
-                ExecOutputStream::Stdout,
-                progress_seq,
-                Some(proc_id),
-            );
-            let _ = stdout_tx.send((s, t));
-            // 仅 backgrounded（超时移交）善后：轮询写回退出状态（EOF 与
-            // 进程退出存在毫秒级竞态，try_wait 一次可能恰逢 None）。
-            if handoff.load(std::sync::atomic::Ordering::SeqCst) {
-                for _ in 0..100 {
-                    if let Some(code) = crate::process_registry::ProcessRegistry::try_wait(proc_id)
-                    {
-                        crate::process_registry::ProcessRegistry::mark_exited(proc_id, code);
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-            }
-        });
+        #[cfg(unix)]
+        set_pipe_nonblocking(&p);
+        #[cfg(unix)]
+        spawn_pipe_reader(
+            p,
+            byte_cap,
+            stdout_ctx,
+            |_stream: &mut std::process::ChildStdout| Ok(Readiness::Ready),
+            stdout_done_tx,
+        );
+        #[cfg(windows)]
+        spawn_pipe_reader(
+            p,
+            byte_cap,
+            stdout_ctx,
+            |stream: &mut std::process::ChildStdout| {
+                use std::os::windows::io::AsRawHandle;
+                Ok(match pipe_available_bytes(stream.as_raw_handle()) {
+                    Some(0) => Readiness::Empty,
+                    Some(_) => Readiness::Ready,
+                    None => Readiness::Closed,
+                })
+            },
+            stdout_done_tx,
+        );
     } else {
-        let _ = stdout_tx.send((Vec::new(), false));
+        let _ = stdout_done_tx.send((true, false));
     }
     if let Some(p) = child.stderr.take() {
-        let progress_tx = progress_tx.clone();
-        let tool_call_id = tool_call_id.to_string();
-        let progress_seq = progress_seq.clone();
-        let handoff = handoff.clone();
-        std::thread::spawn(move || {
-            let (s, t) = read_stream(
-                p,
-                HARD_BYTE_CAP,
-                progress_tx,
-                tool_call_id,
-                ExecOutputStream::Stderr,
-                progress_seq,
-                Some(proc_id),
-            );
-            let _ = stderr_tx.send((s, t));
-            if handoff.load(std::sync::atomic::Ordering::SeqCst) {
-                for _ in 0..100 {
-                    if let Some(code) = crate::process_registry::ProcessRegistry::try_wait(proc_id)
-                    {
-                        crate::process_registry::ProcessRegistry::mark_exited(proc_id, code);
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-            }
-        });
+        #[cfg(unix)]
+        set_pipe_nonblocking(&p);
+        #[cfg(unix)]
+        spawn_pipe_reader(
+            p,
+            byte_cap,
+            stderr_ctx,
+            |_stream: &mut std::process::ChildStderr| Ok(Readiness::Ready),
+            stderr_done_tx,
+        );
+        #[cfg(windows)]
+        spawn_pipe_reader(
+            p,
+            byte_cap,
+            stderr_ctx,
+            |stream: &mut std::process::ChildStderr| {
+                use std::os::windows::io::AsRawHandle;
+                Ok(match pipe_available_bytes(stream.as_raw_handle()) {
+                    Some(0) => Readiness::Empty,
+                    Some(_) => Readiness::Ready,
+                    None => Readiness::Closed,
+                })
+            },
+            stderr_done_tx,
+        );
     } else {
-        let _ = stderr_tx.send((Vec::new(), false));
+        let _ = stderr_done_tx.send((true, false));
     }
-
-    // 管道已 take，子进程句柄移入注册表（唯一持有）
     crate::process_registry::ProcessRegistry::attach_child(proc_id, child);
 
     // Poll child with timeout（子进程句柄唯一持有在注册表，经 try_wait 查询）
@@ -885,7 +1007,6 @@ fn direct_exec(
 
     // 超时移交：不再等待管道（读取线程仍在后台 append 到注册表）
     if timed_out {
-        handoff.store(true, std::sync::atomic::Ordering::SeqCst);
         let info = crate::process_registry::ProcessRegistry::get_info(proc_id)
             .unwrap_or_else(|| serde_json::json!({}));
         return ExecOutput {
@@ -915,28 +1036,25 @@ fn direct_exec(
     }
 
     // Collect pipe output（P0 去 EOF 化，2026-09-02 冻结事故）：
-    // 子进程退出 ≠ 管道 EOF——孙进程持有写端时 EOF 永不出现，读线程永不返回，
-    // 旧实现 recv_timeout(2s) 在该场景每次固定白等 2s（事故 audit 实测 +2.0s）。
-    // 现语义：有界排空预算内等待读线程的最终汇总；预算耗尽即以注册表快照
-    // 为权威返回。W-low① 兜底退役——任何路径不得依赖管道 EOF。
-    let collect_deadline = std::time::Instant::now() + READER_SETTLE_BUDGET;
-    let registry_snapshot = crate::process_registry::ProcessRegistry::captured(proc_id);
-    let (stdout_out, stdout_trunc) = recv_stream_bounded(
-        &stdout_rx,
-        collect_deadline,
-        registry_snapshot.as_ref().map(|(o, _)| o),
-        "stdout",
-    );
-    let (stderr_out, stderr_trunc) = recv_stream_bounded(
-        &stderr_rx,
-        collect_deadline,
-        registry_snapshot.as_ref().map(|(e, _)| e),
-        "stderr",
-    );
-
-    let stdout_out = decode_captured(&stdout_out);
-    let stderr_out = decode_captured(&stderr_out);
-
+    // [seal] registry-native（exec 生命周期重写阶段 2，2.1 契约）：
+    // 以注册表完整捕获 `captured_full` 为权威——任何路径不得等待管道
+    // EOF / 流关闭。对读线程做的是"有界 join"（SEAL_JOIN_BUDGET）：退出
+    // 信号在 EOF、settle 到期、读错误时都会发出；正常路径读线程先于
+    // seal 完成，首次 recv 立即返回、零额外等待；孙进程持写端路径信号
+    // 来自 settle 到期（读线程确定性退出），快照始终完整可用。
+    let join_deadline = std::time::Instant::now() + SEAL_JOIN_BUDGET;
+    let (stdout_eof, stdout_capped) = wait_reader_done(&stdout_done_rx, join_deadline);
+    let (stderr_eof, stderr_capped) = wait_reader_done(&stderr_done_rx, join_deadline);
+    let (stdout_out, stderr_out) = crate::process_registry::ProcessRegistry::captured_full(proc_id)
+        .unwrap_or_else(|| {
+            // 防御性：seal 紧跟退出执行，条目惰性驱逐（10 分钟终态门槛）
+            // 不可能触发；缺失意味着未知的并发破坏——占位并按截断处理。
+            log::warn!("[exec] registry full capture missing for process {proc_id}");
+            (
+                "[WARN] registry full capture missing\n".to_string(),
+                String::new(),
+            )
+        });
     let mut combined = String::new();
     if !stderr_out.is_empty() {
         combined.push_str(&stderr_out);
@@ -945,8 +1063,9 @@ fn direct_exec(
         }
     }
     combined.push_str(&stdout_out);
-
-    let hard_trunc = stderr_trunc || stdout_trunc;
+    // truncated 口径：字节预算耗尽（任一流）或读线程未以 EOF 收尾
+    // （settle 放弃 = 孙进程可能继续产出，保守提示输出可能不完整）。
+    let hard_trunc = !stdout_eof || !stderr_eof || stdout_capped || stderr_capped;
     let cleaned = strip_ansi(&combined);
     let total_tokens = qaqh_types::token::count_tokens(&cleaned);
     let (output_str, truncated) = if total_tokens > max_output_tokens || hard_trunc {
@@ -1734,6 +1853,59 @@ mod tests {
         );
     }
 
+    /// 阶段 2（1.3 驻留治愈）回归：孙进程持有管道写端时，读线程必须在
+    /// 有界时间内退出并 drop progress sender。旧实现读线程永卡 read()，
+    /// sender 永不释放（drain 的 Disconnected 快路径永不触发）。
+    #[cfg(not(windows))]
+    #[test]
+    fn reader_threads_terminate_after_grandchild_settle_even_without_eof() {
+        let argv = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "echo settled; sleep 5 &".to_string(),
+        ];
+        let (tx, rx) = crate::bounded_exec_progress_channel();
+        let start = std::time::Instant::now();
+        let _result = direct_exec(&argv, None, None, 10000, 10, None, None, Some(tx), "test");
+        let deadline = start + std::time::Duration::from_secs(5);
+        loop {
+            match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok(_) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "读线程必须在 settle 预算内退出（sender drop → Disconnected）"
+                    );
+                }
+            }
+        }
+    }
+
+    /// 阶段 2（2.1 契约）回归：seal 的权威源是注册表**完整**捕获。
+    /// 12000+ 字节输出远超 tail 视图的 4000 字符裁剪线；孙进程持写端时
+    /// 旧兜底快照只剩尾部（数据损失），captured_full 必须首尾俱全。
+    #[cfg(not(windows))]
+    #[test]
+    fn seal_uses_full_registry_capture_not_tail_when_grandchild_holds_pipe() {
+        let argv = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "seq 1 3000; sleep 5 &".to_string(),
+        ];
+        let result = direct_exec(&argv, None, None, 100000, 10, None, None, None, "test");
+        assert!(
+            result.output.contains("3000"),
+            "末行必须存活: {:?}",
+            result.output.get(..200)
+        );
+        assert!(
+            result.output.lines().count() >= 2999,
+            "3000 行输出不得被 tail 裁剪，实际 {} 行",
+            result.output.lines().count()
+        );
+    }
+
     /// Windows 等效回归：`start /b` 在同一控制台派生后台子进程并继承管道写端。
     #[cfg(windows)]
     #[test]
@@ -1767,19 +1939,31 @@ mod tests {
     #[test]
     fn pipe_reader_forwards_retained_chunks_with_the_call_id() {
         let (tx, rx) = crate::bounded_exec_progress_channel();
-        let (output, truncated) = read_stream(
-            std::io::Cursor::new(b"first\nsecond\n".to_vec()),
+        // registry-native 阶段 2：输出权威源在注册表完整捕获（不再由读线程
+        // 返回汇总），读线程只回报 (saw_eof, capped) 生命周期信号。
+        let proc_id = crate::process_registry::ProcessRegistry::register("reader-test");
+        let mut stream = std::io::Cursor::new(b"first\nsecond\n".to_vec());
+        let ctx = PipePumpCtx {
+            progress_tx: Some(tx),
+            tool_call_id: "call-stream-1".to_string(),
+            output_stream: ExecOutputStream::Stdout,
+            progress_seq: Arc::new(AtomicU64::new(0)),
+            registry_id: proc_id,
+        };
+        let (saw_eof, capped) = drain_pipe_to_registry(
+            &mut stream,
             1024,
-            Some(tx),
-            "call-stream-1".to_string(),
-            ExecOutputStream::Stdout,
-            Arc::new(AtomicU64::new(0)),
-            None,
+            &ctx,
+            &mut |_s: &mut std::io::Cursor<Vec<u8>>| Ok(Readiness::Ready),
         );
 
         let chunks: Vec<_> = rx.try_iter().collect();
-        assert_eq!(output, b"first\nsecond\n");
-        assert!(!truncated);
+        let (full_out, _) =
+            crate::process_registry::ProcessRegistry::captured_full(proc_id)
+                .expect("registry entry must exist");
+        assert_eq!(full_out, "first\nsecond\n");
+        assert!(saw_eof, "Cursor 读尽即 EOF");
+        assert!(!capped);
         assert_eq!(
             chunks,
             vec![ExecProgressEvent {
@@ -1827,16 +2011,28 @@ mod tests {
         let (tx, rx) = crate::bounded_exec_progress_channel();
         let mut input = vec![b'a'; 8191];
         input.extend_from_slice("中".as_bytes());
-        let (_output, truncated) = read_stream(
-            std::io::Cursor::new(input),
+        let proc_id = crate::process_registry::ProcessRegistry::register("utf8-reader-test");
+        let mut stream = std::io::Cursor::new(input);
+        let ctx = PipePumpCtx {
+            progress_tx: Some(tx),
+            tool_call_id: "utf8".to_string(),
+            output_stream: ExecOutputStream::Stdout,
+            progress_seq: Arc::new(AtomicU64::new(0)),
+            registry_id: proc_id,
+        };
+        let (saw_eof, capped) = drain_pipe_to_registry(
+            &mut stream,
             16 * 1024,
-            Some(tx),
-            "utf8".to_string(),
-            ExecOutputStream::Stdout,
-            Arc::new(AtomicU64::new(0)),
-            None,
+            &ctx,
+            &mut |_s: &mut std::io::Cursor<Vec<u8>>| Ok(Readiness::Ready),
         );
-        assert!(!truncated);
+        assert!(saw_eof);
+        assert!(!capped);
+        let (full_out, _) =
+            crate::process_registry::ProcessRegistry::captured_full(proc_id)
+                .expect("registry entry must exist");
+        assert!(full_out.ends_with('中'));
+        assert!(!full_out.contains('\u{fffd}'));
         let text: String = rx.try_iter().map(|event| event.chunk).collect();
         assert!(text.ends_with('中'));
         assert!(!text.contains('\u{fffd}'));
@@ -1846,7 +2042,7 @@ mod tests {
     #[test]
     fn windows_oem_output_is_decoded_without_utf8_beta_mode() {
         // GBK/936 for "正在", representative of cmd.exe ping output.
-        assert_eq!(decode_captured(&[0xD5, 0xFD, 0xD4, 0xDA]), "正在");
+        assert_eq!(decode_windows_oem(&[0xD5, 0xFD, 0xD4, 0xDA]), Some("正在".to_string()));
     }
 
     #[test]
@@ -1861,6 +2057,28 @@ mod tests {
             });
         }
         assert_eq!(tx.dropped_bytes(), 1);
+    }
+
+    /// 阶段 2（报告 P1）回归：process wait 阻塞期间收到取消旗标必须立即
+    /// 返回，不得阻塞到 timeout_secs（非 exec 阻塞工具的飞行中取消）。
+    #[test]
+    fn wait_for_returns_promptly_on_per_call_cancel() {
+        let id = crate::process_registry::ProcessRegistry::register("wait-cancel-test");
+        // 无 child 的条目永远 Running——旧实现会在此阻塞满 timeout_secs。
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let signal = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            signal.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let start = std::time::Instant::now();
+        let info = crate::process_registry::ProcessRegistry::wait_for(id, 30, Some(&cancel))
+            .expect("wait_for 必须返回");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "取消必须立即打破 wait_for 阻塞"
+        );
+        assert_eq!(info["wait_interrupted_by_cancel"], serde_json::json!(true));
     }
 
     #[test]
@@ -1974,7 +2192,8 @@ mod tests {
         );
         // process(wait) 语义：等待自然退出
         let final_info =
-            crate::process_registry::ProcessRegistry::wait_for(pid, 15).expect("wait_for 必须返回");
+            crate::process_registry::ProcessRegistry::wait_for(pid, 15, None)
+                .expect("wait_for 必须返回");
         eprintln!("final_info: {final_info}");
         assert_eq!(final_info["status"], "exited", "ping 自然结束后应为 exited");
         // 输出已逐 chunk 追加到注册表（backgrounded 期间也累积）
@@ -2034,7 +2253,8 @@ mod tests {
         );
         // 清理：等待自然退出（8 秒 sleep 早已结束）
         let final_info =
-            crate::process_registry::ProcessRegistry::wait_for(pid, 15).expect("wait_for 必须返回");
+            crate::process_registry::ProcessRegistry::wait_for(pid, 15, None)
+                .expect("wait_for 必须返回");
         assert_eq!(final_info["status"], "exited");
     }
 

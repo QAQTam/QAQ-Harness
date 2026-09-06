@@ -40,6 +40,10 @@ const WRITE: MethodInfo = MethodInfo {
     kind: MethodKind::Write,
     requires_seed: false,
 };
+const WRITE_SEEDED: MethodInfo = MethodInfo {
+    kind: MethodKind::Write,
+    requires_seed: true,
+};
 
 /// 方法表：未列出的名字返回 `None`（HTTP 404）。
 pub fn lookup(method: &str) -> Option<MethodInfo> {
@@ -80,6 +84,9 @@ pub fn lookup(method: &str) -> Option<MethodInfo> {
         "skills.reload" => Some(WRITE),
         // todo / plan / stats
         "todo.status" => Some(READ_SEEDED),
+        // todo CLI 路线（daemon HTTP 直访；与 LLM 工具分发表共用 exec 核心）
+        "todo.list" => Some(READ_SEEDED),
+        "todo.set" => Some(WRITE_SEEDED),
         "plan.read" => Some(READ_SEEDED),
         "plan.context_stats" => Some(READ_SEEDED),
         "stats.token_usage" => Some(READ),
@@ -118,6 +125,17 @@ mod tests {
     // SessionManager 是全局单例，同一测试进程只能 init 一次；
     // 用 OnceLock 共享一个 service 实例（并行测试也不会重复初始化）。
     static SERVICE: std::sync::OnceLock<QaqhService> = std::sync::OnceLock::new();
+
+    #[test]
+    fn todo_cli_methods_are_registered() {
+        let set = lookup("todo.set").expect("todo.set registered");
+        assert_eq!(set.kind, MethodKind::Write);
+        assert!(set.requires_seed, "todo.set 必须携带 seed 并做归属校验");
+        let list = lookup("todo.list").expect("todo.list registered");
+        assert_eq!(list.kind, MethodKind::Read);
+        assert!(list.requires_seed);
+        assert!(lookup("todo.set ").is_none(), "方法名不容尾随空格");
+    }
 
     fn service() -> &'static QaqhService {
         SERVICE.get_or_init(|| {

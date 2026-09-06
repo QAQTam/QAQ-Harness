@@ -190,7 +190,17 @@ mod axum_impl {
         if !is_authorized(&headers, &state.token) {
             return unauthorized();
         }
-        let req: ClientOpenRequest = match serde_json::from_slice(&body) {
+        // CLI/薄壳客户端：open 握手时可选声明 seed 归属（轻量 lease 握手，
+        // 免走 session 命令信封 attach）。flatten 包装保持 ClientOpenRequest
+        // 线协议（含 ts-rs 生成 TS 类型）零波及。
+        #[derive(serde::Deserialize)]
+        struct ClientOpenRequestExt {
+            #[serde(flatten)]
+            req: ClientOpenRequest,
+            #[serde(default)]
+            attach_seed: Option<String>,
+        }
+        let req: ClientOpenRequestExt = match serde_json::from_slice(&body) {
             Ok(v) => v,
             Err(e) => {
                 return (
@@ -204,6 +214,7 @@ mod axum_impl {
                     .into_response();
             }
         };
+        let ClientOpenRequestExt { req, attach_seed } = req;
         if req.schema != RINGING_SCHEMA || req.version != RINGING_VERSION {
             return (
                 StatusCode::UPGRADE_REQUIRED,
@@ -225,6 +236,19 @@ mod axum_impl {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .open(client_session_id.clone(), req.client_instance_id.clone());
+        // open 时声明的 seed 直接归属本 lease（服务面 WRITE_SEEDED 调用的
+        // 所有权依据）；空/缺省不 attach，保持 TUI 原有命令信封 attach 路径。
+        if let Some(seed) = attach_seed
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            state
+                .leases
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .attach_seed(&client_session_id, seed);
+        }
         let resp = ClientOpenResponse {
             schema: RINGING_SCHEMA.into(),
             version: RINGING_VERSION,
@@ -2097,6 +2121,75 @@ mod axum_tests {
             resp.headers().get("content-type").unwrap(),
             "text/event-stream"
         );
+    }
+
+    /// todo CLI 路线：WRITE_SEEDED 调用在 lease 未 attach seed 时必须 401
+    /// （拒绝发生在 dispatch 之前，不触碰磁盘）。
+    #[tokio::test]
+    async fn todo_set_requires_seed_ownership() {
+        let state = test_state();
+        state
+            .leases
+            .lock()
+            .unwrap()
+            .open("cs-1".into(), "ci-1".into());
+        let app = build_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/ringing/v1/service/todo.set")
+            .header("authorization", "Bearer test-token")
+            .header("x-qaqh-client-session-id", "cs-1")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"seed": "seed-1", "id": "T1", "status": "completed"})
+                    .to_string(),
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// open 握手声明 attach_seed 后，同 seed 的 READ_SEEDED 调用放行
+    /// （todo.list 只读，读不到即空表，不落盘）。
+    #[tokio::test]
+    async fn todo_list_allowed_after_open_attached_seed() {
+        let state = test_state();
+        // 经 handle_open 真实路径建 lease 并 attach（覆盖 flatten 解析分支）
+        let app = build_router(state);
+        let open_req = Request::builder()
+            .method("POST")
+            .uri("/ringing/v1/clients/open")
+            .header("authorization", "Bearer test-token")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "schema": qaqh_ringing::protocol::RINGING_SCHEMA,
+                    "version": qaqh_ringing::protocol::RINGING_VERSION,
+                    "client_instance_id": "ci-cli",
+                    "attach_seed": "seed-1",
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let resp = app.clone().oneshot(open_req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let open: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let session_id = open["client_session_id"].as_str().expect("session id");
+        let req = Request::builder()
+            .method("POST")
+            .uri("/ringing/v1/service/todo.list")
+            .header("authorization", "Bearer test-token")
+            .header("x-qaqh-client-session-id", session_id)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"seed": "seed-1"}).to_string(),
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]

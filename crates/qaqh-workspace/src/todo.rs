@@ -333,10 +333,10 @@ fn todo_item_json(item: &TodoItem) -> serde_json::Value {
 }
 
 /// Atomic write: temporary file → rename.
-fn write_store(store: &TodoStore) -> Result<(), String> {
+fn write_store_for(seed: &str, store: &TodoStore) -> Result<(), String> {
     // 注意：本函数不加 TODO_LOCK——工具路径在持锁状态下调用它；
     // 锁由公共入口 load_todo/save_todo 负责（W2），内部调用方须已持锁。
-    let path = todo_path().ok_or("no active session")?;
+    let path = todo_path_for(seed);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create todo directory: {e}"))?;
     }
@@ -345,6 +345,13 @@ fn write_store(store: &TodoStore) -> Result<(), String> {
     let data = serde_json::to_vec_pretty(store).map_err(|e| format!("serialize todo: {e}"))?;
     std::fs::write(&tmp, data).map_err(|e| format!("write todo.tmp: {e}"))?;
     std::fs::rename(&tmp, &path).map_err(|e| format!("rename todo: {e}"))
+}
+
+fn write_store(store: &TodoStore) -> Result<(), String> {
+    let seed = crate::runtime::context()
+        .map(|ctx| ctx.active_session)
+        .unwrap_or_default();
+    write_store_for(&seed, store)
 }
 
 // ═══════════════════════════════════════════════════════
@@ -691,10 +698,20 @@ fn parse_edit_field(
 }
 
 fn exec_todo_set(args: &Value) -> Result<String, String> {
+    let seed = crate::runtime::context()
+        .map(|ctx| ctx.active_session)
+        .unwrap_or_default();
+    todo_set_for(&seed, args)
+}
+
+/// Seed 参数化的 todo.set 直访变体（HTTP service 面 / CLI 用；不依赖
+/// runtime 线程局部上下文）。锁与工具路径一致：本函数内获取，持久化
+/// 直调 write_store_for（不得再走 save_todo 二次加锁）。
+pub fn todo_set_for(seed: &str, args: &Value) -> Result<String, String> {
     let _guard = TODO_LOCK
         .lock()
         .map_err(|_| "todo lock poisoned".to_string())?;
-    let mut store = read_store()?;
+    let mut store = read_store_for(seed)?;
 
     /// 一次变更（支持单条 / ids 批量 / updates 并行三种来源）。
     /// status 为 None 表示纯编辑（title/description/evidence）。
@@ -888,7 +905,7 @@ fn exec_todo_set(args: &Value) -> Result<String, String> {
     }
 
     normalize_current_id(&mut store);
-    write_store(&store)?;
+    write_store_for(seed, &store)?;
 
     if pending.len() == 1 && updated.len() == 1 {
         // 单条路径保持兼容返回（V1 客户端/前端依赖 item + message）。
@@ -924,7 +941,15 @@ fn normalize_current_id(store: &mut TodoStore) {
 }
 
 fn exec_todo_list(args: &Value) -> Result<String, String> {
-    let store = read_store()?;
+    let seed = crate::runtime::context()
+        .map(|ctx| ctx.active_session)
+        .unwrap_or_default();
+    todo_list_for(&seed, args)
+}
+
+/// Seed 参数化的 todo.list 直访变体（HTTP service 面 / CLI 用）。
+pub fn todo_list_for(seed: &str, args: &Value) -> Result<String, String> {
+    let store = read_store_for(seed)?;
     let filter = args
         .get("status")
         .and_then(Value::as_str)
@@ -1488,6 +1513,24 @@ mod tests {
             let out = handle_todo(ctx);
             assert!(out.error.is_some(), "别名 {alias} 必须返回错误");
         }
+    }
+
+    #[test]
+    fn seed_parameterized_set_and_list_hit_explicit_seed() {
+        // HTTP service 面 / CLI 直访契约：显式 seed 读写（write_store_for /
+        // read_store_for），与工具路径（runtime ctx）写同一份 todo.json。
+        with_isolated_todo(|seed| {
+            exec_todo_create(&serde_json::json!({"title": "工具路径建项"}), false).unwrap();
+            let id = ids(&load_todo().unwrap())[0].clone();
+            let set = parse(&todo_set_for(
+                seed,
+                &serde_json::json!({"id": id, "status": "completed", "evidence": "via CLI"}),
+            ));
+            assert_eq!(set["item"]["status"], "completed");
+            let listed = parse(&todo_list_for(seed, &serde_json::json!({})));
+            assert_eq!(listed["items"].as_array().unwrap().len(), 1);
+            assert_eq!(listed["items"][0]["status"], "completed");
+        });
     }
 
     #[test]

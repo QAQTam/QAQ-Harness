@@ -499,6 +499,10 @@ impl QaqhService {
                 &seed()?,
                 &pstr(params, "id")?,
             )?),
+            "todo.set" => parse_json_string(qaqh_workspace::todo::todo_set_for(&seed()?, params)?),
+            "todo.list" => {
+                parse_json_string(qaqh_workspace::todo::todo_list_for(&seed()?, params)?)
+            }
             "plan.context_stats" => context_stats(&self.sessions, &seed()?),
             "stats.token_usage" => token_stats(pu64(params, "days") as u32),
             "plan.read" => read_plan(&self.sessions, &seed()?),

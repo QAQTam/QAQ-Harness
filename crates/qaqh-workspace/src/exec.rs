@@ -149,6 +149,8 @@ impl Shell {
     /// Win32 命令行解析中的转义地狱；stdout/stderr 仍通过管道捕获，编码不影响输出。
     /// 当 `args` 非空且为 PowerShell 时，自动走 `-CommandWithArgs`（7.6 LTS 主流），
     /// 把 `args` 原样作为 CommandParameters 填入 `$args`，避免在脚本内拼接引号。
+    /// 目前仅测试使用（生产路径走 `derive_exec_args_with`）；非 test 构建豁免死代码告警。
+    #[cfg_attr(not(test), allow(dead_code))]
     fn derive_exec_args(&self, command: &str) -> Vec<String> {
         self.derive_exec_args_with(command, None)
     }
@@ -1977,17 +1979,16 @@ mod tests {
             progress_seq: Arc::new(AtomicU64::new(0)),
             registry_id: proc_id,
         };
-        let (saw_eof, capped) = drain_pipe_to_registry(
-            &mut stream,
-            1024,
-            &ctx,
-            &mut |_s: &mut std::io::Cursor<Vec<u8>>| Ok(Readiness::Ready),
-        );
+        let (saw_eof, capped) =
+            drain_pipe_to_registry(&mut stream, 1024, &ctx, &mut |_s: &mut std::io::Cursor<
+                Vec<u8>,
+            >| {
+                Ok(Readiness::Ready)
+            });
 
         let chunks: Vec<_> = rx.try_iter().collect();
-        let (full_out, _) =
-            crate::process_registry::ProcessRegistry::captured_full(proc_id)
-                .expect("registry entry must exist");
+        let (full_out, _) = crate::process_registry::ProcessRegistry::captured_full(proc_id)
+            .expect("registry entry must exist");
         assert_eq!(full_out, "first\nsecond\n");
         assert!(saw_eof, "Cursor 读尽即 EOF");
         assert!(!capped);
@@ -2055,9 +2056,8 @@ mod tests {
         );
         assert!(saw_eof);
         assert!(!capped);
-        let (full_out, _) =
-            crate::process_registry::ProcessRegistry::captured_full(proc_id)
-                .expect("registry entry must exist");
+        let (full_out, _) = crate::process_registry::ProcessRegistry::captured_full(proc_id)
+            .expect("registry entry must exist");
         assert!(full_out.ends_with('中'));
         assert!(!full_out.contains('\u{fffd}'));
         let text: String = rx.try_iter().map(|event| event.chunk).collect();
@@ -2069,7 +2069,10 @@ mod tests {
     #[test]
     fn windows_oem_output_is_decoded_without_utf8_beta_mode() {
         // GBK/936 for "正在", representative of cmd.exe ping output.
-        assert_eq!(decode_windows_oem(&[0xD5, 0xFD, 0xD4, 0xDA]), Some("正在".to_string()));
+        assert_eq!(
+            decode_windows_oem(&[0xD5, 0xFD, 0xD4, 0xDA]),
+            Some("正在".to_string())
+        );
     }
 
     #[test]
@@ -2134,8 +2137,8 @@ mod tests {
             serde_json::json!({ "command": "sleep 30", "cwd": cwd, "background_after_secs": 1 }),
         );
         let r = handle_run_bash(ctx);
-        let v: serde_json::Value = serde_json::from_str(r.model_text())
-            .expect("bash 工具结果必须是 ExecOutput JSON");
+        let v: serde_json::Value =
+            serde_json::from_str(r.model_text()).expect("bash 工具结果必须是 ExecOutput JSON");
         assert_eq!(v["status"], "backgrounded", "移交状态: {v}");
         let pid = v["process_id"].as_u64().expect("移交必须携带 process_id") as u32;
 
@@ -2306,9 +2309,8 @@ mod tests {
             "提示应指向 process 检查动作"
         );
         // process(wait) 语义：等待自然退出
-        let final_info =
-            crate::process_registry::ProcessRegistry::wait_for(pid, 15, None)
-                .expect("wait_for 必须返回");
+        let final_info = crate::process_registry::ProcessRegistry::wait_for(pid, 15, None)
+            .expect("wait_for 必须返回");
         eprintln!("final_info: {final_info}");
         assert_eq!(final_info["status"], "exited", "ping 自然结束后应为 exited");
         // 输出已逐 chunk 追加到注册表（backgrounded 期间也累积）
@@ -2367,9 +2369,8 @@ mod tests {
             "backgrounded 输出应包含移交耗时字段"
         );
         // 清理：等待自然退出（8 秒 sleep 早已结束）
-        let final_info =
-            crate::process_registry::ProcessRegistry::wait_for(pid, 15, None)
-                .expect("wait_for 必须返回");
+        let final_info = crate::process_registry::ProcessRegistry::wait_for(pid, 15, None)
+            .expect("wait_for 必须返回");
         assert_eq!(final_info["status"], "exited");
     }
 

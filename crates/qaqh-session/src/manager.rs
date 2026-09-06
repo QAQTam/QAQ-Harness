@@ -169,8 +169,8 @@ impl SessionManager {
     ///
     /// Fail-closed compact semantics (BUG-007): if a compact checkpoint file
     /// exists but cannot be parsed or points past the archive, this returns
-    /// Compacted history must never become reversible just because the
-    /// checkpoint was damaged.
+    /// `None`. Compacted history must never become reversible just because
+    /// the checkpoint was damaged.
     pub fn load_for_resume(
         &self,
         seed: &str,
@@ -180,7 +180,6 @@ impl SessionManager {
         // timeline rebuild all funnel through here). Idempotent — see
         // `replay_message_wal`.
         self.replay_message_wal(seed);
-        let (meta, archive_messages) = self.load(seed)?;
         let (meta, archive_messages) = self.load(seed)?;
         let selected = match self.read_compact_context_checked(seed) {
             Ok(None) => None,

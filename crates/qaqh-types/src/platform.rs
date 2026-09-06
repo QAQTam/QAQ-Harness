@@ -593,6 +593,8 @@ pub fn process_is_running(pid: u32) -> bool {
 }
 
 fn background_command(program: &str) -> std::process::Command {
+    // mut 仅为 Windows 分支的 creation_flags 所需；非 Windows 平台无后续可变使用。
+    #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
     let mut command = std::process::Command::new(program);
     #[cfg(target_os = "windows")]
     {

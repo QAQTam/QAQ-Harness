@@ -134,7 +134,7 @@ impl ProcessRegistry {
                 .map(|(id, _)| *id)
                 .collect();
             for id in stale {
-                if let Some(mut e) = r.entries.remove(&id) {
+                if let Some(e) = r.entries.remove(&id) {
                     *e.child.lock().unwrap_or_else(|er| er.into_inner()) = None;
                 }
             }
@@ -565,7 +565,13 @@ mod tests {
         let id = ProcessRegistry::register("running-test");
         assert!(ProcessRegistry::is_running(id));
         ProcessRegistry::mark_exited(id, 0);
-        assert!(!ProcessRegistry::is_running(id), "Exited 后不得再视为 running");
-        assert!(!ProcessRegistry::is_running(u32::MAX), "缺失条目视为不在运行");
+        assert!(
+            !ProcessRegistry::is_running(id),
+            "Exited 后不得再视为 running"
+        );
+        assert!(
+            !ProcessRegistry::is_running(u32::MAX),
+            "缺失条目视为不在运行"
+        );
     }
 }

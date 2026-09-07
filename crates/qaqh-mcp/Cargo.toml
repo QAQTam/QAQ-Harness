@@ -12,7 +12,15 @@ qaqh-types = { path = "../qaqh-types" }
 # 工具投影（PR-M1-4）：DynamicTool/register_dynamic/build_dynamic_tool。
 # 依赖方向单向（设计 §4）：qaqh-mcp → qaqh-workspace，不反向。
 qaqh-workspace = { path = "../qaqh-workspace" }
-rmcp = { workspace = true }
+rmcp = { workspace = true, features = [
+    "client",
+    "transport-child-process",
+    # PR-M3-1：streamable HTTP 传输（[mcp.servers.x] url=… 路径）。
+    "transport-streamable-http-client-reqwest",
+] }
+# PR-M3-1：自定义 headers 需要直接构造 reqwest client（default_headers）——
+# 版本对齐 rmcp 内部（0.13），避免双 reqwest 实例。
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }
 # 进程组/Job 隔离（PLAN §7 结论：rmcp 只开 tokio1，须自引并对齐 9.1.0）。
 # process-group 仅 Unix 生效；job-object/creation-flags 仅 Windows 生效
 # （windows 为 target-specific optional dep，Linux 上惰性，不参与构建）。
@@ -31,7 +39,13 @@ serde_json = "1"
 [dev-dependencies]
 # 仅测试/clippy --all-targets 构建启用：in-memory 双工 + mock server 所需。
 # feature unification 影响面：release 产物不含 server 代码（PLAN §2 E-1 注）。
-rmcp = { workspace = true, features = ["transport-io", "server"] }
+rmcp = { workspace = true, features = [
+    "transport-io",
+    "server",
+    # PR-M3-1 http_transport 测试：本地 mock streamable HTTP server。
+    "transport-streamable-http-server",
+] }
+axum = { version = "0.8" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "time"] }
 
 [lints.clippy]

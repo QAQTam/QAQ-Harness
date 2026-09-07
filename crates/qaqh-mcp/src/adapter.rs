@@ -37,6 +37,9 @@ use qaqh_config::secrets::SecretStore;
 use rmcp::model::ProtocolVersion;
 use rmcp::service::{ClientLifecycleMode, ClientServiceExt, NotificationContext};
 use rmcp::transport::child_process::TokioChildProcess;
+use rmcp::transport::streamable_http_client::{
+    StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
+};
 use rmcp::{ClientHandler, RoleClient};
 
 #[cfg(windows)]
@@ -201,7 +204,56 @@ pub(crate) fn connect(name: &str, cfg: &McpServerConfig, secrets: &SecretStore) 
                 Ok(service)
             }
             McpTransportKind::Http => {
-                Err("streamable HTTP transport lands in M3 ".to_owned().into())
+                // PR-M3-1：streamable HTTP（设计 §6 url=… 路径）。无子进程
+                // —— record_spawn_pid/sweep_group 天然 no-op（pgid 未登记）；
+                // TransportClosed → ServerCrashed → 下次调用重连，语义与
+                // stdio 同构。headers（含 ${secret} 插值后的值）进 reqwest
+                // default_headers；M1-3 的三段式插值在 HTTP 头上同样生效。
+                if resolved.url.is_empty() {
+                    let error = McpError::new(
+                        McpErrorKind::ConnectFailed,
+                        format!("server {name}: http transport requires a non-empty url"),
+                    );
+                    return Err(Box::new(error) as Box<dyn std::error::Error + Send + Sync>);
+                }
+                log::info!(
+                    "[mcp] server {name}: connecting streamable HTTP transport (url={})",
+                    resolved.url
+                );
+                let mut builder = reqwest::Client::builder();
+                if !resolved.headers.is_empty() {
+                    let mut headers = reqwest::header::HeaderMap::new();
+                    for (key, value) in &resolved.headers {
+                        let header_name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
+                            .map_err(
+                            |e| -> Box<dyn std::error::Error + Send + Sync> {
+                                format!("server {name}: invalid header name {key:?}: {e}").into()
+                            },
+                        )?;
+                        let header_value = reqwest::header::HeaderValue::from_str(value).map_err(
+                            |e| -> Box<dyn std::error::Error + Send + Sync> {
+                                format!("server {name}: invalid header value for {key:?}: {e}")
+                                    .into()
+                            },
+                        )?;
+                        headers.insert(header_name, header_value);
+                    }
+                    builder = builder.default_headers(headers);
+                }
+                let client =
+                    builder
+                        .build()
+                        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                            format!("server {name}: reqwest client build failed: {e}").into()
+                        })?;
+                let transport = StreamableHttpClientTransport::with_client(
+                    client,
+                    StreamableHttpClientTransportConfig::with_uri(resolved.url.clone()),
+                );
+                let service = NotifyBridge { name: name.clone() }
+                    .serve_with_lifecycle(transport, auto_lifecycle())
+                    .await?;
+                Ok(service)
             }
         }
     })

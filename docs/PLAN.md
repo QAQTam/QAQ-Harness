@@ -48,7 +48,7 @@
 | Phase M0 | Spike：SDK 可行性验证 + 设计勘误 | PR-M0-0 / PR-M0-1 | 低 | — |
 | Phase M1 | 核心链路：配置→生命周期→投影→调用 | PR-M1-1 … M1-5 | 中 | M0 |
 | Phase M2 | Resources 接入 | PR-M2-1 / M2-2 | 低 | M1 |
-| Phase M3 | 传输扩展与打磨 | PR-M3-1 … M3-3 | 低 | M1 |
+| Phase M3 | 传输扩展与打磨 + 配置兼容 | PR-M3-1 … M3-4 | 低 | M1 |
 
 - 顺序纪律：**勘误先行（E-1/E-3 是安全语义，不可带病开工）→ spike 验证 → 核心链路**。
 - 每阶段独立可回退：qaqh-mcp 全部为新 crate，回退 = workspace members 移除 + 接触面 3 处还原。
@@ -84,8 +84,9 @@
 | PR | 任务 | 出口命令 |
 |---|---|---|
 | PR-M3-1 | streamable HTTP client（reqwest feature）+ unix socket | `cargo test -p qaqh-mcp --test http_transport` 全绿（本地 test server） |
-| PR-M3-2 | E2E 门控测试（`QAQH_MCP_E2E=1` 连真实 `npx @upstash/context7-mcp`）；可选测试 gating 惯例先例对齐 | `QAQH_MCP_E2E=1 cargo test -p qaqh-mcp --test e2e_context7` 通过（需网络，默认 skip） |
-| PR-M3-3 | 文档：README 工具表 + `docs/mcp-client-design.md` 状态改"已实施"；`just check`/`clippy`/`fmt`/`test` 全绿 | 见 §5 总闸 |
+| **PR-M3-2**（2026-09-07 增补，owner 决策 A+B） | **Codex/Claude Code MCP 配置兼容**——A：运行时只读合并（仅**用户级** `~/.codex/config.toml` `[mcp_servers]`、Claude 用户级 `mcpServers`；来源标记 `imported/` 前缀或 meta 标注；不回写；明文 env 直通子进程不落 QAQH secrets）；B：`qaqh mcp import --from codex\|claude\|claude-desktop`（交互确认 → 写入 config + secrets 占位符化；**项目级 `.mcp.json` 默认排除，导入需逐 server 审批**——供应链面，D4 信任边界不扩） | `cargo test -p qaqh-config --test mcp_import` 全绿（样本 fixture + 合并/冲突/审批语义） |
+| PR-M3-3 | E2E 门控测试（`QAQH_MCP_E2E=1` 连真实 `npx @upstash/context7-mcp`）；可选测试 gating 惯例先例对齐 | `QAQH_MCP_E2E=1 cargo test -p qaqh-mcp --test e2e_context7` 通过（需网络，默认 skip） |
+| PR-M3-4 | 文档：README 工具表 + `docs/mcp-client-design.md` 状态改"已实施"；`just check`/`clippy`/`fmt`/`test` 全绿 | 见 §5 总闸 |
 
 ## 5. 质量门禁总闸（每 PR 合入前必跑，继承旧 PLAN §8）
 

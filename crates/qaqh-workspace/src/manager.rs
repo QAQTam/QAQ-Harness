@@ -8,8 +8,9 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use crate::{SafetyVerdict, ToolHandler, ToolPlacement};
+use crate::{SafetyVerdict, ToolHandler, ToolPlacement, ToolRisk};
 
 // ── Execution metadata ──
 
@@ -42,11 +43,108 @@ pub struct ToolManager {
     pub(crate) handlers: BTreeMap<String, ToolHandler>,
     placements: BTreeMap<String, ToolPlacement>,
     allowed: Option<Vec<String>>,
+    /// 动态工具（MCP；设计 §5.3）：完整前缀名 → 模型面 + 无状态路由。
+    /// 与 `handlers` 分层的原因：`ToolHandler.description` 是 `&'static str`，
+    /// 而 MCP 的描述/schema 来自 server（运行期 String）——平行结构避免
+    /// `Box::leak` hack；E-5 单一 dispatcher fn 指针照旧（在飞安全）。
+    dynamic: BTreeMap<String, DynamicTool>,
     inflight_tasks: BTreeMap<String, Arc<AtomicBool>>,
     stats_total: u32,
     stats_failures: u32,
     files_read: Vec<String>,
     files_written: Vec<String>,
+}
+
+/// 动态工具名前缀（S2：`mcp__{server}__{tool}`；与内置 19 工具零碰撞）。
+pub const MCP_DYNAMIC_PREFIX: &str = "mcp__";
+
+/// 动态工具描述截断上限（设计 §5.3：防上下文膨胀）。
+pub const DYNAMIC_DESCRIPTION_LIMIT: usize = 2048;
+
+/// 描述截断标记（追加在被截断文本尾部）。
+const DESCRIPTION_TRUNCATION_MARKER: &str = " [truncated]";
+
+/// 按字符边界把描述截断到 [`DYNAMIC_DESCRIPTION_LIMIT`] 内，追加截断标记。
+/// 未超限原样返回。
+pub(crate) fn truncate_description(description: &str) -> String {
+    if description.len() <= DYNAMIC_DESCRIPTION_LIMIT {
+        return description.to_owned();
+    }
+    let budget = DYNAMIC_DESCRIPTION_LIMIT.saturating_sub(DESCRIPTION_TRUNCATION_MARKER.len());
+    let mut end = budget;
+    while end > 0 && !description.is_char_boundary(end) {
+        end -= 1;
+    }
+    match description.get(..end) {
+        // 字符边界回退后必命中；get 而非切片（工作区 string_slice=deny 红线）。
+        Some(head) => format!("{head}{DESCRIPTION_TRUNCATION_MARKER}"),
+        None => DESCRIPTION_TRUNCATION_MARKER.to_owned(),
+    }
+}
+
+/// 投影纯函数：MCP server 工具 → 动态注册条目（设计 §5.3/S2）。
+///
+/// - 命名：`mcp__{server}__{tool}`（server 名已在配置层校验 `[a-z0-9_-]+`；
+///   tool 名为 server 侧原文——完整名唯一的碰撞防御在
+///   [`ToolManager::register_dynamic`]）；
+/// - description 截断 2KB（字符边界 + 标记）；schema 直通（MCP inputSchema
+///   与 QAQH `ToolFunction.parameters` 同为 JSON Schema，零转换）；
+/// - risk 固定 [`ToolRisk::Administrative`]（MCP 调用不属本地安全模型，
+///   见 DynamicTool 注）。
+#[allow(clippy::too_many_arguments)]
+pub fn build_dynamic_tool(
+    server: &str,
+    tool_name: &str,
+    description: &str,
+    schema: serde_json::Value,
+    handler_fn: fn(crate::ToolCallCtx) -> crate::ToolResult,
+    placement: ToolPlacement,
+    category: crate::permission::ToolCategory,
+    default_timeout: Duration,
+) -> (String, DynamicTool) {
+    let name = format!("{MCP_DYNAMIC_PREFIX}{server}__{tool_name}");
+    let def = qaqh_types::ToolDef {
+        call_type: "function".into(),
+        function: qaqh_types::ToolFunction {
+            name: name.clone(),
+            description: truncate_description(description),
+            parameters: schema,
+        },
+    };
+    (
+        name.clone(),
+        DynamicTool {
+            def,
+            handler_fn,
+            placement,
+            category,
+            risk: ToolRisk::Administrative,
+            default_timeout,
+        },
+    )
+}
+
+/// 动态工具注册条目（设计 §5.3/E-5；PR-M1-4）。
+///
+/// 与 [`ToolHandler`] 的差异：模型面（[`qaqh_types::ToolDef`]）与路由元数据
+/// 合一，description 为自有 String（server 侧动态文本，经 2KB 截断）。
+/// `handler_fn` 指向**同一个** dispatcher（无状态 fn 指针，PreparedCall
+/// 捕获后永不失效——refresh 换 def 不影响在飞调用）。
+#[derive(Clone)]
+pub struct DynamicTool {
+    /// 模型面（`mcp__{server}__{tool}` 命名 + schema 直通 + 截断后描述）。
+    pub def: qaqh_types::ToolDef,
+    /// 路由 fn（MCP 全体工具指向同一个 dispatcher，E-5）。
+    pub handler_fn: fn(crate::ToolCallCtx) -> crate::ToolResult,
+    pub placement: ToolPlacement,
+    /// 能力类别（S3：stdio=Exec / http=Net）——权限决策单一事实源。
+    pub category: crate::permission::ToolCategory,
+    /// 安全档位：MCP 调用不属本地安全模型（副作用在 server 进程内），
+    /// 取无条件 Allow 的 [`ToolRisk::Administrative`]；真实风险由 category
+    /// 驱动的权限层/沙箱（actor.rs 旗标路径）处理。
+    pub risk: ToolRisk,
+    /// 来自 server 配置 `default_timeout_secs`（1..=3600）。
+    pub default_timeout: Duration,
 }
 
 // ── Three-phase execution for parallel tool support ──
@@ -73,6 +171,7 @@ impl ToolManager {
             handlers: BTreeMap::new(),
             placements: BTreeMap::new(),
             allowed: None,
+            dynamic: BTreeMap::new(),
             inflight_tasks: BTreeMap::new(),
             stats_total: 0,
             stats_failures: 0,
@@ -91,8 +190,40 @@ impl ToolManager {
         self.placements.insert(key, placement);
     }
 
+    /// 注册动态工具（MCP 投影入口；仅回合边界由 actor 调用——无并发写面）。
+    ///
+    /// 碰撞拒绝（设计 §5.3）：与内置词汇表（`handlers`）或已注册动态名重名
+    /// → Err 且**不**写入（防模型面膨胀出歧义名）。刷新批次应先
+    /// [`Self::clear_dynamic`] 再逐条注册（MCP 名带 `mcp__` 前缀，与内置
+    /// 零碰撞；此处防御面向未来形态）。
+    pub fn register_dynamic(&mut self, name: String, tool: DynamicTool) -> Result<(), String> {
+        if self.handlers.contains_key(&name) || self.dynamic.contains_key(&name) {
+            return Err(format!("dynamic tool name collides: {name:?}"));
+        }
+        self.dynamic.insert(name, tool);
+        Ok(())
+    }
+
+    /// 清空动态层（tools/list_changed 或重连后的全量重建，M2 起使用）。
+    pub fn clear_dynamic(&mut self) {
+        self.dynamic.clear();
+    }
+
+    /// 动态层当前名单（测试/指标用）。
+    pub fn dynamic_names(&self) -> Vec<String> {
+        self.dynamic.keys().cloned().collect()
+    }
+
     pub fn lookup(&self, name: &str) -> Option<&ToolHandler> {
         self.handlers.get(name)
+    }
+
+    /// 查工具能力类别（权限决策单一事实源；内置 + 动态两层）。
+    pub fn category_of(&self, name: &str) -> Option<crate::permission::ToolCategory> {
+        if let Some(handler) = self.handlers.get(name) {
+            return Some(handler.category);
+        }
+        self.dynamic.get(name).map(|tool| tool.category)
     }
 
     /// 运行时重设工具白名单（工具模式切换的入口）：空列表 = 全量（标准模式）。
@@ -106,7 +237,7 @@ impl ToolManager {
         let total = allowed_tools.len();
         let known: Vec<String> = allowed_tools
             .into_iter()
-            .filter(|name| self.handlers.contains_key(name))
+            .filter(|name| self.handlers.contains_key(name) || self.dynamic.contains_key(name))
             .collect();
         if known.len() != total {
             log::warn!(
@@ -128,7 +259,11 @@ impl ToolManager {
     }
 
     pub fn all_defs(&self) -> Vec<qaqh_types::ToolDef> {
-        self.handlers.values().map(|h| h.to_tool_def()).collect()
+        let mut defs: Vec<qaqh_types::ToolDef> =
+            self.handlers.values().map(|h| h.to_tool_def()).collect();
+        // 动态层（MCP）合并在后：模型面 = 内置词汇表 + 动态投影。
+        defs.extend(self.dynamic.values().map(|tool| tool.def.clone()));
+        defs
     }
 
     pub fn filtered_defs(&self) -> Vec<qaqh_types::ToolDef> {
@@ -178,29 +313,48 @@ impl ToolManager {
             });
         }
 
-        let (handler, placement) = match self.handlers.get(name) {
-            Some(handler) => (
-                handler.clone(),
-                self.placements.get(name).copied().unwrap_or_default(),
-            ),
-            None => {
-                let msg = format!("[ERROR] Unknown tool: {}", name);
-                return Err(ToolExecReport {
-                    success: false,
-                    content: msg.clone(),
-                    files_affected: Vec::new(),
-                    meta: ToolExecMeta {
-                        name: name.to_string(),
-                        elapsed_ms: 0,
-                        output_size: msg.len(),
+        // 内置/动态统一路由视图：PreparedCall 只需要 fn 指针 + 超时 + risk
+        // + placement；ToolHandler 的 'static description 不参与执行路径。
+        struct ResolvedRoute {
+            handler_fn: fn(crate::ToolCallCtx) -> crate::ToolResult,
+            default_timeout: Duration,
+            risk: ToolRisk,
+            placement: ToolPlacement,
+        }
+        let route = match self.handlers.get(name) {
+            Some(handler) => ResolvedRoute {
+                handler_fn: handler.handler,
+                default_timeout: handler.default_timeout,
+                risk: handler.risk.clone(),
+                placement: self.placements.get(name).copied().unwrap_or_default(),
+            },
+            None => match self.dynamic.get(name) {
+                Some(tool) => ResolvedRoute {
+                    handler_fn: tool.handler_fn,
+                    default_timeout: tool.default_timeout,
+                    risk: tool.risk.clone(),
+                    placement: tool.placement,
+                },
+                None => {
+                    let msg = format!("[ERROR] Unknown tool: {}", name);
+                    return Err(ToolExecReport {
                         success: false,
-                        args_summary: String::new(),
-                    },
-                });
-            }
+                        content: msg.clone(),
+                        files_affected: Vec::new(),
+                        meta: ToolExecMeta {
+                            name: name.to_string(),
+                            elapsed_ms: 0,
+                            output_size: msg.len(),
+                            success: false,
+                            args_summary: String::new(),
+                        },
+                    });
+                }
+            },
         };
 
-        let timeout_secs = timeout_secs.unwrap_or(handler.default_timeout.as_secs());
+        let placement = route.placement;
+        let timeout_secs = timeout_secs.unwrap_or(route.default_timeout.as_secs());
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let skill_effects = Arc::new(Mutex::new(Vec::new()));
         let ctx = crate::ToolCallCtx {
@@ -214,7 +368,7 @@ impl ToolManager {
             skill_effects: skill_effects.clone(),
         };
         let in_workspace = is_path_in_workspace(&ctx);
-        match crate::safety::SafetyPolicy::evaluate(handler.risk.clone(), in_workspace) {
+        match crate::safety::SafetyPolicy::evaluate(route.risk.clone(), in_workspace) {
             SafetyVerdict::Block(reason) => {
                 let msg = format!("[ERROR] {}", reason);
                 return Err(ToolExecReport {
@@ -251,7 +405,7 @@ impl ToolManager {
             id,
             name: name.to_string(),
             placement,
-            handler_fn: handler.handler,
+            handler_fn: route.handler_fn,
             ctx,
             audit_args,
         })
@@ -553,6 +707,61 @@ mod tests {
             None,
         );
         assert!(ok.is_ok());
+    }
+    // ── 动态层路由（PR-M1-4）：prepare 走注入的 dispatcher fn ──
+
+    fn marker_fn(_ctx: ToolCallCtx) -> ToolResult {
+        ToolResult::ok("mcp-dispatched")
+    }
+
+    #[test]
+    fn prepare_routes_dynamic_tool_to_injected_fn() {
+        let mut mgr = ToolManager::new();
+        let (name, tool) = crate::build_dynamic_tool(
+            "demo",
+            "echo",
+            "dynamic test tool",
+            serde_json::json!({ "type": "object" }),
+            marker_fn,
+            ToolPlacement::HostOnly,
+            crate::permission::ToolCategory::Exec,
+            std::time::Duration::from_secs(30),
+        );
+        mgr.register_dynamic(name.clone(), tool)
+            .expect("register dynamic");
+
+        let prepared = mgr
+            .prepare_req(
+                "id-1".to_owned(),
+                &name,
+                "",
+                serde_json::json!({}),
+                None,
+                None,
+            )
+            .map_err(|report| report.content)
+            .expect("dynamic tool prepare should succeed");
+        assert_eq!(
+            prepared.handler_fn as *const () as usize, marker_fn as *const () as usize,
+            "路由必须指向注入的 dispatcher fn（E-5 单一 fn 指针）"
+        );
+
+        let report = match mgr.prepare_req(
+            "id-2".to_owned(),
+            "mcp__demo__nope",
+            "",
+            serde_json::json!({}),
+            None,
+            None,
+        ) {
+            Err(report) => report,
+            Ok(_) => panic!("未知动态名应报 Unknown tool"),
+        };
+        assert!(
+            report.content.contains("Unknown tool"),
+            "{}",
+            report.content
+        );
     }
 }
 

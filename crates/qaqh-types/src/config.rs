@@ -94,6 +94,10 @@ pub struct PersistentConfig {
     /// 工具套件运行环境（qaqh-workspace serve）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<PersistentWorkspaceConfig>,
+
+    /// MCP 客户端配置（docs/mcp-client-design.md §6）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<PersistentMcpConfig>,
 }
 
 /// 工具套件运行环境配置。
@@ -134,8 +138,47 @@ pub struct PersistentSubagentConfig {
     pub default_tools: Option<Vec<String>>,
 }
 
-// ── Profile / Preferences ──
+/// MCP 客户端配置持久层（docs/mcp-client-design.md §6；全部 Option）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PersistentMcpConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// idle 回收阈值（秒）；None/0 = 常驻不回收。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_shutdown_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub servers: Option<HashMap<String, PersistentMcpServerConfig>>,
+}
 
+/// 单个 MCP server（stdio 与 streamable HTTP 互斥；config 声明即信任，D4/D5）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PersistentMcpServerConfig {
+    /// stdio 启动命令（如 "npx"）。与 url 互斥。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
+    /// 注入 server 进程的环境变量；值可为 `${secret:name}` 占位符
+    /// （secret 本体在 secrets.toml；qaqh-config 不求值）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env: Option<HashMap<String, String>>,
+    /// streamable HTTP endpoint（M3）。与 command 互斥。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headers: Option<HashMap<String, String>>,
+    /// 工具白名单（server 侧原始名）；None = 全部暴露。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resources: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_timeout_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_concurrent_calls: Option<u32>,
+}
+
+// ── Profile / Preferences ──
 /// Named profile bundling model, token, and effort settings.
 ///
 /// Profiles let users switch between config presets (e.g. "fast" vs "deep")

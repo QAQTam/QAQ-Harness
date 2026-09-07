@@ -15,7 +15,8 @@
 
 use crate::config::Config;
 use qaqh_config_api::{
-    ConfigDto, ConfigPatch, EndpointDto, ProviderDto, SubagentDto, WorkspaceDto,
+    ConfigDto, ConfigPatch, EndpointDto, McpDto, McpServerDto, ProviderDto, SubagentDto,
+    WorkspaceDto,
 };
 
 /// 引擎配置 → 读模型。api_key 按契约掩码：非空一律 `"****"`（明文永不出 daemon）。
@@ -71,6 +72,31 @@ pub fn to_dto(cfg: &Config) -> ConfigDto {
         },
         workspace: WorkspaceDto {
             mode: cfg.workspace.mode.clone(),
+        },
+        mcp: McpDto {
+            enabled: cfg.mcp.enabled,
+            idle_shutdown_secs: cfg.mcp.idle_shutdown_secs,
+            servers: cfg
+                .mcp
+                .servers
+                .iter()
+                .map(|(name, s)| McpServerDto {
+                    name: name.clone(),
+                    transport: match s.transport {
+                        crate::config::McpTransportKind::Stdio => "stdio".into(),
+                        crate::config::McpTransportKind::Http => "http".into(),
+                    },
+                    command: s.command.clone(),
+                    args: s.args.clone(),
+                    env: s.env.clone(),
+                    url: s.url.clone(),
+                    headers: s.headers.clone(),
+                    tools: s.tools.clone(),
+                    resources_enabled: s.resources_enabled,
+                    default_timeout_secs: s.default_timeout_secs,
+                    max_concurrent_calls: s.max_concurrent_calls,
+                })
+                .collect(),
         },
         tokenizer_path: cfg.tokenizer_path.clone(),
     }

@@ -1,6 +1,7 @@
 use crate::secrets::{CONFIG_MARKER, SecretSlot, SecretStore};
 use qaqh_types::{
-    ConfigStore, PersistentConfig, PersistentSubagentConfig, PersistentWorkspaceConfig,
+    ConfigStore, PersistentConfig, PersistentMcpConfig, PersistentMcpServerConfig,
+    PersistentSubagentConfig, PersistentWorkspaceConfig,
 };
 use std::collections::HashMap; // still used by profiles
 use std::sync::{Mutex, OnceLock};
@@ -110,6 +111,8 @@ pub struct Config {
     pub session_idle_unload_secs: u64,
     /// 工具套件运行环境："local"（默认）| "wsl"（仅 Windows）。
     pub workspace: WorkspaceConfig,
+    /// MCP 客户端配置（docs/mcp-client-design.md §6；load 时已 fail-fast 校验）。
+    pub mcp: McpConfig,
 }
 
 /// 工具套件运行环境（daemon 据此拉起 qaqh-workspace serve）。
@@ -124,6 +127,280 @@ impl Default for WorkspaceConfig {
             mode: "local".into(),
         }
     }
+}
+
+// ── MCP 客户端配置（docs/mcp-client-design.md §6）──
+
+/// MCP server 传输形态。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpTransportKind {
+    /// stdio 子进程（Phase 1 主形态；设计 D1/S1）。
+    Stdio,
+    /// streamable HTTP（M3）。
+    Http,
+}
+
+/// 单个 MCP server 的运行时配置（已通过 fail-fast 校验）。
+#[derive(Debug, Clone)]
+pub struct McpServerConfig {
+    pub transport: McpTransportKind,
+    /// stdio 启动命令（如 "npx"）；http 时为空。
+    pub command: String,
+    pub args: Vec<String>,
+    /// 注入 server 进程的环境变量原值；`${secret:name}` 占位符由 qaqh-mcp
+    /// 在启动时解析（qaqh-config 不做 secret 求值）。
+    pub env: std::collections::BTreeMap<String, String>,
+    /// streamable HTTP endpoint；stdio 时为空。
+    pub url: String,
+    pub headers: std::collections::BTreeMap<String, String>,
+    /// 工具白名单（server 侧原始名，投影时加 `mcp__{server}__` 前缀）；None = 全部。
+    pub tools: Option<Vec<String>>,
+    pub resources_enabled: bool,
+    /// 单次工具调用默认超时（秒）；1..=3600。
+    pub default_timeout_secs: u64,
+    /// per-server 并发上限；1..=64。
+    pub max_concurrent_calls: u32,
+}
+
+/// MCP 客户端运行时配置。
+#[derive(Debug, Clone)]
+pub struct McpConfig {
+    pub enabled: bool,
+    /// idle 回收阈值（秒）；0 = 常驻不回收。判定口径：`inflight == 0` 连续该时长。
+    pub idle_shutdown_secs: u64,
+    /// server 名（已校验 `[a-z0-9_-]+`）→ 配置。
+    pub servers: std::collections::BTreeMap<String, McpServerConfig>,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            idle_shutdown_secs: 300,
+            servers: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+/// PersistentMcpConfig → 运行时 [`McpConfig`]，含 fail-fast 校验。
+///
+/// 校验规则（设计 §6 + PLAN PR-M1-1）：
+/// - server 名非空、仅 `[a-z0-9_-]`、≤64 字符；
+/// - stdio/http 互斥：stdio 必须有非空 command 且无 url；http 必须有
+///   `http(s)://` url 且无 command；
+/// - tools 白名单条目非空；
+/// - `default_timeout_secs` ∈ 1..=3600（越界即错，不做静默 clamp——静默修正
+///   会掩盖配置错误）；
+/// - `max_concurrent_calls` ∈ 1..=64。
+///
+/// 注意：TOML 层面的重复表（`[mcp.servers.x]` 写两次）由 toml 解析器拒绝，
+/// 走 `ConfigStore::load` 返回 None → 整体回退默认的既有语义（见 PLAN §8）。
+pub(crate) fn map_mcp_config(
+    mcp: Option<qaqh_types::PersistentMcpConfig>,
+) -> Result<McpConfig, String> {
+    let Some(mcp) = mcp else {
+        return Ok(McpConfig::default());
+    };
+    let mut servers = std::collections::BTreeMap::new();
+    for (name, ps) in mcp.servers.unwrap_or_default() {
+        validate_server_name(&name)?;
+        let command = ps.command.unwrap_or_default();
+        let url = ps.url.unwrap_or_default();
+        let transport = match (command.trim().is_empty(), url.trim().is_empty()) {
+            (false, true) => McpTransportKind::Stdio,
+            (true, false) => {
+                if !(url.starts_with("http://") || url.starts_with("https://")) {
+                    return Err(format!(
+                        "[mcp] server {name:?}: url 必须以 http:// 或 https:// 开头"
+                    ));
+                }
+                McpTransportKind::Http
+            }
+            (false, false) => {
+                return Err(format!(
+                    "[mcp] server {name:?}: command 与 url 互斥，只能配置其一"
+                ));
+            }
+            (true, true) => {
+                return Err(format!(
+                    "[mcp] server {name:?}: 缺少 transport 配置——stdio 需要 command，http 需要 url"
+                ));
+            }
+        };
+        if let Some(tools) = &ps.tools
+            && tools.iter().any(|t| t.trim().is_empty())
+        {
+            return Err(format!("[mcp] server {name:?}: tools 白名单包含空条目"));
+        }
+        let default_timeout_secs = match ps.default_timeout_secs {
+            None => 60,
+            Some(0) => {
+                return Err(format!(
+                    "[mcp] server {name:?}: default_timeout_secs 必须在 1..=3600（得到 0）"
+                ));
+            }
+            Some(n) if n > 3600 => {
+                return Err(format!(
+                    "[mcp] server {name:?}: default_timeout_secs 必须在 1..=3600（得到 {n}）"
+                ));
+            }
+            Some(n) => n,
+        };
+        let max_concurrent_calls = match ps.max_concurrent_calls {
+            None => 1,
+            Some(0) => {
+                return Err(format!(
+                    "[mcp] server {name:?}: max_concurrent_calls 必须在 1..=64（得到 0）"
+                ));
+            }
+            Some(n) if n > 64 => {
+                return Err(format!(
+                    "[mcp] server {name:?}: max_concurrent_calls 必须在 1..=64（得到 {n}）"
+                ));
+            }
+            Some(n) => n,
+        };
+        servers.insert(
+            name,
+            McpServerConfig {
+                transport,
+                command,
+                args: ps.args.unwrap_or_default(),
+                env: ps.env.unwrap_or_default().into_iter().collect(),
+                url,
+                headers: ps.headers.unwrap_or_default().into_iter().collect(),
+                tools: ps
+                    .tools
+                    .map(|tools| tools.into_iter().map(|t| t.trim().to_owned()).collect()),
+                resources_enabled: ps.resources.unwrap_or(true),
+                default_timeout_secs,
+                max_concurrent_calls,
+            },
+        );
+    }
+    Ok(McpConfig {
+        enabled: mcp.enabled.unwrap_or(!servers.is_empty()),
+        idle_shutdown_secs: mcp.idle_shutdown_secs.unwrap_or(300),
+        servers,
+    })
+}
+
+// ── `${secret:name}` 占位符（设计 §6/E-4）──
+//
+// 职责边界（M1-3 定稿）：
+// - **load 时只校验不解析**：扫出占位符名 → `SecretStore::has_mcp`，缺失即
+//   Err（fail-fast，防拼写错拖到首次调用才爆）；`Config.mcp` 中的 env/args
+//   /headers 始终保留占位符原值 —— DTO（webUI）与 save 回写永不接触明文；
+// - **解析在 qaqh-mcp 连接时**（子进程 env 组装前），见 adapter.rs；
+// - 名字字符集与 server 名同规（`[a-z0-9_-]`），残缺/非法占位符一律 fail-fast。
+
+/// 扫描 `value` 中的 `${secret:name}` 占位符，返回按出现顺序去重的名字。
+/// 残缺（未闭合）/空名/非法字符 → Err（fail-fast）。
+pub fn secret_placeholder_names(value: &str) -> Result<Vec<String>, String> {
+    const PREFIX: &str = "${secret:";
+    let mut names = Vec::new();
+    let mut rest = value;
+    while let Some(start) = rest.find(PREFIX) {
+        // 工作区红线 string_slice=deny：一律用 `get`（Option，无 panic 面）。
+        // PREFIX 为 ASCII，start+PREFIX.len() 必在字符边界；防御式处理仍保留。
+        let Some(after) = rest.get(start + PREFIX.len()..) else {
+            return Err(format!("占位符位置非字符边界：{value:?}"));
+        };
+        let Some(end) = after.find('}') else {
+            return Err(format!("占位符未闭合：{value:?} 中的 {PREFIX}…"));
+        };
+        let Some(name) = after.get(..end) else {
+            return Err(format!("占位符名位置非字符边界：{value:?}"));
+        };
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+        {
+            return Err(format!(
+                "占位符名非法（仅允许 [a-z0-9_-]）：{value:?} 中的 {PREFIX}{name}}}"
+            ));
+        }
+        if !names.iter().any(|n| n == name) {
+            names.push(name.to_owned());
+        }
+        let Some(tail) = after.get(end + 1..) else {
+            return Err(format!("占位符尾部非字符边界：{value:?}"));
+        };
+        rest = tail;
+    }
+    Ok(names)
+}
+
+/// 把 `value` 中所有 `${secret:name}` 替换为 `resolve(name)` 的结果。
+/// 解析失败（未注册/解密失败）→ Err，报错只含名字不含值（E-6 红线）。
+/// 由 qaqh-mcp 在连接时调用；qaqh-config 的 load/save 不调用本函数。
+pub fn interpolate_secret_placeholders<F>(value: &str, resolve: F) -> Result<String, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let names = secret_placeholder_names(value)?;
+    if names.is_empty() {
+        return Ok(value.to_owned());
+    }
+    let mut resolved = std::collections::BTreeMap::new();
+    for name in &names {
+        let Some(value) = resolve(name) else {
+            return Err(format!("secret {name:?} 不可用（未注册或解密失败）"));
+        };
+        resolved.insert(name.clone(), value);
+    }
+    let mut out = value.to_owned();
+    for (name, secret) in &resolved {
+        let placeholder = format!("${{secret:{name}}}");
+        out = out.replace(&placeholder, secret);
+    }
+    Ok(out)
+}
+
+/// 启动校验：扫 server 配置里所有可能携带占位符的字符串字段，
+/// 引用的 secret 名必须在 store 中已注册（E-4：缺 key 不静默）。
+fn validate_mcp_secret_refs(mcp: &McpConfig, secrets: &SecretStore) -> Result<(), String> {
+    for (name, server) in &mcp.servers {
+        let available = || secrets.list_mcp();
+        let check = |field: &str, value: &str| -> Result<(), String> {
+            for secret_name in secret_placeholder_names(value)? {
+                if !secrets.has_mcp(&secret_name) {
+                    return Err(format!(
+                        "[mcp] server {name:?} {field}: 引用的 secret {secret_name:?} 未注册；已注册：{:?}",
+                        available()
+                    ));
+                }
+            }
+            Ok(())
+        };
+        for (key, value) in &server.env {
+            check(&format!("env[{key}]"), value)?;
+        }
+        for (key, value) in &server.headers {
+            check(&format!("headers[{key}]"), value)?;
+        }
+        for (index, arg) in server.args.iter().enumerate() {
+            check(&format!("args[{index}]"), arg)?;
+        }
+    }
+    Ok(())
+}
+
+/// server 名校验：非空、仅 `[a-z0-9_-]`、≤64 字符。
+fn validate_server_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.len() > 64 {
+        return Err(format!("[mcp] server 名长度必须 1..=64（得到 {name:?}）"));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    {
+        return Err(format!(
+            "[mcp] server 名 {name:?} 含非法字符：仅允许小写字母、数字、'_'、'-'"
+        ));
+    }
+    Ok(())
 }
 
 impl Default for Config {
@@ -168,6 +445,7 @@ impl Default for Config {
             auto_compact_threshold: 0.75,
             session_idle_unload_secs: 0,
             workspace: WorkspaceConfig::default(),
+            mcp: McpConfig::default(),
         }
     }
 }
@@ -219,7 +497,9 @@ impl Config {
         Ok(config)
     }
 
-    fn load_from_paths_with(store: ConfigStore, secrets: SecretStore) -> Result<Self, String> {
+    /// 从显式路径加载（公开给集成测试与多实例/数据根重定向场景；
+    /// 生产路径走 [`Config::load`] 的全局 platform 路径）。
+    pub fn load_from_paths_with(store: ConfigStore, secrets: SecretStore) -> Result<Self, String> {
         let mut cfg = Self::default();
 
         let pc = store.load();
@@ -434,6 +714,13 @@ impl Config {
                 cfg.workspace.mode = mode.clone();
             }
 
+            // ── MCP 客户端（fail-fast：非法名/互斥冲突/缺 command 直接 load 失败）──
+            cfg.mcp = map_mcp_config(pc.mcp.clone())?;
+            // E-4 fail-fast：`${secret:name}` 引用的名字必须在 secrets.toml
+            // 已注册（拼错名启动即报，不拖到首次调用；值本身留在占位符，
+            // DTO/save 永不见明文——解析在 qaqh-mcp 连接时）。
+            validate_mcp_secret_refs(&cfg.mcp, &secrets)?;
+
             // 迁移写回：config.toml 中旧明文已入 secret store，把明文替换为
             // "set" 标记（重新 load 磁盘原值，只改"确为明文"的槽位——迁移
             // 失败的槽位保持明文，下次 load 重试；已标记/未配置的原样保留）。
@@ -532,7 +819,9 @@ impl Config {
         )
     }
 
-    fn save_with(&self, store: &ConfigStore, secrets: &SecretStore) -> Result<(), String> {
+    /// 显式路径版 save（与 [`Self::load_from_paths_with`] 对称；集成测试与
+    /// 多实例/数据根重定向场景使用）。
+    pub fn save_with(&self, store: &ConfigStore, secrets: &SecretStore) -> Result<(), String> {
         // 审计 P0-1：凭据先入 secret store；失败则中止保存（config.toml 永不
         // 出现明文）。cfg.api_key 为空时删除对应 secret 槽位——2026-08 起
         // config.save 不再把空串当"删除"（空串/掩码 = 保持现值，防前端误发空
@@ -631,6 +920,35 @@ impl Config {
                 .then_some(self.session_idle_unload_secs),
             workspace: Some(PersistentWorkspaceConfig {
                 mode: Some(self.workspace.mode.clone()),
+            }),
+            mcp: Some(PersistentMcpConfig {
+                enabled: Some(self.mcp.enabled),
+                idle_shutdown_secs: (self.mcp.idle_shutdown_secs > 0)
+                    .then_some(self.mcp.idle_shutdown_secs),
+                servers: (!self.mcp.servers.is_empty()).then(|| {
+                    self.mcp
+                        .servers
+                        .iter()
+                        .map(|(name, s)| {
+                            (
+                                name.clone(),
+                                PersistentMcpServerConfig {
+                                    command: (!s.command.is_empty()).then(|| s.command.clone()),
+                                    args: (!s.args.is_empty()).then(|| s.args.clone()),
+                                    env: (!s.env.is_empty())
+                                        .then(|| s.env.clone().into_iter().collect()),
+                                    url: (!s.url.is_empty()).then(|| s.url.clone()),
+                                    headers: (!s.headers.is_empty())
+                                        .then(|| s.headers.clone().into_iter().collect()),
+                                    tools: s.tools.clone(),
+                                    resources: Some(s.resources_enabled),
+                                    default_timeout_secs: Some(s.default_timeout_secs),
+                                    max_concurrent_calls: Some(s.max_concurrent_calls),
+                                },
+                            )
+                        })
+                        .collect()
+                }),
             }),
         };
         log::info!(

@@ -56,7 +56,10 @@ pub use backend::{
     BackendRequest, HttpToolExecutionBackend, LocalToolExecutionBackend, ToolExecutionBackend,
     ToolPlacement, install_workspace_backend, use_local_workspace_backend,
 };
-pub use manager::{ToolExecMeta, ToolExecReport, ToolManager, ToolStats};
+pub use manager::{
+    DYNAMIC_DESCRIPTION_LIMIT, DynamicTool, MCP_DYNAMIC_PREFIX, ToolExecMeta, ToolExecReport,
+    ToolManager, ToolStats, build_dynamic_tool,
+};
 // PR-1-1 / B1: authorization & permission vocabulary at the crate root —
 // loop-side references stay `qaqh_workspace::X` without naming submodules.
 pub use authorization::{

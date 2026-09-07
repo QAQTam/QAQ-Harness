@@ -33,6 +33,23 @@ impl SecretSlot {
     }
 }
 
+/// MCP secret 名校验：非空、仅 `[a-z0-9_-]`、≤64（与 server 名同规）。
+/// `${secret:name}` 占位符的解析也按同一字符集扫描（见 config.rs）。
+fn validate_mcp_secret_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.len() > 64 {
+        return Err(format!("[secrets.mcp] 名长度必须 1..=64（得到 {name:?}）"));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    {
+        return Err(format!(
+            "[secrets.mcp] 名 {name:?} 含非法字符：仅允许小写字母、数字、'_'、'-'"
+        ));
+    }
+    Ok(())
+}
+
 /// Opaque marker stored in `config.toml` for a configured key.
 pub const CONFIG_MARKER: &str = "set";
 
@@ -99,6 +116,106 @@ impl SecretStore {
     pub fn delete(&self, slot: SecretSlot) -> Result<(), String> {
         let mut doc = self.read_doc();
         doc.remove(slot.key());
+        self.write_doc(&doc)
+    }
+
+    // ── MCP 通用命名 secret（设计 §6/E-4：`[secrets.mcp]` map 段）──
+    //
+    // `config.toml` 的 `[mcp.servers.*]` env/headers 里用 `${secret:name}`
+    // 占位符引用这里的名条目；本段沿用与槽位相同的加密/权限机制
+    // （Windows DPAPI 加密，其余 0600），区别仅在“命名 map”而非固定槽。
+
+    /// Load a named MCP secret (decrypts). `None` when unset/unreadable or
+    /// when decryption fails (same no-fallback policy as slots).
+    pub fn load_mcp(&self, name: &str) -> Option<String> {
+        if validate_mcp_secret_name(name).is_err() {
+            return None;
+        }
+        let data = std::fs::read_to_string(&self.path).ok()?;
+        let doc: toml::Value = toml::from_str(&data).ok()?;
+        let raw = doc
+            .get("secrets")
+            .and_then(|s| s.get("mcp"))
+            .and_then(|m| m.get(name))
+            .and_then(|v| v.as_str())?;
+        decrypt(raw).ok()
+    }
+
+    /// Whether a named MCP secret is registered (does not decrypt) — the
+    /// startup fail-fast check（未注册的 secret 名 → 启动时校验报错）。
+    pub fn has_mcp(&self, name: &str) -> bool {
+        if validate_mcp_secret_name(name).is_err() {
+            return false;
+        }
+        let Ok(data) = std::fs::read_to_string(&self.path) else {
+            return false;
+        };
+        let Ok(doc) = toml::from_str::<toml::Value>(&data) else {
+            return false;
+        };
+        doc.get("secrets")
+            .and_then(|s| s.get("mcp"))
+            .and_then(|m| m.get(name))
+            .and_then(|v| v.as_str())
+            .is_some_and(|raw| !raw.is_empty())
+    }
+
+    /// All registered MCP secret names, sorted（fail-fast 报错提示用）。
+    pub fn list_mcp(&self) -> Vec<String> {
+        let Ok(data) = std::fs::read_to_string(&self.path) else {
+            return Vec::new();
+        };
+        let Ok(doc) = toml::from_str::<toml::Value>(&data) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = doc
+            .get("secrets")
+            .and_then(|s| s.get("mcp"))
+            .and_then(|m| m.as_table())
+            .map(|table| {
+                table
+                    .iter()
+                    .filter(|(_, v)| v.as_str().is_some_and(|raw| !raw.is_empty()))
+                    .map(|(k, _)| k.to_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    /// Encrypt and store a named MCP secret (idempotent).
+    pub fn set_mcp(&self, name: &str, plaintext: &str) -> Result<(), String> {
+        validate_mcp_secret_name(name)?;
+        let encoded = encrypt(plaintext.as_bytes())?;
+        let mut doc = self.read_doc();
+        let mut secrets = match doc.get("secrets").cloned() {
+            Some(toml::Value::Table(t)) => t,
+            _ => toml::map::Map::new(),
+        };
+        let mut mcp = match secrets.get("mcp").cloned() {
+            Some(toml::Value::Table(t)) => t,
+            _ => toml::map::Map::new(),
+        };
+        mcp.insert(name.to_owned(), toml::Value::String(encoded));
+        secrets.insert("mcp".to_owned(), toml::Value::Table(mcp));
+        doc.insert("secrets".to_owned(), toml::Value::Table(secrets));
+        self.write_doc(&doc)
+    }
+
+    /// Remove a named MCP secret.
+    pub fn delete_mcp(&self, name: &str) -> Result<(), String> {
+        validate_mcp_secret_name(name)?;
+        let mut doc = self.read_doc();
+        let Some(toml::Value::Table(mut secrets)) = doc.get("secrets").cloned() else {
+            return Ok(()); // 段不存在 = 已删除
+        };
+        let Some(toml::Value::Table(mut mcp)) = secrets.get("mcp").cloned() else {
+            return Ok(());
+        };
+        mcp.remove(name);
+        secrets.insert("mcp".to_owned(), toml::Value::Table(mcp));
+        doc.insert("secrets".to_owned(), toml::Value::Table(secrets));
         self.write_doc(&doc)
     }
 

@@ -15,7 +15,11 @@ members = [
     "crates/qaqh-session",
     "crates/qaqh-subagent",
     "crates/qaqh-client",
+    "crates/qaqh-mcp",
 ]
+
+[workspace.dependencies]
+rmcp = { version = "3.2", default-features = false, features = ["client", "transport-child-process"] }
 
 [workspace.package]
 version = "1.0.0"

@@ -33,12 +33,9 @@ fn init_file_logging() {
         }
         fn flush(&self) {}
     }
-    let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) else {
-        return;
-    };
-    let path = std::path::Path::new(&home)
-        .join(".qaqh")
-        .join("qaqh-daemon.log");
+    // 与 platform::data_dir() 同根：多实例（QAQH_DATA_DIR）时日志必须落在
+    // 各自数据根，否则两个 daemon 混写同一文件（冒烟测试实证）。
+    let path = qaqh_types::platform::data_dir().join("qaqh-daemon.log");
     let Ok(file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -68,7 +65,12 @@ fn main() {
                 }
             };
             let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
-            if let Err(error) = runtime.block_on(server::run_with(config)) {
+            let result = runtime.block_on(server::run_with(config));
+            // MCP 优雅收尾（PR-M1-5）：置闸 + 逐连接 cancel → transport close
+            // → 子进程组杀兜底；必须显式调用——进程 exit 路径不跑 Drop，
+            // 跳过则 MCP server 子进程成孤儿。
+            qaqh_mcp::shutdown_global();
+            if let Err(error) = result {
                 eprintln!("qaqh-daemon: {error}");
                 std::process::exit(1);
             }
@@ -80,7 +82,10 @@ fn main() {
             qaqh_runtime::cache_system_path();
             qaqh_runtime::detect_os_info();
             let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
-            if let Err(error) = runtime.block_on(server::run()) {
+            let result = runtime.block_on(server::run());
+            // MCP 优雅收尾（同上）：显式 shutdown_all，防子进程孤儿。
+            qaqh_mcp::shutdown_global();
+            if let Err(error) = result {
                 eprintln!("qaqh-daemon: {error}");
                 std::process::exit(1);
             }

@@ -247,6 +247,38 @@ pub fn admit(
     workspace_root: &Path,
     trusted_dirs: &HashSet<PathBuf>,
 ) -> Admission {
+    // ── MCP 动态工具（D5 + S3，设计 §5.5）──
+    //
+    // D5（owner 2026-09-07 拍板）：MCP 调用全档位默认放行，不经
+    // PermissionChallenge——配置声明即信任（D4）；category 照常填写（S3：
+    // stdio=Exec / http=Net）供审计展示。MaxLockdown 档下同样放行属登记在
+    // 案的临时豁免（设计 §5.5），由未来 workspace 隔离权限重构收敛。
+    //
+    // 子代理沙箱优先于 D5：S3 要求 MCP 工具（Exec/Net 类别）在子代理上下文
+    // 一律拒绝（防越狱）——原“沙箱零代码”依赖 needs_permission→AskUser 路径，
+    // 而 D5 快路径绕过 needs_permission，故在此显式拦截（仅针对 mcp__ 前缀，
+    // 不影响内置工具的沙箱语义）。
+    if invocation
+        .tool_name
+        .starts_with(crate::manager::MCP_DYNAMIC_PREFIX)
+    {
+        if is_subagent_sandbox() {
+            return Admission::Denied(format!(
+                "subagent sandbox denied '{}': MCP tools are host-only",
+                invocation.tool_name
+            ));
+        }
+        let mut resources =
+            crate::permission::extract_target_paths(&invocation.tool_name, &invocation.args);
+        resources.sort();
+        resources.dedup();
+        return Admission::Authorized(AuthorizedToolCall::new(
+            invocation,
+            resources,
+            crate::permission::resolve_target_path(workspace_root.to_path_buf()),
+        ));
+    }
+
     let workspace_root = crate::permission::resolve_target_path(workspace_root.to_path_buf());
     let level = crate::permission::PermissionLevel::from_u8(permission_level);
     match crate::permission::needs_permission(
@@ -526,6 +558,60 @@ mod tests {
             assert!(
                 matches!(admission, Admission::Denied(_)),
                 "{tool} must be denied in sandbox, got non-denied"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_tools_denied_in_subagent_sandbox() {
+        // S3：MCP 工具（category Exec/Net）在子代理沙箱一律拒绝——
+        // D5 快路径绕过 needs_permission，沙箱拦截在此显式兑现。
+        let _g = sandbox_guard();
+        let ws = std::env::temp_dir().join("qaqh-sandbox-mcp");
+        for tool in ["mcp__demo__echo", "mcp__web-search__search"] {
+            let admission = invoke(
+                tool,
+                serde_json::json!({}),
+                &ws,
+                crate::permission::ToolCategory::Exec,
+            );
+            let denied = matches!(
+                &admission,
+                Admission::Denied(reason) if reason.contains("host-only")
+            );
+            assert!(
+                denied,
+                "{tool} must be sandbox-denied (host-only), got a non-denied admission"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_tools_bypass_approval_at_all_levels() {
+        // D5：MCP 调用全档位放行（含 MaxLockdown），不经 PermissionChallenge。
+        // 全局 AtomicBool 需串行（与 sandbox_guard 同锁）。
+        let _serial = crate::TEST_RUNTIME_SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        set_subagent_sandbox(false);
+        let ws = std::env::temp_dir().join("qaqh-mcp-d5");
+        for level in [1u8, 3u8] {
+            let admission = admit(
+                ToolInvocation {
+                    session_id: "seed-d5".into(),
+                    call_id: "call-d5".into(),
+                    tool_name: "mcp__demo__echo".into(),
+                    action: String::new(),
+                    args: serde_json::json!({}),
+                    category: crate::permission::ToolCategory::Exec,
+                },
+                level,
+                &ws,
+                &HashSet::new(),
+            );
+            assert!(
+                matches!(admission, Admission::Authorized(_)),
+                "level {level} MCP call must be authorized (D5), got non-authorized"
             );
         }
     }

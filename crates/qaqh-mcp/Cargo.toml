@@ -1,0 +1,42 @@
+[package]
+name = "qaqh-mcp"
+version.workspace = true
+edition.workspace = true
+description = "QAQ-Harness MCP client support — dynamic tools/resources from MCP servers (docs/mcp-client-design.md)"
+
+[dependencies]
+# McpConfig 三类型消费（PR-M1-1 落地于 qaqh-config；handover §三）
+qaqh-config = { path = "../qaqh-config" }
+# 工具投影（PR-M1-4）：DynamicTool/register_dynamic/build_dynamic_tool。
+# 依赖方向单向（设计 §4）：qaqh-mcp → qaqh-workspace，不反向。
+qaqh-workspace = { path = "../qaqh-workspace" }
+rmcp = { workspace = true }
+# 进程组/Job 隔离（PLAN §7 结论：rmcp 只开 tokio1，须自引并对齐 9.1.0）。
+# process-group 仅 Unix 生效；job-object/creation-flags 仅 Windows 生效
+# （windows 为 target-specific optional dep，Linux 上惰性，不参与构建）。
+process-wrap = { version = "9.1", default-features = false, features = [
+    "tokio1",
+    "process-group",
+    "job-object",
+    "creation-flags",
+] }
+# manager/watchdog/bridge 需要 sync(Mutex)/time(timeout/sleep)/process(Command)/
+# rt + rt-multi-thread（bridge 专属 runtime：rmcp 客户端 actor 宿主，设计 §3）
+tokio = { version = "1", features = ["sync", "time", "process", "rt", "rt-multi-thread"] }
+log = "0.4"
+serde_json = "1"
+
+[dev-dependencies]
+# 仅测试/clippy --all-targets 构建启用：in-memory 双工 + mock server 所需。
+# feature unification 影响面：release 产物不含 server 代码（PLAN §2 E-1 注）。
+rmcp = { workspace = true, features = ["transport-io", "server"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "time"] }
+
+[lints.clippy]
+unwrap_used = "deny"
+string_slice = "deny"
+
+# 组杀兜底清扫（connection.rs sweep_group：rmcp graceful_shutdown 只等直接
+# 子进程，孙进程漏杀——见 orphan_reap.rs 用例注释）；仅 Unix。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

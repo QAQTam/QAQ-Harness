@@ -307,7 +307,28 @@ pub fn all_tools() -> Vec<ToolDef> {
 }
 
 /// 当前配置的 provider endpoint 是否接受图片输入（read_image 工具开关）。
+/// 回合边界 MCP 动态层全量重建（M1-5；设计 §5.3 refresh 语义）。
 ///
+/// 调用方：qaqh-runtime 在 run_lap 开头拿到 qaqh-mcp 投影批次后调用——
+/// 先 `clear_dynamic` 再逐条 `register_dynamic`（碰撞拒绝的批次条目计数
+/// 跳过并告警，不阻断其余）。必须在与 [`install_actor_tool_manager`]
+/// 相同的 actor 线程上调用（thread-local manager）。返回被拒绝的条目数。
+pub fn replace_dynamic_tools(batch: Vec<(String, crate::DynamicTool)>) -> usize {
+    with_manager(|manager| {
+        manager.clear_dynamic();
+        let mut rejected = 0usize;
+        for (name, tool) in batch {
+            if manager.register_dynamic(name.clone(), tool).is_err() {
+                rejected += 1;
+                log::warn!("[TOOLS] dynamic registration rejected (collision): {name:?}");
+            }
+        }
+        rejected
+    })
+    .unwrap_or(0)
+}
+
+/// 当前配置的 provider endpoint 是否接受图片输入（read_image 工具开关）。///
 /// PR-1-10 / D2：能力快照由宿主注入（[`set_image_capability`]：daemon
 /// 装配 / config reload / serve 启动），工具调用路径零磁盘读。
 /// 未注入时（单元测试 / 未装配进程）默认放行——工具可见性交给注册方，
@@ -353,7 +374,8 @@ fn image_caps() -> Option<ImageCaps> {
 /// 查询 handler 声明的能力类别（权限决策单一事实源）。
 /// 未注册/未初始化返回 None——调用方回退保守默认（Write）。
 pub fn lookup_category(name: &str) -> Option<crate::permission::ToolCategory> {
-    with_manager(|manager| manager.lookup(name).map(|handler| handler.category)).flatten()
+    // 内置 + 动态（MCP）两层：S3 沙箱按 category 拒绝必须覆盖 MCP 工具。
+    with_manager(|manager| manager.category_of(name)).flatten()
 }
 
 /// Tool names from the **process** manager, ignoring any installed actor

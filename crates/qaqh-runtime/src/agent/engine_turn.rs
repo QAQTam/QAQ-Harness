@@ -981,6 +981,18 @@ impl TurnEngine {
         // fsyncs, so a kill between rounds loses at most the round in flight
         // — and the L2 WAL covers even that.
         ctx.agent.drain_persist_ops();
+
+        // MCP 回合边界 refresh（设计 §5.3 / PR-M1-5）：全局工具缓存脏标记命中
+        // 才重建（连接后首次拉取 / crash 清缓存 / 后续 list 变化）。批次为
+        // 全量重建语义：clear_dynamic + 逐条 register_dynamic（碰撞拒绝计数
+        // 告警）。必须在本 actor 线程调用（thread-local manager）。
+        if let Some(batch) = qaqh_mcp::take_projection_batch() {
+            let rejected = qaqh_workspace::runtime::replace_dynamic_tools(batch);
+            if rejected > 0 {
+                log::warn!("[TURN] MCP dynamic refresh: {rejected} tool(s) rejected (collision)");
+            }
+            ctx.agent.tool_defs = qaqh_workspace::runtime::all_tools();
+        }
         // Rebuild provider from current config（gate_lap 准备逻辑，见 turn_lap::gate）
         let provider = provider_for(ctx, &turn_id);
 

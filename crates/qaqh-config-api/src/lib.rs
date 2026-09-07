@@ -66,6 +66,8 @@ pub struct ConfigDto {
     pub providers: Vec<ProviderDto>,
     pub subagent: SubagentDto,
     pub workspace: WorkspaceDto,
+    /// MCP 客户端配置（Phase 1 只读；写模型随 workspace 隔离权限重构另立）。
+    pub mcp: McpDto,
     #[serde(alias = "tokenizer_path")]
     pub tokenizer_path: Option<String>,
 }
@@ -118,6 +120,36 @@ pub struct SubagentDto {
 #[serde(rename_all = "camelCase", default)]
 pub struct WorkspaceDto {
     pub mode: String,
+}
+
+/// MCP 客户端配置读模型（docs/mcp-client-design.md §6）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct McpDto {
+    pub enabled: bool,
+    pub idle_shutdown_secs: u64,
+    /// 按 server 名排序（BTreeMap → Vec，确定性 wire 顺序）。
+    pub servers: Vec<McpServerDto>,
+}
+
+/// 单个 MCP server 读模型。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct McpServerDto {
+    pub name: String,
+    /// "stdio" | "http"
+    pub transport: String,
+    pub command: String,
+    pub args: Vec<String>,
+    /// 原样回显（值可为 `${secret:name}` 占位符；secret 本体在 secrets.toml）。
+    pub env: std::collections::BTreeMap<String, String>,
+    pub url: String,
+    pub headers: std::collections::BTreeMap<String, String>,
+    /// None = 全部暴露。
+    pub tools: Option<Vec<String>>,
+    pub resources_enabled: bool,
+    pub default_timeout_secs: u64,
+    pub max_concurrent_calls: u32,
 }
 
 /// 写模型：JSON Merge Patch（K3）。反序列化时缺失即 None = 不动；

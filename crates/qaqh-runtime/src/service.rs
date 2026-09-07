@@ -32,7 +32,18 @@ pub struct QaqhService {
 
 impl QaqhService {
     pub fn init(sessions: Arc<qaqh_session::SessionManager>) -> Self {
-        let _config = qaqh_config::Config::load().unwrap_or_default();
+        let config = qaqh_config::Config::load().unwrap_or_default();
+        // MCP manager 装配（设计 §10-6 / PR-M1-5）：daemon 进程级单例（actor
+        // 线程与其工具线程同进程，全局槽位可见）；装配不做同步网络操作，
+        // 连接由下方预热（后台）+ lazy（工具执行路径）双入口拉起。secret
+        // store 用默认位置（[secrets.mcp] 段）；禁用配置时 manager 以
+        // disabled 形态拒绝一切调用（MCP_DISABLED）。
+        qaqh_mcp::install_manager(qaqh_mcp::McpManager::new(config.mcp.clone()));
+        // 投影预热（PR-M1-5 冒烟修正）：lazy 连接的唯一触发点是工具执行，
+        // 而工具要先投影才会被调用——不预热则全新 daemon 上模型首回合永远
+        // 看不到 MCP 工具（鸡生蛋死锁）。fire-and-forget：逐 server 连接
+        // + 缓存 tools/list + 置脏，不阻塞启动；未启用时内部 no-op。
+        qaqh_mcp::prime_all_async();
         // daemon 进程的工具注册表（供 `skills.list_tools` 等查询；worker 各自
         // 独立 init_tools，本进程只提供注册表快照，不参与工具执行）。
         // 不带 subagent 注册器：设置页勾选的是子代理可用工具，spawn_subagent

@@ -486,6 +486,23 @@ fn split_handlers_reject_cross_fields_like_aggregate() {
         .error
         .is_some()
     );
+    // 单一形态（owner 拍板）：ids/updates 一律拒绝——一次一条。
+    assert!(
+        handle_set(split_ctx(
+            "todo_set",
+            serde_json::json!({"ids": ["T1"], "status": "idle"})
+        ))
+        .error
+        .is_some()
+    );
+    assert!(
+        handle_set(split_ctx(
+            "todo_set",
+            serde_json::json!({"updates": [{"id": "T1", "status": "idle"}]})
+        ))
+        .error
+        .is_some()
+    );
     assert!(
         handle_list(split_ctx("todo_list", serde_json::json!({"ids": ["T1"]})))
             .error
@@ -523,15 +540,17 @@ fn split_roundtrip_via_handlers() {
         );
         assert_eq!(inserted["created"][0]["id"], "T2");
         assert_eq!(ids(&read_store().unwrap()), ["T1", "T2"]);
-        // set 批量同状态
-        let set = parse_tool_result(
-            handle_set(split_ctx(
-                "todo_set",
-                serde_json::json!({"ids": ["T1", "T2"], "status": "completed"}),
-            ))
-            .model_text(),
-        );
-        assert_eq!(set["updated"].as_array().unwrap().len(), 2);
+        // set 单条 ×2（单一形态：批量走循环）
+        for id in ["T1", "T2"] {
+            let set = parse_tool_result(
+                handle_set(split_ctx(
+                    "todo_set",
+                    serde_json::json!({"id": id, "status": "completed"}),
+                ))
+                .model_text(),
+            );
+            assert_eq!(set["item"]["id"], id);
+        }
         // list 过滤
         let listed = parse_tool_result(
             handle_list(split_ctx(

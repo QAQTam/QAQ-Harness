@@ -119,6 +119,11 @@ tool_search / W3 缓存失效诊断。owner 拍板（同日）：第一版全载
   deprecated+注册断言），workspace lib 323 全绿、runtime 164 全绿、clippy 0、
   fmt clean。**实测字节**：拆分四件 3336B vs 聚合 2705B——净 +631B（每工具
   ToolDef 固定开销 ~300B ×4；W1 真实收益=调用质量非字节，spec 已修正）。
+- [x] **PR-DT-1 复盘**（同日）：todo_set 收敛单一形态 `{id,status,evidence?}`
+  （owner 拍板）——ids/updates 移出模型面（底层 HTTP/CLI 保留），required
+  [id,status]，reject 补 ids/updates；测试 +3 断言（ids/updates 拒绝、单条
+  roundtrip、schema 单一形态守卫）；实测 todo_set 1264→531B，四件合计
+  2603B < 聚合 2705B（净 -102B）。
 - [ ] **PR-DT-2**：skills 拆分（排后，先观察 todo 拆分实战效果；见 spec O4）
 - [ ] **PR-DT-3**：ToolExposure 两档 + filtered_defs 过滤 + allow 即 Direct
 - [ ] **PR-DT-4**：`qaqh_tool`（线性检索 + tool_result 返回完整 ToolDef +

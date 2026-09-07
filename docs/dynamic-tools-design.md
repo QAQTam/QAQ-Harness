@@ -112,13 +112,23 @@ W3 纯观测。
 | `todo_set` | `ids[] + status`（批量同状态）或 `updates[{id, status?, evidence?, title?, description?}]` | set | ~550 |
 | `todo_list` | `status?` | list | ~180 |
 
+**owner 追加拍板（2026-09-08，PR-DT-1 复盘）**：`todo_set` 收敛为**单一
+形态** `{id, status, evidence?}`（required [id,status]，一次一条）——
+`ids[]` 批量与 `updates[]` 逐条编辑从模型面移除，批量场景循环调用
+（简单 schema × 循环 > 复杂 schema × oneOf）；代价：模型面不再有中途改
+title/description 的路径（底层 HTTP/CLI 直访的 ids/updates 分支保留，
+程序化调用不受限）。reject_fields 禁 `ids/updates/title/description/
+items/after_id/before_id`。
+
 **实测（PR-DT-1 落地后探针，2026-09-08）**：拆分四件合计 **3336 B**
-（create 737 / insert 1001 / set 1264 / list 334）vs 聚合 2705 B——
+（create 737 / insert 1001 / **set 单一形态后 531** / list 334；单一形态拍板前 set 为 1264）vs 聚合 2705 B——
 **净 +631 B**。估算偏差根因：每工具 ToolDef 序列化的固定开销
 （name/description/包装 ~300 B）×4 + `todo_set` 的 updates 嵌套 schema
 结构开销；"oneOf 与参数归属说明是纯开销"的判断成立，但固定开销 4 份
 抵消了参数瘦身。**W1 的真实收益是调用质量**（结构即语义、无 oneOf 弱
-约束、错误消息带工具名而非 action 名），字节打平略增可接受。
+约束、错误消息带工具名而非 action 名）。**todo_set 单一形态拍板后字节
+反转**：四件合计 2603 B < 聚合 2705 B——净 **-102 B**（updates/ids schema
+结构开销是聚合膨胀的主因）。
 `skills` 同构拆分排后（见 O4）。
 
 **迁移策略**：软迁移一版（新工具 register + 旧聚合 description 尾部

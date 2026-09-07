@@ -54,7 +54,17 @@ mod schema_spot_check {
             "todo_create 不应再有 action 维（拆分语义守卫）"
         );
         let ts = params("todo_set");
-        assert!(ts["updates"].is_object(), "todo_set.updates missing");
+        assert!(
+            ts.get("ids").is_none() && ts.get("updates").is_none(),
+            "todo_set 应为单一形态（批量/updates 已移除）"
+        );
+        assert!(
+            by_name("todo_set").function.parameters["required"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("status")),
+            "todo_set required 应含 status"
+        );
 
         // 文件修改工具选择指引
         for (tool, needle) in [

@@ -58,9 +58,20 @@ pub fn handle_insert(ctx: ToolCallCtx) -> ToolResult {
 }
 
 pub fn handle_set(ctx: ToolCallCtx) -> ToolResult {
+    // 单一形态（owner 拍板）：{id, status, evidence?} 一次一条；批量/updates
+    // 已移除——多任务循环调用。底层 exec_todo_set 的 ids/updates 分支保留
+    // （HTTP service 面 / CLI 直访不受工具形态约束）。
     let result = reject_fields(
         &ctx.args,
-        &["title", "description", "items", "after_id", "before_id"],
+        &[
+            "ids",
+            "updates",
+            "title",
+            "description",
+            "items",
+            "after_id",
+            "before_id",
+        ],
         "todo_set",
     )
     .and_then(|_| exec_todo_set(&ctx.args));
@@ -150,31 +161,11 @@ fn todo_set_schema() -> Value {
     serde_json::json!({
         "type": "object",
         "properties": {
-            "id": {"type": ["string", "integer"], "description": "Single target (e.g. T1)."},
-            "ids": {"type": "array", "items": {"type": "string"}, "description": "Batch same-status IDs/range (T1,T1-T3)."},
-            "status": {"type": "string", "enum": ["idle", "in_progress", "completed", "cancelled"], "description": "Target status (required with id/ids)."},
-            "evidence": {"type": "string", "description": "Completion summary (optional, single-id form)."},
-            "updates": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "id": {"type": ["string", "integer"], "description": "Target ID (e.g. T1)"},
-                        "status": {
-                            "type": "string",
-                            "enum": ["idle", "in_progress", "completed", "cancelled"],
-                            "description": "Omit for title/description-only edit"
-                        },
-                        "evidence": {"type": "string", "description": "Completion summary"},
-                        "title": {"type": "string", "description": "New title (1-100)"},
-                        "description": {"type": "string", "description": "New description (<=200; empty clears)"}
-                    },
-                    "required": ["id"],
-                    "additionalProperties": false
-                },
-                "description": "Per-item edits."
-            }
+            "id": {"type": ["string", "integer"], "description": "Target ID (e.g. T1)."},
+            "status": {"type": "string", "enum": ["idle", "in_progress", "completed", "cancelled"], "description": "Target status."},
+            "evidence": {"type": "string", "description": "Completion summary (required when completed)."}
         },
+        "required": ["id", "status"],
         "additionalProperties": false
     })
 }
@@ -223,7 +214,7 @@ pub fn register(mgr: &mut crate::ToolManager) {
         ),
         (
             "todo_set",
-            "Update tasks: ids[]+status (batch, ranges T1-T3) | id+status+evidence | updates[{id,status?,evidence?,title?,description?}] for title/description edits.",
+            "Set one task's status: {id, status, evidence?}. One task per call — loop for batches.",
             todo_set_schema(),
             handle_set,
             ToolRisk::Write,

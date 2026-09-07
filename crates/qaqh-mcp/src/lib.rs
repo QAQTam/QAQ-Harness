@@ -27,9 +27,13 @@ pub mod connection;
 pub mod error;
 pub mod manager;
 pub mod projection;
+pub mod resources;
 pub mod sanitize;
 
-pub(crate) mod adapter;
+// PR-M2-2：NotifyBridge 经 ClientService 别名穿透到测试 mock factory——
+// doc(hidden) 保持“SDK 隔离边界”精神（非公共契约，升级可能变动）。
+#[doc(hidden)]
+pub mod adapter;
 
 pub use bridge::{
     dispatch, prime_all_async, runtime_handle, shutdown_global, take_projection_batch,
@@ -40,6 +44,7 @@ pub use connection::{
 };
 pub use error::{McpError, McpErrorKind};
 pub use manager::McpManager;
+pub use resources::resource_env_block;
 pub use sanitize::redact_secrets;
 
 /// 集成测试垫片（doc(hidden)）：把桥接/投影的可测形态暴露给
@@ -47,8 +52,18 @@ pub use sanitize::redact_secrets;
 /// 非公共 API 契约，升级可能变动；生产代码不得使用。
 #[doc(hidden)]
 pub mod bridge_for_tests {
+    use crate::McpManager;
+
     #[doc(hidden)]
     pub use crate::bridge::{dispatch_with, projection_batch_with};
+    #[doc(hidden)]
+    pub use crate::resources::{aggregate_dispatch_with, resource_env_block_with};
+
+    /// 测试垫片：手动置脏（零 server 配置时无连接可触发）。
+    #[doc(hidden)]
+    pub fn mark_dirty(manager: &McpManager) {
+        manager.mark_dirty();
+    }
 }
 
 /// M0 起保留的 crate 用途标识。

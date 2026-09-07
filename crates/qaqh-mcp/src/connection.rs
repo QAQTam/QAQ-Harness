@@ -25,10 +25,11 @@
 //! 不再尝试」→ 本实现 crash 本身**不**设冷却，重启失败才设。防止 crash-loop
 //! 靠"每次调用至多一次重启" + 失败后冷却双重约束。
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use rmcp::service::RunningService;
@@ -40,8 +41,38 @@ use crate::bridge;
 use crate::error::{McpError, McpErrorKind};
 use qaqh_config::config::McpServerConfig;
 
+// ═══════ PR-M2-2：server 通知 → 重拉管线（list_changed 订阅）═══════
+//
+// adapter 的 NotifyBridge（客户端 handler）收到 server 的
+// `notifications/tools/list_changed` / `notifications/resources/list_changed`
+// 后按 name 查本表触发重拉 + 置脏。沿用 record_spawn_pid 的 crate 内桥接
+// 模式（handler 与 connection 分居两文件、factory 闭包拿不到 conn 引用——
+// Weak 表解耦，Weak 防环，同 watchdog 决策 #2）。
+
+fn conn_notify_slot() -> &'static StdMutex<BTreeMap<String, Weak<ServerConnection>>> {
+    static CONN_NOTIFY: OnceLock<StdMutex<BTreeMap<String, Weak<ServerConnection>>>> =
+        OnceLock::new();
+    CONN_NOTIFY.get_or_init(|| StdMutex::new(BTreeMap::new()))
+}
+
+/// server 通知入口（adapter NotifyBridge 调用；按 name 触发重拉）。
+/// 未注册/已释放的 name → 无操作（竞态窗口内连接已死，忽略即可）。
+pub(crate) fn notify_lists_changed(server: &str) {
+    let weak = conn_notify_slot()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(server)
+        .cloned();
+    let Some(conn) = weak.and_then(|weak| weak.upgrade()) else {
+        return;
+    };
+    conn.spawn_refresh_lists();
+}
+
 /// rmcp 客户端服务句柄（Auto 生命周期 + 单元 service `()`）。
-pub type ClientService = RunningService<RoleClient, ()>;
+/// 客户端 service 句柄（H = adapter 的 NotifyBridge：server 通知桥接，
+/// PR-M2-2。mock factory 同型构造——通知不触发，仅为类型统一）。
+pub type ClientService = RunningService<RoleClient, crate::adapter::NotifyBridge>;
 
 /// 一次 connect 的产物（工厂层错误；超时由连接层统一判定）。
 pub type ConnectFuture = Pin<
@@ -102,6 +133,12 @@ struct ConnState {
     /// 连接成功后自动拉取的 `tools/list` 快照（投影/模型面重建的唯一来源）。
     /// crash/关闭即清空（模型面与连接状态一致）。
     tools: Option<Arc<Vec<rmcp::model::Tool>>>,
+    /// 连接成功后自动拉取的 `resources/list` 快照（PR-M2-1 聚合工具
+    /// `list_resources` 的数据源；idle 回收不清——重连时刷新，与 tools 同款）。
+    resources: Option<Arc<Vec<rmcp::model::Resource>>>,
+    /// 连接成功后自动拉取的 `resources/templates/list` 快照（uriTemplate
+    /// 展开提示的来源；生命周期同上）。
+    resource_templates: Option<Arc<Vec<rmcp::model::ResourceTemplate>>>,
 }
 
 /// 单个 MCP server 的连接（lazy connect / 冷却 / idle 回收 / 崩溃标记）。
@@ -154,6 +191,8 @@ impl ServerConnection {
                 inflight: 0,
                 idle_since: None,
                 tools: None,
+                resources: None,
+                resource_templates: None,
             }),
             connect_serializer: TokioMutex::new(()),
             connect_factory,
@@ -300,6 +339,9 @@ impl ServerConnection {
                 // 连接即拉取 tools/list 缓存（设计 §5.3：模型面重建的唯一来源）。
                 // 失败只降级（无缓存 → 该 server 暂不出现在模型面），不视为连接失败。
                 self.refresh_tools_cache().await;
+                // PR-M2-1：同款拉取资源清单与模板（失败仅降级——资源缺失
+                // 只影响 `mcp` 聚合工具的可见清单，不影响工具调用路径）。
+                self.refresh_resources_cache().await;
                 Ok(())
             }
         }
@@ -343,9 +385,68 @@ impl ServerConnection {
         }
     }
 
+    /// 连接后拉取 `resources/list` + `resources/templates/list` 快照入缓存
+    /// （PR-M2-1；幂等，仅成功路径调用）。
+    ///
+    /// 与 [`Self::refresh_tools_cache`] 同款失败降级：拉不到只影响聚合工具
+    /// 的可见清单（提示未连接/无清单），不影响连接与工具调用路径。不置脏
+    /// ——投影批次是工具维度；资源清单由 M2-2 的注入块在回合边界直接读快照。
+    async fn refresh_resources_cache(self: &Arc<Self>) {
+        let service = {
+            let state = self.lock_state();
+            state.service.clone()
+        };
+        let Some(service) = service else {
+            return;
+        };
+        let fetch = async {
+            let resources = service.lock().await.list_all_resources().await;
+            let templates = service.lock().await.list_all_resource_templates().await;
+            (resources, templates)
+        };
+        let fetched = tokio::time::timeout(Duration::from_secs(15), fetch).await;
+        match fetched {
+            Ok((Ok(resources), Ok(templates))) => {
+                let (r, t) = (resources.len(), templates.len());
+                {
+                    let mut state = self.lock_state();
+                    state.resources = Some(Arc::new(resources));
+                    state.resource_templates = Some(Arc::new(templates));
+                }
+                log::info!(
+                    "[mcp] server {} cached {r} resource(s) + {t} template(s)",
+                    self.name
+                );
+            }
+            Ok((Err(error), _)) | Ok((_, Err(error))) => {
+                log::warn!(
+                    "[mcp] server {} resources/list after connect failed: {error} — resource list stays empty until next connect",
+                    self.name
+                );
+            }
+            Err(_elapsed) => {
+                log::warn!(
+                    "[mcp] server {} resources/list after connect timed out — resource list stays empty until next connect",
+                    self.name
+                );
+            }
+        }
+    }
+
     /// 当前工具缓存（只读快照；投影层 [`crate::bridge::take_projection_batch`] 消费）。
     pub fn cached_tools(&self) -> Option<Arc<Vec<rmcp::model::Tool>>> {
         self.lock_state().tools.clone()
+    }
+
+    /// 当前资源清单快照（PR-M2-1：聚合工具 `list_resources` 的数据源；
+    /// 只读快照，未连接/未拉取时 `None`）。
+    pub fn cached_resources(&self) -> Option<Arc<Vec<rmcp::model::Resource>>> {
+        self.lock_state().resources.clone()
+    }
+
+    /// 当前资源模板快照（PR-M2-1：uriTemplate 展开提示的来源）。
+    pub fn cached_resource_templates(&self) -> Option<Arc<Vec<rmcp::model::ResourceTemplate>>> {
+        self.lock_state().resource_templates.clone()
     }
 
     fn store_connected(self: &Arc<Self>, service: ClientService) {
@@ -356,6 +457,11 @@ impl ServerConnection {
             state.cooling_until = None;
             state.idle_since = Some(Instant::now());
         }
+        // PR-M2-2：注册通知桥（Weak 表；断连/释放时注销）。
+        conn_notify_slot()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(self.name.clone(), Arc::downgrade(self));
         // 组长 pid（adapter 在 spawn 时登记）；清扫/兜底组杀用（Unix）。
         if let Some(pid) = crate::adapter::take_spawn_pid(&self.name) {
             *self
@@ -538,6 +644,25 @@ impl ServerConnection {
         }
     }
 
+    /// server 通知（tools/list_changed、resources/list_changed）触发的重拉
+    /// 任务（PR-M2-2）：重拉 tools + resources 两清单并置脏，下个回合边界
+    /// 批次重建/注入块刷新即同步。gate 检查防关闭后空拉；并发通知幂等
+    /// （多任务都拉最新快照，最后写胜出，代价可忽略）。
+    pub(crate) fn spawn_refresh_lists(self: &Arc<Self>) {
+        if self.gate.load(Ordering::Relaxed) {
+            return;
+        }
+        let conn = Arc::clone(self);
+        bridge::runtime_handle().spawn(async move {
+            conn.refresh_tools_cache().await;
+            conn.refresh_resources_cache().await;
+            log::info!(
+                "[mcp] server {} refreshed lists after server notification",
+                conn.name
+            );
+        });
+    }
+
     /// 崩溃处置（设计 §5.1「执行中失败」）：标记断连并立即丢弃 service
     /// 工具调用 RPC（`tools/call` 透传；超时/错误码映射在桥接层完成）。
     ///
@@ -596,6 +721,59 @@ impl ServerConnection {
         }
     }
 
+    /// 读取单个资源（PR-M2-1；`resources/read` RPC 透传，内容不缓存）。
+    ///
+    /// 与 [`Self::call_tool`] 同款保障：`begin_call` 占 inflight（防 idle
+    /// 回收竞态）、超时硬顶释放 service 锁、断连 → crash 标记 +
+    /// `MCP_SERVER_CRASHED`。读取失败（server 报错，如 uri 不存在）→
+    /// `MCP_TOOL_ERROR`（server 侧错误透传，设计 §7）。
+    pub async fn read_resource(
+        self: &Arc<Self>,
+        uri: &str,
+        timeout: Duration,
+    ) -> Result<rmcp::model::ReadResourceResult, McpError> {
+        let _guard = self.begin_call()?;
+        let service = {
+            let state = self.lock_state();
+            state.service.clone().ok_or_else(|| {
+                McpError::new(
+                    McpErrorKind::ConnectFailed,
+                    format!("server {}: service dropped before read", self.name),
+                )
+            })?
+        };
+        let params = rmcp::model::ReadResourceRequestParams::new(uri.to_owned());
+        let attempt = tokio::time::timeout(timeout, async {
+            service.lock().await.read_resource(params).await
+        })
+        .await;
+        match attempt {
+            Err(_elapsed) => Err(McpError::new(
+                McpErrorKind::Timeout,
+                format!(
+                    "server {}: read {uri:?} timed out after {timeout:?} — server may still be processing",
+                    self.name
+                ),
+            )),
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(ServiceError::TransportClosed | ServiceError::TransportSend(_))) => {
+                let detail = format!("transport closed during resource {uri:?} read");
+                self.handle_crash(&detail);
+                Err(McpError::new(
+                    McpErrorKind::ServerCrashed,
+                    format!("server {}: {detail}", self.name),
+                ))
+            }
+            Ok(Err(other)) => Err(McpError::new(
+                McpErrorKind::ToolError,
+                format!(
+                    "server {}: resources/read {uri:?} failed: {other}",
+                    self.name
+                ),
+            )),
+        }
+    }
+
     /// best-effort 发送 `notifications/cancelled`（设计 §5.4：命中 cancel 时
     /// 调用；发送失败仅 debug 日志，不回传给调用方）。
     ///
@@ -628,11 +806,19 @@ impl ServerConnection {
     /// 本函数**不**设冷却——下一次调用触发单次重启，重启失败才进冷却。
     /// 工具缓存同步清空并置脏：模型面重建（投影批次）与连接状态保持一致。
     pub fn handle_crash(&self, detail: &str) {
+        // PR-M2-2：先注销通知桥（Weak 表；重连后 store_connected 重注册）。
+        conn_notify_slot()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.name);
         let (service, had_tools) = {
             let mut state = self.lock_state();
             state.connected = false;
             state.idle_since = None;
             let had_tools = state.tools.take().is_some();
+            // PR-M2-1：资源缓存与工具同生命周期——crash 即清（下次重连重拉）。
+            state.resources = None;
+            state.resource_templates = None;
             (state.service.take(), had_tools)
         };
         drop(service);
@@ -651,6 +837,11 @@ impl ServerConnection {
     /// 次序（设计 §5.1 退出清理）：abort watchdog → cancel service（含
     /// transport close → 子进程 graceful shutdown → 组杀兜底）。
     pub async fn shutdown(&self) {
+        // PR-M2-2：注销通知桥（优雅关闭后不再响应 server 通知）。
+        conn_notify_slot()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.name);
         self.abort_watchdog();
         let service = {
             let mut state = self.lock_state();

@@ -478,6 +478,7 @@ pub mod builtin {
     pub const SKILLS: &str = "skills";
     pub const SUBAGENT: &str = "subagent";
     pub const GOAL: &str = "goal";
+    pub const MCP_RESOURCES: &str = "mcp_resources";
 
     fn base(
         id: &'static str,
@@ -597,6 +598,24 @@ pub mod builtin {
     }
 
     /// Goal-mode auto-advance prompt (user surrogate turn).
+    /// MCP 资源清单注入块（PR-M2-2，设计 §5.4.2）：封顶清单作为 trailing
+    /// developer 消息在回合边界物化（epoch 门控，内容不变不注入——prefix
+    /// cache 稳定）。Compressable：清单是易过期环境信息而非对话事实，
+    /// compact 可压缩；下回合边界会重新注入最新版。TurnBoundary：与
+    /// subagent 报告同款提交时点，不打断运行中的回合。
+    pub fn mcp_resources_source() -> Arc<dyn ContextSource> {
+        base(
+            MCP_RESOURCES,
+            FlowRole::Developer,
+            Sink::Trailing,
+            Timing::TurnBoundary,
+            Visibility { context: true },
+            LifecyclePolicy {
+                undo: UndoBehavior::Keep,
+                compact: CompactBehavior::Compressable,
+            },
+        )
+    }
     pub fn goal_source() -> Arc<dyn ContextSource> {
         base(
             GOAL,
@@ -618,6 +637,7 @@ pub mod builtin {
         flow.register(skills_source());
         flow.register(subagent_source());
         flow.register(goal_source());
+        flow.register(mcp_resources_source());
     }
 }
 

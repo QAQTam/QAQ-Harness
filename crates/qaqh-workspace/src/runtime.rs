@@ -323,6 +323,9 @@ pub fn replace_dynamic_tools(batch: Vec<(String, crate::DynamicTool)>) -> usize 
                 log::warn!("[TOOLS] dynamic registration rejected (collision): {name:?}");
             }
         }
+        // PR-M2-2 观察项 ①：动态层换名后用 raw 原始名单重过滤——custom/minimal
+        // 工具模式白名单中含 MCP 工具名时，refresh 后不再静默失效。
+        manager.reapply_allowed_after_dynamic_change();
         rejected
     })
     .unwrap_or(0)

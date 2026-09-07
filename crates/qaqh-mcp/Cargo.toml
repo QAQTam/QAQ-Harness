@@ -7,6 +7,8 @@ description = "QAQ-Harness MCP client support — dynamic tools/resources from M
 [dependencies]
 # McpConfig 三类型消费（PR-M1-1 落地于 qaqh-config；handover §三）
 qaqh-config = { path = "../qaqh-config" }
+# PR-M2-1：ToolDef/ToolFunction 聚合工具模型面构造（workspace 不 re-export）。
+qaqh-types = { path = "../qaqh-types" }
 # 工具投影（PR-M1-4）：DynamicTool/register_dynamic/build_dynamic_tool。
 # 依赖方向单向（设计 §4）：qaqh-mcp → qaqh-workspace，不反向。
 qaqh-workspace = { path = "../qaqh-workspace" }

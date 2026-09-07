@@ -99,7 +99,8 @@ impl MockControl {
 
 /// in-memory connect 工厂：每次调用生成新的双工对 + mock server 任务。
 fn mock_factory(control: Arc<MockControl>) -> ConnectFactory {
-    Arc::new(move |_name, _cfg| {
+    Arc::new(move |name, _cfg| {
+        let name = name.to_owned();
         control.attempts.fetch_add(1, Ordering::SeqCst);
         if control.fail_next.swap(false, Ordering::SeqCst) {
             let error: Box<dyn std::error::Error + Send + Sync> =
@@ -133,7 +134,8 @@ fn mock_factory(control: Arc<MockControl>) -> ConnectFactory {
                 preferred_versions: vec![ProtocolVersion::V_2026_07_28],
                 legacy_version: Some(ProtocolVersion::V_2025_11_25),
             };
-            let service = ()
+            let receiver = qaqh_mcp::adapter::NotifyBridge { name };
+            let service = receiver
                 .serve_with_lifecycle((c_read, c_write), lifecycle)
                 .await
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {

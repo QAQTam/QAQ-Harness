@@ -993,6 +993,9 @@ impl TurnEngine {
             }
             ctx.agent.tool_defs = qaqh_workspace::runtime::all_tools();
         }
+        // PR-M2-2：MCP 资源清单注入块（回合边界刷新；内容变化才物化，
+        // prefix cache 友好——与 skills envelope 同管线）。
+        ctx.agent.sync_mcp_resource_injection(ctx.flow);
         // Rebuild provider from current config（gate_lap 准备逻辑，见 turn_lap::gate）
         let provider = provider_for(ctx, &turn_id);
 

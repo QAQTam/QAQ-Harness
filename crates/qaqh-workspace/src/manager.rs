@@ -43,6 +43,9 @@ pub struct ToolManager {
     pub(crate) handlers: BTreeMap<String, ToolHandler>,
     placements: BTreeMap<String, ToolPlacement>,
     allowed: Option<Vec<String>>,
+    /// PR-M2-2：set_allowed 的原始输入（未过 known 过滤）——动态层重建后
+    /// 重应用用（观察项 ①：MCP refresh 换名后 custom 名单仍生效）。
+    allowed_raw: Option<Vec<String>>,
     /// 动态工具（MCP；设计 §5.3）：完整前缀名 → 模型面 + 无状态路由。
     /// 与 `handlers` 分层的原因：`ToolHandler.description` 是 `&'static str`，
     /// 而 MCP 的描述/schema 来自 server（运行期 String）——平行结构避免
@@ -171,6 +174,7 @@ impl ToolManager {
             handlers: BTreeMap::new(),
             placements: BTreeMap::new(),
             allowed: None,
+            allowed_raw: None,
             dynamic: BTreeMap::new(),
             inflight_tasks: BTreeMap::new(),
             stats_total: 0,
@@ -209,6 +213,18 @@ impl ToolManager {
         self.dynamic.clear();
     }
 
+    /// 动态层重建后重应用 allowlist（PR-M2-2 观察项 ①）。
+    ///
+    /// `set_allowed` 存的是**过滤后**静态快照：MCP refresh 换名后（clear +
+    /// 重新注册），快照里旧 MCP 名失效/新名缺失 → custom 模式的 MCP 工具
+    /// 静默消失。用 raw 原始名单重新过滤即可恢复（raw 含 MCP 名但当时
+    /// 未注册的情况，在新动态层下变为有效）。
+    pub fn reapply_allowed_after_dynamic_change(&mut self) {
+        if let Some(raw) = self.allowed_raw.clone() {
+            self.set_allowed(raw);
+        }
+    }
+
     /// 动态层当前名单（测试/指标用）。
     pub fn dynamic_names(&self) -> Vec<String> {
         self.dynamic.keys().cloned().collect()
@@ -234,6 +250,10 @@ impl ToolManager {
         // 旧配置的 allowlist 会指向不存在的工具——保留则执行期报
         // "Unknown tool"，剔除则按当前正式词汇表生效。全部无效时回退
         // 到"全部工具"（空 allowlist 语义），宁全开不瘫痪。
+        // PR-M2-2：raw 原始名单另存——动态层重建（MCP refresh 换名）后
+        // [`Self::reapply_allowed_after_dynamic_change`] 用它重过滤，
+        // 使名单中含 MCP 工具名的 custom 模式在 refresh 后仍生效（观察项 ①）。
+        self.allowed_raw = Some(allowed_tools.clone());
         let total = allowed_tools.len();
         let known: Vec<String> = allowed_tools
             .into_iter()

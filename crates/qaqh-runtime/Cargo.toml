@@ -41,6 +41,8 @@ workspace = true
 tempfile = "3"
 os_pipe = "1"
 tiny_http = "0.12"
+# PR-M2-2 mcp_env_block：mock server 需 ServerHandler/service 形状。
+rmcp = { workspace = true, features = ["transport-io", "server"] }
 
 [target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
 libc = "0.2"

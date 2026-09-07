@@ -33,7 +33,7 @@ use crate::projection::project_tools;
 /// 桥接轮询粒度（设计 §5.4：~250ms）。
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// ctx 超时缺省（设计 §4：默认 60s，封顶 3600）。
-const DEFAULT_TIMEOUT_SECS: u64 = 60;
+pub(crate) const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const MAX_TIMEOUT_SECS: u64 = 3600;
 /// qaqh-mcp 专属 runtime worker 数：rmcp 客户端 actor + IO，不需要更多。
 const RUNTIME_WORKERS: usize = 2;
@@ -307,7 +307,7 @@ fn mcp_error_to_tool_result(error: McpError) -> ToolResult {
     error_result(error.kind, error.message)
 }
 
-fn error_result(kind: McpErrorKind, message: String) -> ToolResult {
+pub(crate) fn error_result(kind: McpErrorKind, message: String) -> ToolResult {
     ToolResult::error(
         serde_json::json!({
             "timeis": now_utc8(),
@@ -372,6 +372,15 @@ pub fn projection_batch_with(manager: &Arc<McpManager>) -> Option<Vec<(String, D
         return None;
     }
     let mut batch = Vec::new();
+    // PR-M2-1：聚合资源工具钉在批次头部（enabled 即在场，与连接状态解耦——
+    // 零 server 配置时 `mcp list_servers` 也能答"无配置"；schema 与 dispatcher
+    // 见 resources.rs）。碰撞拒绝由 replace_dynamic_tools 兜底（与内置工具重名
+    // 会被拒绝并计数告警——当前内置面无 `mcp` 名）。
+    if manager.config().enabled {
+        batch.push(crate::resources::aggregate_entry(Duration::from_secs(
+            DEFAULT_TIMEOUT_SECS,
+        )));
+    }
     for conn in manager.connections() {
         let Some(tools) = conn.cached_tools() else {
             continue;

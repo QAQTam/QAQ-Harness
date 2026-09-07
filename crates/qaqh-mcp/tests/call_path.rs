@@ -135,7 +135,8 @@ impl ServerHandler for MockServer {
 /// in-memory 双工 + 每次连接新代 mock server（代数/注入失败控制面不再需要——
 /// crash 语义改由真实子进程 SIGKILL 覆盖，见 subprocess_crash_* 用例）。
 fn mock_factory(calls: Arc<MockControl>) -> ConnectFactory {
-    Arc::new(move |_name, _cfg| {
+    Arc::new(move |name, _cfg| {
+        let name = name.to_owned();
         let calls = Arc::clone(&calls);
         Box::pin(async move {
             let (client_half, server_half) = tokio::io::duplex(64 * 1024);
@@ -163,7 +164,8 @@ fn mock_factory(calls: Arc<MockControl>) -> ConnectFactory {
                 preferred_versions: vec![ProtocolVersion::V_2026_07_28],
                 legacy_version: Some(ProtocolVersion::V_2025_11_25),
             };
-            let service = ()
+            let receiver = qaqh_mcp::adapter::NotifyBridge { name };
+            let service = receiver
                 .serve_with_lifecycle((c_read, c_write), lifecycle)
                 .await
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
@@ -260,8 +262,13 @@ async fn echo_round_trip() {
     let names: Vec<&str> = batch.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(
         names,
-        vec!["mcp__mock__echo", "mcp__mock__fail", "mcp__mock__slow"],
-        "无白名单 = 全暴露（设计 §5.3）"
+        vec![
+            "mcp",
+            "mcp__mock__echo",
+            "mcp__mock__fail",
+            "mcp__mock__slow"
+        ],
+        "批次[0] = 聚合工具（PR-M2-1 钉底）；无白名单 = 全暴露（设计 §5.3）"
     );
     let mut tool_manager = qaqh_workspace::ToolManager::new();
     for (name, tool) in &batch {

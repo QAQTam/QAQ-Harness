@@ -58,10 +58,75 @@ rl.on("line", (line) => {
       id: message.id,
       result: {
         protocolVersion: message.params?.protocolVersion ?? "2025-11-25",
-        capabilities: { tools: {} },
+        capabilities: { tools: {}, resources: {} },
         serverInfo: { name: "qaqh-mcp-fixture", version: "0.1.0" },
       },
     });
+  } else if (message.method === "resources/list") {
+    // PR-M2-1：两个静态资源（1 文本 + 1 二进制）供聚合工具测试/冒烟。
+    send({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: {
+        resources: [
+          {
+            uri: "fixture://greeting",
+            name: "greeting",
+            mimeType: "text/plain",
+            description: "a friendly text greeting",
+          },
+          {
+            uri: "fixture://logo.png",
+            name: "logo",
+            mimeType: "image/png",
+            size: 3,
+            description: "tiny binary blob",
+          },
+        ],
+      },
+    });
+  } else if (message.method === "resources/templates/list") {
+    send({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: {
+        resourceTemplates: [
+          {
+            uriTemplate: "fixture://item/{id}",
+            name: "item",
+            mimeType: "text/plain",
+            description: "expand {id} yourself, then read_resource",
+          },
+        ],
+      },
+    });
+  } else if (message.method === "resources/read") {
+    const uri = message.params?.uri ?? "";
+    if (uri === "fixture://greeting") {
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          contents: [
+            { uri, mimeType: "text/plain", text: "hello from fixture resource" },
+          ],
+        },
+      });
+    } else if (uri === "fixture://logo.png") {
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          contents: [{ uri, mimeType: "image/png", blob: "AAAA" }],
+        },
+      });
+    } else {
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        error: { code: -32602, message: `unknown resource ${uri}` },
+      });
+    }
   } else if (message.method === "tools/list") {
     send({
       jsonrpc: "2.0",

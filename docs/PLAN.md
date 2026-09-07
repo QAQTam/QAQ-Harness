@@ -76,8 +76,8 @@
 
 | PR | 任务 | 出口命令 |
 |---|---|---|
-| PR-M2-1 | `mcp` 聚合工具（list_servers/list_resources/read_resource）+ blob 占位 + 资源模板展开提示 | `cargo test -p qaqh-mcp --test resources` 全绿 |
-| PR-M2-2 | 系统提示注入块（封顶 20 条/120 字符，回合边界刷新）+ tools/list_changed 置脏 | `cargo test -p qaqh-msgloop --test mcp_env_block` 全绿（快照含 MCP 资源段且不超预算） |
+| **PR-M2-1 ✅**（2026-09-07） | `mcp` 聚合工具（list_servers/list_resources/read_resource）+ blob 占位 `[blob mime=… size=… uri=…]` + 资源模板展开提示；**无前缀名**（不经 D5 快路径，category=Read 常规审批）；**批次钉底**（enabled 即在场，零 server 配置也可答）；connection +resources/templates 缓存 + read_resource（同款保障：inflight 占用/超时硬顶/断连→crash） | `cargo test -p qaqh-mcp --test resources` 全绿（17 用例，含 env block 渲染/封顶） |
+| **PR-M2-2 ✅**（2026-09-07） | 资源清单注入块（封顶 20 条/120 字符）经 **ContextFlow trailing developer 消息**（skills 同管线，内容门控——变更才物化，prefix cache 稳定；落点 run_lap 回合边界）+ **tools/resources list_changed 订阅**（adapter NotifyBridge 客户端 handler → CONN_NOTIFY Weak 表 → 重拉+置脏）+ **观察项①修复**（allowed_raw + 动态层重建后 reapply） | `cargo test -p qaqh-runtime --test mcp_env_block` 全绿（2）；`cargo test -p qaqh-workspace --test dynamic_registration` 全绿（7） |
 
 ### Phase M3 — 扩展与打磨（预估 1–2 天）
 
@@ -116,6 +116,7 @@ just test           # cargo test --workspace            → 全绿，0 失败；
 - [x] `cargo test --workspace` 基线通过数：**880 passed / 0 failed**（PR-M1-2 收口实测 2026-09-07；qaqh-mcp 计 9 用例：m0_spike 1 + lifecycle 8；mcp_config 10 在 qaqh-config 内）
 - [x] **PR-M1-5 后实测（2026-09-07）：917 passed / 0 failed**（+13：call_path 7 + orphan_reap 3 + authorization MCP 准入 2 + dynamic_registration replace 1；qaqh-mcp 全家 29 用例：m0_spike 1 + lifecycle 8 + secrets_env 1 + secrets_mcp 8(qaqh-config) + call_path 7 + orphan_reap 3 + lib 单测 9）
 - [x] **PR-M1-5 真实 daemon 冒烟（2026-09-07）**：QAQH_DATA_DIR 隔离实例 + node fixture（`[mcp.servers.demo]`）经 ringing 命令面 SessionCreate→SendMessage 端到端——**测出并修复投影预热缺口**（lazy 连接唯一触发点是工具执行，模型首回合看不到 MCP 工具的鸡生蛋死锁；`prime_all_async` 装配点 fire-and-forget 预热补齐），附带修复 daemon 日志硬编码 `HOME/.qaqh`（多实例混写，改落 `data_dir()`）与 fixture echo schema 空 properties（模型无法传参）；终态验证：模型调用 `mcp__demo__echo{text:"hello from daemon smoke"}` → `succeeded`，output=`echo: hello from daemon smoke`，audit.csv 同路落账；3 轮优雅停止零孤儿。改动：manager.rs/bridge.rs/lib.rs(+prime)、service.rs(装配)、daemon/main.rs(日志)、fixture schema
+- [x] **PR-M2 后实测（2026-09-07）：937 passed / 0 failed**（917 → +20：resources 17 + mcp_env_block 2 + dynamic_registration reapply 1；clippy 0 警告、fmt clean、红线零命中）
 - [x] clippy 诊断基线：`--workspace --all-targets` **0 警告**（同日实测；deny unwrap_used/string_slice 保持）
 - [x] rmcp transport-child-process 进程组实测结论（2026-09-07，源码审计）：
   **未启用进程组**——rmcp 3.2.0 全 crate 无 `ProcessGroup` 使用（`child_process.rs`

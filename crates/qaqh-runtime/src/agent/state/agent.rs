@@ -190,6 +190,9 @@ pub struct AgentState {
     /// system message. The envelope is injected once per change (Codex-style
     /// world-state diff), not on every request build.
     last_injected_epoch: u64,
+    /// PR-M2-2：最近一次物化的 MCP 资源清单文本（变化才注入；None = 尚未
+    /// 注入过。内容直接对比而非 hash——清单文本 ≤ 数 KB，比对开销可忽略）。
+    last_mcp_env_block: Option<String>,
     /// Persistence handle for draining `MessageStore`'s `PersistOp` queue
     /// (PR-1-6). Captured from the process-level singleton at construction
     /// (PR-3-1: `Arc` handle; `None` only in unit tests that never init the
@@ -235,6 +238,7 @@ impl AgentState {
             manual_compact_running: false,
             auto_compact_blocked_revision: None,
             last_injected_epoch: 0,
+            last_mcp_env_block: None,
             session_manager: SessionManager::try_global(),
             pending_meta_ops: Vec::new(),
             endpoint_spec: None,
@@ -611,6 +615,32 @@ impl AgentState {
                 receipt.stored
             );
         }
+    }
+
+    /// MCP 资源清单注入（PR-M2-2，设计 §5.4.2）：回合边界由 run_lap 调用。
+    ///
+    /// 与 [`Self::sync_skill_injection`] 同管线（ContextFlow trailing
+    /// developer 消息），但门控是**内容比对**而非 epoch 计数——清单变化
+    /// （连接建立/资源增删/模板变化）才注入，prefix cache 稳定。disabled
+    /// 或清单为空时不注入（不发占位文本）。
+    pub fn sync_mcp_resource_injection(&mut self, flow: &mut qaqh_message::ContextFlow) {
+        let Some(block) = qaqh_mcp::resource_env_block() else {
+            return;
+        };
+        if self.last_mcp_env_block.as_deref() == Some(block.as_str()) {
+            return;
+        }
+        self.last_mcp_env_block = Some(block.clone());
+        let receipt = flow.ingest(
+            &mut self.msg,
+            qaqh_message::builtin::MCP_RESOURCES,
+            qaqh_types::Message::developer(&block),
+        );
+        log::info!(
+            "[MCP] resource env block injected via ContextFlow (stored={}, {} bytes)",
+            receipt.stored,
+            block.len()
+        );
     }
 
     /// Host-side activation for explicit `$skill-name` mentions.

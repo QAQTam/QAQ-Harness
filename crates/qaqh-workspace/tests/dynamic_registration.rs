@@ -145,6 +145,39 @@ fn allowed_list_filters_by_full_prefixed_name() {
     assert_eq!(mgr.filtered_defs().len(), 3);
 }
 
+// ── 3b. 动态层重建后 allowlist 重应用（PR-M2-2 观察项 ①）──
+
+#[test]
+fn allowed_reapplied_after_dynamic_rebuild() {
+    let mut mgr = ToolManager::new();
+    // custom 名单含一个**尚未注册**的 MCP 工具名（refresh 前的会话状态）：
+    // set_allowed 的 known 过滤会把它剔掉——raw 必须保留。
+    mgr.set_allowed(vec!["mcp__demo__echo".to_owned(), "bash".to_owned()]);
+    assert_eq!(
+        mgr.filtered_defs().len(),
+        0,
+        "无动态层：MCP 名被滤、无内置 → 空（宁全开语义见下方）"
+    );
+
+    // MCP refresh 换名：clear + 重新注册（replace_dynamic_tools 的核心段，
+    // 尾部 reapply 用 raw 原始名单重过滤）。
+    mgr.clear_dynamic();
+    let (name, entry) = echo_entry("demo", "echo", "t");
+    mgr.register_dynamic(name, entry).expect("register");
+    mgr.reapply_allowed_after_dynamic_change();
+
+    let names: Vec<String> = mgr
+        .filtered_defs()
+        .into_iter()
+        .map(|d| d.function.name)
+        .collect();
+    assert_eq!(
+        names,
+        vec!["mcp__demo__echo"],
+        "refresh 后 raw 名单重应用：custom 名单中的 MCP 工具不再静默消失（观察项 ①）"
+    );
+}
+
 // ── 4. 描述截断（2KB 上限，字符边界 + 标记）──
 
 #[test]

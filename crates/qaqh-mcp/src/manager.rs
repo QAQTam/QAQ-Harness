@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use qaqh_config::secrets::SecretStore;
 
 use crate::bridge;
-use crate::connection::{ConnectFactory, LifecycleSettings, ServerConnection};
+use crate::connection::{ConnStatus, ConnectFactory, LifecycleSettings, ServerConnection};
 use crate::error::{McpError, McpErrorKind};
 use qaqh_config::config::McpConfig;
 
@@ -110,6 +110,12 @@ impl McpManager {
         self.dirty.swap(false, Ordering::Relaxed)
     }
 
+    /// 手动置脏（PR-M2-1 测试垫片用：零 server 配置时无连接可触发置脏，
+    /// 测试需验证“空批次仍含聚合工具”）。生产路径不调用。
+    pub(crate) fn mark_dirty(&self) {
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
     /// 取连接并确保已连接（lazy connect 入口；幂等）。
     ///
     /// 拒绝路径（设计 §5.1）：`enabled=false` → `MCP_DISABLED`；闸已落下 →
@@ -174,6 +180,43 @@ impl McpManager {
                 log::warn!("[mcp] prime {name}: {error}");
             }
         }
+    }
+
+    /// 全部已声明 server 的状态行（PR-M2-1 聚合工具 `list_servers` 数据源；
+    /// 不触发连接——未连接的 server 显示 disconnected）。
+    ///
+    /// 状态映射 [`ConnStatus`]：Connected 显示在飞数；Cooling 显示剩余冷却
+    /// 秒数；未纳管（从未连接过）的 server 也列出（disconnected，0 工具）。
+    /// 闸已落下 → 每行标注 shutting_down。
+    pub fn server_status_lines(&self) -> Vec<String> {
+        let shutting = self.gate.load(Ordering::Relaxed);
+        self.cfg
+            .servers
+            .keys()
+            .map(|name| {
+                let conn = self.connection(name);
+                let (state, tools, resources) = match &conn {
+                    None => ("disconnected".to_owned(), 0, 0),
+                    Some(conn) => {
+                        let tools = conn.cached_tools().map_or(0, |tools| tools.len());
+                        let resources = conn
+                            .cached_resources()
+                            .map_or(0, |resources| resources.len());
+                        let state = match conn.status() {
+                            ConnStatus::Connected { .. } => "connected".to_owned(),
+                            ConnStatus::Cooling { remaining_ms } => {
+                                format!("cooling ({}s left)", remaining_ms / 1000)
+                            }
+                            ConnStatus::Disconnected => "disconnected".to_owned(),
+                            ConnStatus::ShuttingDown => "shutting_down".to_owned(),
+                        };
+                        (state, tools, resources)
+                    }
+                };
+                let suffix = if shutting { " [shutting down]" } else { "" };
+                format!("{name}: {state}, {tools} tool(s), {resources} resource(s){suffix}")
+            })
+            .collect()
     }
 
     /// 关闭全部连接并落下 `shutting_down` 闸（设计 §5.1 退出清理）。

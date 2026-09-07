@@ -165,9 +165,24 @@ Phase 1 采用**最小侵入**方案：资源不进对话循环的状态机，�
    `mcp` —— `action: "list_resources" | "read_resource" | "list_servers"`，
    参数 `{ server?, uri }`。模型显式读取；返回文本直通，二进制以
    `[blob mime=<mt> size=<n> uri=<uri>]` 占位
+   **PR-M2-1 落地差异（2026-09-07）**：聚合工具**无 `mcp__` 前缀**（不经 D5
+   快路径——它是 QAQH 内置只读工具而非 server 声明，D4"声明即信任"不适用，
+   category=`Read` 走常规审批 level≥2 直通）；注册走 M1 投影管线**批次钉底**
+   （`projection_batch_with` 头部固定携带，enabled 即在场——零 server 配置也
+   能答 `list_servers`，与连接状态解耦）；E-5 第二根 dispatcher 指针
+   （`resources::aggregate_dispatch`，与 per-server 工具的 `dispatch` 并列）。
 2. **系统提示注入**：会话 Environment 快照追加一段封顶清单（默认列前 20 条：
    `name / uri / mime / description`），回合边界刷新，让模型"知道有什么可读"。
    资源模板列出 URI 模板串，由模型展开后调 read
+   **PR-M2-2 落地差异（2026-09-07）**：落点不是 frozen `[Environment]` 注解
+   （会话级冻结，不满足"回合边界刷新"）而是 **ContextFlow trailing developer
+   消息**（`builtin::MCP_RESOURCES` source，skills envelope 同管线）；门控为
+   **内容比对**（变更才物化，prefix cache 稳定）；封顶 20 条（server 头行不
+   占额）/描述 120 字符；**list_changed 订阅**：adapter `NotifyBridge` 客户端
+   handler（rmcp `ClientHandler::on_tool_list_changed`/`on_resource_list_changed`）
+   → `CONN_NOTIFY` Weak 表（record_spawn_pid 同款 crate 内桥接，Weak 防环）
+   → 重拉 tools+resources 清单并置脏；附带修复观察项①（`allowed_raw` +
+   动态层重建后 `reapply_allowed_after_dynamic_change`）。
 
 不做：资源订阅/更新推送（`subscriptions` → Phase 2）、自动内联资源内容。
 

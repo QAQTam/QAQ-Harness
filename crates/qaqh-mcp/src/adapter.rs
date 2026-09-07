@@ -35,16 +35,38 @@ use process_wrap::tokio::CommandWrap;
 use qaqh_config::config::{McpServerConfig, McpTransportKind, interpolate_secret_placeholders};
 use qaqh_config::secrets::SecretStore;
 use rmcp::model::ProtocolVersion;
-use rmcp::service::{ClientLifecycleMode, ClientServiceExt};
+use rmcp::service::{ClientLifecycleMode, ClientServiceExt, NotificationContext};
 use rmcp::transport::child_process::TokioChildProcess;
+use rmcp::{ClientHandler, RoleClient};
 
 #[cfg(windows)]
 use process_wrap::tokio::JobObject;
 #[cfg(unix)]
 use process_wrap::tokio::ProcessGroup;
 
-use crate::connection::ConnectFuture;
+use crate::connection::{ConnectFuture, notify_lists_changed};
 use crate::error::{McpError, McpErrorKind};
+
+/// PR-M2-2：客户端通知桥——server 发出 `tools/list_changed` /
+/// `resources/list_changed` 时按 name 触发连接层重拉（清单 + 模板重新
+/// 缓存并置脏，下个回合边界批次重建/注入块刷新即同步）。其余通知走
+/// ClientHandler 默认 no-op。doc(hidden)：类型经 `ClientService` 别名
+/// 穿透到测试 mock factory（构造即用，通知不触发），非公共 API 契约。
+#[doc(hidden)]
+pub struct NotifyBridge {
+    #[doc(hidden)]
+    pub name: String,
+}
+
+impl ClientHandler for NotifyBridge {
+    async fn on_tool_list_changed(&self, _context: NotificationContext<RoleClient>) {
+        notify_lists_changed(&self.name);
+    }
+
+    async fn on_resource_list_changed(&self, _context: NotificationContext<RoleClient>) {
+        notify_lists_changed(&self.name);
+    }
+}
 
 /// spawn 后的 pgid 登记表（server 名 → 直接子进程 pid；`ProcessGroup::leader`
 /// 使其即为进程组长 id）。连接层在 close/crash 后取走并做组杀兜底清扫——
@@ -173,7 +195,9 @@ pub(crate) fn connect(name: &str, cfg: &McpServerConfig, secrets: &SecretStore) 
                 if let Some(pid) = transport.id() {
                     record_spawn_pid(&name, pid);
                 }
-                let service = ().serve_with_lifecycle(transport, auto_lifecycle()).await?;
+                let service = NotifyBridge { name: name.clone() }
+                    .serve_with_lifecycle(transport, auto_lifecycle())
+                    .await?;
                 Ok(service)
             }
             McpTransportKind::Http => {

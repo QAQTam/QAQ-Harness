@@ -32,7 +32,28 @@ pub struct QaqhService {
 
 impl QaqhService {
     pub fn init(sessions: Arc<qaqh_session::SessionManager>) -> Self {
-        let config = qaqh_config::Config::load().unwrap_or_default();
+        let mut config = qaqh_config::Config::load().unwrap_or_default();
+        // PR-M3-2 路线 A：用户级外部 MCP 配置只读合并（Codex/Claude，
+        // import_external 默认开）。只改运行时视图，不回写 config；报告落日志。
+        // 注意 enabled 总闸不变：外部合并的 server 也受 [mcp].enabled 管辖。
+        {
+            let (codex_path, claude_path) = qaqh_config::mcp_import::default_user_paths();
+            if let Some(report) =
+                qaqh_config::mcp_import::merge_external(&mut config.mcp, &codex_path, &claude_path)
+            {
+                if !report.merged.is_empty() {
+                    log::info!("[mcp] external config merged: {:?}", report.merged);
+                }
+                for collision in &report.skipped_collisions {
+                    log::info!(
+                        "[mcp] external config skipped (name collision, local wins): {collision}"
+                    );
+                }
+                for invalid in &report.skipped_invalid {
+                    log::warn!("[mcp] external config skipped (invalid): {invalid}");
+                }
+            }
+        }
         // MCP manager 装配（设计 §10-6 / PR-M1-5）：daemon 进程级单例（actor
         // 线程与其工具线程同进程，全局槽位可见）；装配不做同步网络操作，
         // 连接由下方预热（后台）+ lazy（工具执行路径）双入口拉起。secret

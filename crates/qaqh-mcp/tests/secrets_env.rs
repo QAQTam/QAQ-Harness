@@ -59,6 +59,7 @@ async fn secret_placeholder_resolves_into_child_env() {
         max_concurrent_calls: 1,
     };
     let cfg = McpConfig {
+        import_external: false,
         enabled: true,
         idle_shutdown_secs: 0,
         servers: BTreeMap::from([("echoenv".to_owned(), server)]),

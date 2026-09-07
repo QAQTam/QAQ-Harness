@@ -199,6 +199,7 @@ fn make_manager(max_concurrent: u32, idle_secs: u64) -> (Arc<McpManager>, Arc<Mo
         ..MockControl::default()
     });
     let cfg = McpConfig {
+        import_external: false,
         enabled: true,
         idle_shutdown_secs: idle_secs,
         servers: BTreeMap::from([("mock".to_owned(), server_cfg(max_concurrent))]),
@@ -430,6 +431,7 @@ fn subprocess_cfg(tag: &str, slow_ms: u64) -> McpConfig {
         ..server_cfg(4)
     };
     McpConfig {
+        import_external: false,
         enabled: true,
         idle_shutdown_secs: 0,
         servers: BTreeMap::from([(tag.to_owned(), server)]),

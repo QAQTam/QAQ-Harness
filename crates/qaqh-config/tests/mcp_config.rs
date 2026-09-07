@@ -173,6 +173,7 @@ fn persistent_roundtrip_keeps_mcp_section() {
     );
     let pc = PersistentConfig {
         mcp: Some(PersistentMcpConfig {
+            import_external: None,
             enabled: Some(true),
             idle_shutdown_secs: Some(120),
             servers: Some(servers),

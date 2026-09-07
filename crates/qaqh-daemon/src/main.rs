@@ -91,8 +91,11 @@ fn main() {
             }
         }
         Some("todo") => std::process::exit(todo_cli(&args[1..])),
+        Some("mcp") => std::process::exit(mcp_cli(&args[1..])),
         Some(command) => {
-            eprintln!("unknown command: {command}; expected run, server, status, stop, or todo");
+            eprintln!(
+                "unknown command: {command}; expected run, server, status, stop, todo, or mcp"
+            );
             std::process::exit(2);
         }
     }
@@ -445,4 +448,188 @@ fn http_post_json(
         .ok_or_else(|| format!("malformed status line: {head}"))?;
     let json = serde_json::from_str(body_text.trim()).unwrap_or(serde_json::Value::Null);
     Ok((status, json))
+}
+
+// ───────────────────────── mcp CLI（PR-M3-2 路线 B：显式导入） ─────────────────────────
+//
+// 路线：扫描外部 MCP 配置（Codex `~/.codex/config.toml` / Claude Code 用户级
+// `~/.claude.json` / 项目级 `.mcp.json`）→ 默认 dry-run 列出候选 → `--exec`
+// 写入 QAQH config.toml [mcp.servers] + secrets.toml [secrets.mcp]
+// （env 占位符化，D4 信任边界不扩）。项目级源是仓库内他人提交的文件——
+// 每个 server 必须逐个确认（供应链面，设计见 mcp_import.rs 头注）。
+//
+// 用法：
+//   qaqh-daemon mcp import --from codex|claude|claude-project [--root DIR] [--exec]
+
+fn mcp_cli(args: &[String]) -> i32 {
+    use qaqh_config::mcp_import::{ExternalServer, ExternalSource};
+    use qaqh_types::ConfigStore;
+    use std::path::Path;
+
+    // args[0] = 子命令（import）；未来可扩 list/remove 等。
+    let args = match args.first().map(String::as_str) {
+        Some("import") => &args[1..],
+        Some(other) => {
+            eprintln!("mcp: unknown subcommand {other:?}; expected import");
+            return 2;
+        }
+        None => {
+            eprintln!(
+                "usage: qaqh-daemon mcp import --from codex|claude|claude-project [--root DIR] [--exec]"
+            );
+            return 2;
+        }
+    };
+
+    let mut from: Option<ExternalSource> = None;
+    let mut root: Option<String> = None;
+    let mut exec = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--from" => {
+                let Some(value) = args.get(i + 1) else {
+                    eprintln!("mcp import: --from requires a value (codex|claude|claude-project)");
+                    return 2;
+                };
+                from = Some(match value.as_str() {
+                    "codex" => ExternalSource::Codex,
+                    "claude" => ExternalSource::ClaudeUser,
+                    "claude-project" => ExternalSource::ClaudeProject,
+                    other => {
+                        eprintln!("mcp import: unknown source {other:?}");
+                        return 2;
+                    }
+                });
+                i += 2;
+            }
+            "--root" => {
+                let Some(value) = args.get(i + 1) else {
+                    eprintln!("mcp import: --root requires a directory");
+                    return 2;
+                };
+                root = Some(value.clone());
+                i += 2;
+            }
+            "--exec" => {
+                exec = true;
+                i += 1;
+            }
+            other => {
+                eprintln!("mcp import: unexpected argument {other}");
+                return 2;
+            }
+        }
+    }
+    let Some(source) = from else {
+        eprintln!(
+            "usage: qaqh-daemon mcp import --from codex|claude|claude-project [--root DIR] [--exec]"
+        );
+        return 2;
+    };
+    if source == ExternalSource::ClaudeProject && root.is_none() {
+        eprintln!("mcp import: claude-project requires --root DIR (project directory)");
+        return 2;
+    }
+
+    // 扫描候选。
+    let servers: Vec<ExternalServer> = match source {
+        ExternalSource::Codex => {
+            let (codex_path, _) = qaqh_config::mcp_import::default_user_paths();
+            qaqh_config::mcp_import::scan_codex(&codex_path)
+        }
+        ExternalSource::ClaudeUser => {
+            let (_, claude_path) = qaqh_config::mcp_import::default_user_paths();
+            qaqh_config::mcp_import::scan_claude(&claude_path, ExternalSource::ClaudeUser)
+        }
+        ExternalSource::ClaudeProject => {
+            let path = Path::new(root.as_deref().unwrap_or(".")).join(".mcp.json");
+            qaqh_config::mcp_import::scan_claude(&path, ExternalSource::ClaudeProject)
+        }
+    };
+    if servers.is_empty() {
+        println!("no MCP servers found for source {}", source.from_flag());
+        return 0;
+    }
+
+    // 候选展示 + 审批面。
+    println!(
+        "found {} MCP server(s) from {}:",
+        servers.len(),
+        source.from_flag()
+    );
+    for server in &servers {
+        let endpoint = if server.command.is_empty() {
+            format!("url={}", server.url)
+        } else {
+            format!("command={:?} args={:?}", server.command, server.args)
+        };
+        println!(
+            "  - {} [{endpoint}] env-keys={:?}",
+            server.name,
+            server.env.keys().collect::<Vec<_>>()
+        );
+    }
+    if !exec {
+        println!("(dry-run; re-run with --exec to import)");
+        return 0;
+    }
+
+    // --exec：审批回调 + 写入。
+    let confirm = |server: &ExternalServer| -> bool {
+        if source != ExternalSource::ClaudeProject {
+            return true; // 用户级源：文件本就属于当前用户，不重复确认。
+        }
+        print!(
+            "import {} from PROJECT-level .mcp.json (submitted by repo collaborators)? [y/N] ",
+            server.name
+        );
+        use std::io::Write as _;
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line).is_ok() && line.trim().eq_ignore_ascii_case("y") {
+            true
+        } else {
+            println!("  -> rejected");
+            false
+        }
+    };
+
+    let store = ConfigStore::default_location();
+    let secrets = qaqh_config::secrets::SecretStore::default_location();
+    let mut config = match qaqh_config::Config::load() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("mcp import: config load failed: {error}");
+            return 1;
+        }
+    };
+    let report = match qaqh_config::mcp_import::import_servers(
+        &servers,
+        &confirm,
+        &mut config.mcp,
+        &secrets,
+    ) {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!("mcp import: {error}");
+            return 1;
+        }
+    };
+    if let Err(error) = config.save_with(&store, &secrets) {
+        eprintln!("mcp import: config save failed: {error}");
+        return 1;
+    }
+    println!("imported: {:?}", report.imported);
+    if !report.skipped_existing.is_empty() {
+        println!(
+            "skipped (already configured): {:?}",
+            report.skipped_existing
+        );
+    }
+    if !report.rejected.is_empty() {
+        println!("rejected (not confirmed): {:?}", report.rejected);
+    }
+    println!("(config saved; restart daemon or wait for config reload to take effect)");
+    0
 }

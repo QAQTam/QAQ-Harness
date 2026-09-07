@@ -143,6 +143,9 @@ pub struct PersistentSubagentConfig {
 pub struct PersistentMcpConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    /// PR-M3-2：用户级外部配置（Codex/Claude）只读合并开关；缺省 true。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub import_external: Option<bool>,
     /// idle 回收阈值（秒）；None/0 = 常驻不回收。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_shutdown_secs: Option<u64>,

@@ -203,6 +203,7 @@ fn make_manager_named(server: Option<&str>) -> Arc<McpManager> {
 fn make_manager_multi(names: Vec<String>) -> Arc<McpManager> {
     let servers: BTreeMap<_, _> = names.into_iter().map(|name| (name, server_cfg())).collect();
     let cfg = McpConfig {
+        import_external: false,
         enabled: true,
         idle_shutdown_secs: 0,
         servers,

@@ -151,6 +151,7 @@ fn make_manager(url: Option<String>) -> Arc<McpManager> {
         None => BTreeMap::new(),
     };
     let cfg = McpConfig {
+        import_external: false,
         enabled: true,
         idle_shutdown_secs: 0,
         servers,
@@ -263,6 +264,7 @@ async fn http_url_required() {
     // 语义（ConnectFailed）而非 panic。
     let manager = McpManager::with_settings(
         McpConfig {
+            import_external: false,
             enabled: true,
             idle_shutdown_secs: 0,
             servers: BTreeMap::from([(

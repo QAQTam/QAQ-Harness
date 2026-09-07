@@ -83,8 +83,8 @@
 
 | PR | 任务 | 出口命令 |
 |---|---|---|
-| PR-M3-1 | streamable HTTP client（reqwest feature）+ unix socket | `cargo test -p qaqh-mcp --test http_transport` 全绿（本地 test server） |
-| **PR-M3-2**（2026-09-07 增补，owner 决策 A+B） | **Codex/Claude Code MCP 配置兼容**——A：运行时只读合并（仅**用户级** `~/.codex/config.toml` `[mcp_servers]`、Claude 用户级 `mcpServers`；来源标记 `imported/` 前缀或 meta 标注；不回写；明文 env 直通子进程不落 QAQH secrets）；B：`qaqh mcp import --from codex\|claude\|claude-desktop`（交互确认 → 写入 config + secrets 占位符化；**项目级 `.mcp.json` 默认排除，导入需逐 server 审批**——供应链面，D4 信任边界不扩） | `cargo test -p qaqh-config --test mcp_import` 全绿（样本 fixture + 合并/冲突/审批语义） |
+| **PR-M3-1 ✅**（2026-09-07） | streamable HTTP client（reqwest 0.13 对齐 + headers 进 default_headers，${secret} 插值生效；无子进程——pgid/sweep no-op；crash 语义同构） | `cargo test -p qaqh-mcp --test http_transport` 全绿（3：round_trip/resource_read/unreachable→ConnectFailed） |
+| **PR-M3-2 ✅**（2026-09-07） | **Codex/Claude Code MCP 配置兼容**（A+B 均落地）——A：`QaqhService::init` 用户级只读合并（`~/.codex/config.toml` `[mcp_servers]` + `~/.claude.json` `mcpServers`，`ext-<src>-` 前缀避撞、本地优先、明文 env 直通子进程不落 QAQH secrets、不回写；开关 `[mcp].import_external` 默认开）；B：`qaqh-daemon mcp import --from codex|claude|claude-project`（dry-run 默认 + `--exec` 写入；**项目级 `.mcp.json` 需 `--root` + 逐 server 交互审批**——供应链面，D4 不扩；env 占位符化 `mcp-<server>-<key>` 入 [secrets.mcp]） | `cargo test -p qaqh-config --test mcp_import` 全绿（8：扫描/合并/碰撞/开关/缺文件/导入占位化/审批拒绝/D4 结构守卫） |
 | PR-M3-3 | E2E 门控测试（`QAQH_MCP_E2E=1` 连真实 `npx @upstash/context7-mcp`）；可选测试 gating 惯例先例对齐 | `QAQH_MCP_E2E=1 cargo test -p qaqh-mcp --test e2e_context7` 通过（需网络，默认 skip） |
 | PR-M3-4 | 文档：README 工具表 + `docs/mcp-client-design.md` 状态改"已实施"；`just check`/`clippy`/`fmt`/`test` 全绿 | 见 §5 总闸 |
 

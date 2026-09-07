@@ -132,7 +132,7 @@ impl Default for WorkspaceConfig {
 // ── MCP 客户端配置（docs/mcp-client-design.md §6）──
 
 /// MCP server 传输形态。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum McpTransportKind {
     /// stdio 子进程（Phase 1 主形态；设计 D1/S1）。
     Stdio,
@@ -141,7 +141,7 @@ pub enum McpTransportKind {
 }
 
 /// 单个 MCP server 的运行时配置（已通过 fail-fast 校验）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct McpServerConfig {
     pub transport: McpTransportKind,
     /// stdio 启动命令（如 "npx"）；http 时为空。
@@ -163,13 +163,21 @@ pub struct McpServerConfig {
 }
 
 /// MCP 客户端运行时配置。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct McpConfig {
     pub enabled: bool,
     /// idle 回收阈值（秒）；0 = 常驻不回收。判定口径：`inflight == 0` 连续该时长。
     pub idle_shutdown_secs: u64,
     /// server 名（已校验 `[a-z0-9_-]+`）→ 配置。
     pub servers: std::collections::BTreeMap<String, McpServerConfig>,
+    /// PR-M3-2：用户级外部 MCP 配置只读合并（Codex/Claude Code，A 路线）。
+    /// 默认开启；关闭后仅认 [mcp.servers] 手写面。
+    #[serde(default = "default_import_external")]
+    pub import_external: bool,
+}
+
+fn default_import_external() -> bool {
+    true
 }
 
 impl Default for McpConfig {
@@ -178,6 +186,7 @@ impl Default for McpConfig {
             enabled: false,
             idle_shutdown_secs: 300,
             servers: std::collections::BTreeMap::new(),
+            import_external: default_import_external(),
         }
     }
 }
@@ -282,6 +291,7 @@ pub(crate) fn map_mcp_config(
         enabled: mcp.enabled.unwrap_or(!servers.is_empty()),
         idle_shutdown_secs: mcp.idle_shutdown_secs.unwrap_or(300),
         servers,
+        import_external: mcp.import_external.unwrap_or(true),
     })
 }
 
@@ -923,6 +933,7 @@ impl Config {
             }),
             mcp: Some(PersistentMcpConfig {
                 enabled: Some(self.mcp.enabled),
+                import_external: Some(self.mcp.import_external),
                 idle_shutdown_secs: (self.mcp.idle_shutdown_secs > 0)
                     .then_some(self.mcp.idle_shutdown_secs),
                 servers: (!self.mcp.servers.is_empty()).then(|| {

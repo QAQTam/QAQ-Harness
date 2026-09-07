@@ -144,6 +144,7 @@ fn shared_manager() -> &'static Arc<McpManager> {
     static MANAGER: OnceLock<Arc<McpManager>> = OnceLock::new();
     MANAGER.get_or_init(|| {
         let cfg = McpConfig {
+            import_external: false,
             enabled: true,
             idle_shutdown_secs: 0,
             servers: BTreeMap::from([(

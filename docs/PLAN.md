@@ -150,8 +150,14 @@ tool_search / W3 缓存失效诊断。owner 拍板（同日）：第一版全载
   **保留缓一步**（tier2 对模型缩进失误有真实救场价值；PR-E-3 单独设计）。
   tests 删 21、file_query e2e 改 replace 表达；workspace 275 绿 / runtime
   164 绿 / clippy 0。
-- [ ] **PR-E-3**（候选）：fuzzy tier3 淘汰 + 失败提示形态设计（tier2 去留
-  以数据定）
+- [x] **悬项落盘（2026-09-08，owner："写文档，有时间再议"）**——
+  `docs/script-tools-design.md`（script 机制：三档信任模型/trust.json 分离
+  + hash 降级/注册契约/PR-SC-1..3）+ `docs/edit-tool-design.md`（收敛记录
+  + PR-E-3 tier3 淘汰设计/tier2 保留数据决策）+ dynamic-tools-design 补
+  §5.2.2b qaqh_tool 实施细节 + todo v3 段 evidence 强制设计（owner 暂不
+  处置）。
+- [ ] **PR-E-3**：fuzzy tier3 淘汰 + 失败提示形态设计（tier2 去留以数据
+  定）——设计已落 `docs/edit-tool-design.md` §2
 - [ ] **PR-DT-2**：skills 拆分（排后，先观察 todo v3 实战效果；见 spec O4）
 - [ ] **PR-DT-3**：ToolExposure 两档 + filtered_defs 过滤 + allow 即 Direct
 - [ ] **PR-DT-4**：`qaqh_tool`（线性检索 + tool_result 返回完整 ToolDef +

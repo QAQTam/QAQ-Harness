@@ -137,6 +137,16 @@ title/description 的路径（底层 HTTP/CLI 直访的 ids/updates 分支保留
 程序化调用不受限）。reject_fields 禁 `ids/updates/title/description/
 items/after_id/before_id`。
 
+**待拍板：evidence 强制（PR-DT-EV，有时间再议）**——现状裂缝：schema 描述
+承诺 "required when completed"，但运行时宽松（completed 无 evidence 直接
+通过，evidence 提供了才校验非空）——模型可能学会忽略 schema 承诺。提案：
+**工具层强制**（`handle_update`：status=completed && evidence 缺失/空 →
+INVALID_INPUT，hint "use cancelled if the task was dropped"；底层
+`todo_set_for` 不动保 HTTP/CLI 宽松）——约 15 行 + 2 断言。语义收益：
+completed = 有证据的完成，放弃的任务必须走 cancelled。代价：模型偶忘吃
+一次报错重试（行为塑造）。**owner 拍板：暂不处置（2026-09-08）**——设计
+在案，需要时按此实施。
+
 **实测（PR-DT-1 落地后探针，2026-09-08）**：拆分四件合计 **3336 B**
 （create 737 / insert 1001 / **set 单一形态后 531** / list 334；单一形态拍板前 set 为 1264）vs 聚合 2705 B——
 **净 +631 B**。估算偏差根因：每工具 ToolDef 序列化的固定开销
@@ -193,6 +203,23 @@ pub enum ToolExposure { Direct, Deferred }   // 未来按需扩 Hidden（预算�
 - 返回条目带 `exposure` 语义提示（"调用的参数 schema 如下"）——不需要
   "已展开"状态机（Claude Code 的 `isDeferredToolInConversation`）：QAQH
   的分发不看暴露面，重复 search 幂等无害
+
+#### 5.2.2b `qaqh_tool` 实施细节（PR-DT-4，待实施）
+
+**schema**：`{"query": string}` 单字段；description 内列 family 名单
+（内置 family：todo_* / edit / read / bash / skills / mcp / … + script 机制
+上线后含 `script__*`）。
+
+**检索**（线性第一版）：
+- 索引源：ToolManager 全量 ToolDef（name + description + params 的字段名）
+- 匹配：query 分词后对 name/description/字段名做子串+关键词匹配（大小写
+  不敏感）；无命中返回空列表 + family 名单提示
+- **返回**：`{"tools": [ToolDef...]}`——完整 schema（name/description/
+  parameters）——模型下一轮直接 tool_call（供应商不校验 name 是否在 tools
+  数组，分发查注册表——已由 Codex 实证 + QAQH 现行链路一致）
+
+**测试出口**：`qaqh_tool` 集成测试（搜 todo → 返回 todo_update 完整 schema →
+语义上可直接调用）；空 query / 超长 query 边界。
 
 #### 5.2.3 MCP 投影接入（deferred 的主战场）
 

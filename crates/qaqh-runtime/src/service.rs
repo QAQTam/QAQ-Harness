@@ -804,6 +804,14 @@ fn spawn_mcp_reloader() {
                 report.removed,
                 report.kept.len()
             );
+            // P2-1 缺口修复（用户实测发现）：热重载新增/变更的 server 无预热
+            // 触发点——启动 prime 在 enabled=false 时是 no-op 且 reloader 不在
+            // 启动路径，鸡生蛋重现（模型面永远看不到新 server 工具）。
+            // apply 后补发幂等预热（已连接 skip；新增连接+缓存+置脏 → 下回合
+            // 投影可见）。
+            if !report.added.is_empty() || !report.updated.is_empty() {
+                qaqh_mcp::prime_all_async();
+            }
         }
         log::warn!("[mcp] hot-reload watcher channel closed; exiting");
     });

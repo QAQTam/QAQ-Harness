@@ -139,6 +139,10 @@ struct ConnState {
     /// 连接成功后自动拉取的 `resources/templates/list` 快照（uriTemplate
     /// 展开提示的来源；生命周期同上）。
     resource_templates: Option<Arc<Vec<rmcp::model::ResourceTemplate>>>,
+    /// P2-3：连接成功后自动拉取的 `prompts/list` 快照（聚合工具
+    /// `list_prompts`/`read_prompt` 的数据源）。server 无 prompts 能力时
+    /// 保持 None（try-fetch 降级，method not found 静默）。生命周期同 tools。
+    prompts: Option<Arc<Vec<rmcp::model::Prompt>>>,
 }
 
 /// 单个 MCP server 的连接（lazy connect / 冷却 / idle 回收 / 崩溃标记）。
@@ -193,6 +197,7 @@ impl ServerConnection {
                 tools: None,
                 resources: None,
                 resource_templates: None,
+                prompts: None,
             }),
             connect_serializer: TokioMutex::new(()),
             connect_factory,
@@ -342,6 +347,9 @@ impl ServerConnection {
                 // PR-M2-1：同款拉取资源清单与模板（失败仅降级——资源缺失
                 // 只影响 `mcp` 聚合工具的可见清单，不影响工具调用路径）。
                 self.refresh_resources_cache().await;
+                // P2-3：prompts/list（失败仅降级——无 prompts 能力的 server
+                // method-not-found 属常态，静默）。
+                self.refresh_prompts_cache().await;
                 Ok(())
             }
         }
@@ -430,6 +438,81 @@ impl ServerConnection {
                     self.name
                 );
             }
+        }
+    }
+
+    /// P2-3：连接后拉取 `prompts/list` 快照（幂等；失败仅降级，**不置脏**——
+    /// prompts 不进工具投影，只服务聚合工具的按需查询）。
+    async fn refresh_prompts_cache(self: &Arc<Self>) {
+        let service = {
+            let state = self.lock_state();
+            state.service.clone()
+        };
+        let Some(service) = service else {
+            return;
+        };
+        let fetched = tokio::time::timeout(Duration::from_secs(15), async {
+            service.lock().await.list_all_prompts().await
+        })
+        .await;
+        match fetched {
+            Ok(Ok(prompts)) => {
+                let count = prompts.len();
+                {
+                    let mut state = self.lock_state();
+                    state.prompts = Some(Arc::new(prompts));
+                }
+                log::info!("[mcp] server {} cached {count} prompt(s)", self.name);
+            }
+            Ok(Err(error)) => {
+                // method-not-found = server 未声明 prompts 能力（常态，静默）；
+                // 其余错误降级告警。
+                log::debug!(
+                    "[mcp] server {} prompts/list unavailable ({error}) — prompts stay empty",
+                    self.name
+                );
+            }
+            Err(_elapsed) => {
+                log::warn!(
+                    "[mcp] server {} prompts/list after connect timed out — prompts stay empty",
+                    self.name
+                );
+            }
+        }
+    }
+
+    /// 当前 prompts 快照（P2-3：聚合工具 `list_prompts` 数据源；未声明
+    /// prompts 能力/未拉取时 `None`）。
+    pub fn cached_prompts(&self) -> Option<Arc<Vec<rmcp::model::Prompt>>> {
+        self.lock_state().prompts.clone()
+    }
+
+    /// P2-3：代理 `prompts/get`（name + arguments → 渲染结果）。仅在已连接
+    /// 时可用；server 不支持 → method-not-found 错误上抛。
+    pub async fn get_prompt(
+        &self,
+        name: &str,
+        arguments: Option<rmcp::model::JsonObject>,
+    ) -> Result<rmcp::model::GetPromptResult, McpError> {
+        let service = {
+            let state = self.lock_state();
+            state.service.clone()
+        };
+        let Some(service) = service else {
+            return Err(McpError::new(
+                McpErrorKind::NotFound,
+                format!("server {} is not connected", self.name),
+            ));
+        };
+        let mut params = rmcp::model::GetPromptRequestParams::new(name);
+        params.arguments = arguments;
+        let fetch = service.lock().await.get_prompt(params).await;
+        match fetch {
+            Ok(result) => Ok(result),
+            Err(error) => Err(McpError::new(
+                McpErrorKind::Protocol,
+                format!("prompts/get {name:?} failed: {error}"),
+            )),
         }
     }
 

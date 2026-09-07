@@ -35,9 +35,11 @@ use qaqh_types::ToolResult;
 use rmcp::RoleServer;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
+    GetPromptRequestParams, GetPromptResponse, GetPromptResult, ListPromptsResult,
     ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
-    ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
-    ResourceContents, ResourceTemplate, ServerCapabilities, ServerInfo, Tool,
+    Prompt, PromptMessage, ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse,
+    ReadResourceResult, Resource, ResourceContents, ResourceTemplate, Role, ServerCapabilities,
+    ServerInfo, Tool,
 };
 use rmcp::service::{ClientLifecycleMode, ClientServiceExt, RequestContext, ServiceExt};
 use serde_json::json;
@@ -52,6 +54,7 @@ impl ServerHandler for ResourceServer {
         info.capabilities = ServerCapabilities::builder()
             .enable_tools()
             .enable_resources()
+            .enable_prompts()
             .build();
         info.server_info.name = "resources-mock".into();
         info.server_info.version = "0.1.0".into();
@@ -102,6 +105,36 @@ impl ServerHandler for ResourceServer {
                 .with_mime_type("text/plain")
                 .with_description("expand {id} yourself, then read_resource"),
         ]))
+    }
+
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, rmcp::ErrorData> {
+        Ok(ListPromptsResult::with_all_items(vec![Prompt::new(
+            "greet",
+            Some("greet someone by name"),
+            Some(vec![]),
+        )]))
+    }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResponse, rmcp::ErrorData> {
+        let who = request
+            .arguments
+            .as_ref()
+            .and_then(|args| args.get("who"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("world");
+        Ok(GetPromptResult::new(vec![
+            PromptMessage::new_text(Role::User, format!("say hello to {who}")),
+            PromptMessage::new_text(Role::Assistant, format!("hello, {who}!")),
+        ])
+        .into())
     }
 
     async fn read_resource(
@@ -553,4 +586,63 @@ async fn env_block_caps_at_20_entries() {
         block.contains("truncated at 20 items"),
         "截断提示缺失: {block}"
     );
+}
+
+// ── P2-3：prompts（连接缓存 + 聚合工具 list_prompts / read_prompt）──
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prompts_cached_after_connect_and_listable() {
+    let manager = make_manager_named(Some("alpha"));
+    manager.get_or_connect("alpha").await.expect("connect");
+
+    let conn = manager.connection("alpha").unwrap();
+    let prompts = conn.cached_prompts().expect("prompts cached");
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0].name, "greet");
+
+    let result = aggregate(
+        &manager,
+        json!({ "action": "list_prompts", "server": "alpha" }),
+    );
+    assert!(result.is_success(), "{}", result.model_text());
+    assert!(
+        result.model_text().contains("greet"),
+        "{}",
+        result.model_text()
+    );
+    assert!(
+        result.model_text().contains("greet someone by name"),
+        "{}",
+        result.model_text()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn read_prompt_renders_messages() {
+    let manager = make_manager_named(Some("alpha"));
+    manager.get_or_connect("alpha").await.expect("connect");
+
+    let result = aggregate(
+        &manager,
+        json!({
+            "action": "read_prompt",
+            "server": "alpha",
+            "name": "greet",
+            "arguments": { "who": "QAQH" }
+        }),
+    );
+    assert!(result.is_success(), "{}", result.model_text());
+    let text = result.model_text();
+    assert!(text.contains("user: say hello to QAQH"), "{text}");
+    assert!(text.contains("assistant: hello, QAQH!"), "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn read_prompt_requires_name() {
+    let manager = make_manager_named(Some("alpha"));
+    let result = aggregate(
+        &manager,
+        json!({ "action": "read_prompt", "server": "alpha" }),
+    );
+    assert!(!result.is_success(), "missing name must error");
 }

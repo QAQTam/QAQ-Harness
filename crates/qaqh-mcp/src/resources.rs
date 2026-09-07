@@ -43,16 +43,30 @@ pub fn aggregate_entry(timeout: Duration) -> (String, DynamicTool) {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["list_servers", "list_resources", "read_resource"],
-                "description": "list_servers = MCP server 状态总览；list_resources = 列出资源清单（server 可选，缺省全部）；read_resource = 读取单个资源内容（server+uri 必填）"
+                "enum": [
+                    "list_servers",
+                    "list_resources",
+                    "read_resource",
+                    "list_prompts",
+                    "read_prompt"
+                ],
+                "description": "list_servers = MCP server 状态总览；list_resources = 列出资源清单（server 可选，缺省全部）；read_resource = 读取单个资源内容（server+uri 必填）；list_prompts = 列出 server 声明的 prompt 模板（server 可选）；read_prompt = 拉取渲染后的 prompt 消息（server+name 必填，arguments 可选）"
             },
             "server": {
                 "type": "string",
-                "description": "list_resources 时限定单个 server；read_resource 时必填"
+                "description": "list_resources/list_prompts 时限定单个 server；read_resource/read_prompt 时必填"
             },
             "uri": {
                 "type": "string",
                 "description": "read_resource 时必填；可从 list_resources 结果或 URI 模板展开得到"
+            },
+            "name": {
+                "type": "string",
+                "description": "read_prompt 时必填；可从 list_prompts 结果得到"
+            },
+            "arguments": {
+                "type": "object",
+                "description": "read_prompt 的可选渲染参数（键值对；schema 见 list_prompts）"
             }
         },
         "required": ["action"]
@@ -110,7 +124,7 @@ pub fn aggregate_dispatch_with(
     let Some(action) = args.get("action").and_then(|value| value.as_str()) else {
         return error_result(
             McpErrorKind::Protocol,
-            "missing required parameter `action` (list_servers | list_resources | read_resource)"
+            "missing required parameter `action` (list_servers | list_resources | read_resource | list_prompts | read_prompt)"
                 .to_owned(),
         );
     };
@@ -118,10 +132,12 @@ pub fn aggregate_dispatch_with(
         "list_servers" => list_servers(manager),
         "list_resources" => list_resources(manager, args.get("server")),
         "read_resource" => read_resource(manager, cancel, timeout_hint, args),
+        "list_prompts" => list_prompts(manager, args.get("server")),
+        "read_prompt" => read_prompt(manager, cancel, timeout_hint, args),
         other => error_result(
             McpErrorKind::Protocol,
             format!(
-                "unknown action {other:?} (expected list_servers | list_resources | read_resource)"
+                "unknown action {other:?} (expected list_servers | list_resources | read_resource | list_prompts | read_prompt)"
             ),
         ),
     }
@@ -438,4 +454,187 @@ fn render_env_block(lines: &[String]) -> String {
     );
     block.push_str(&lines.join("\n"));
     block
+}
+
+/// `list_prompts`：server 声明的 prompt 模板清单（缓存快照，不触发连接）。
+///
+/// `server` 缺省 = 全部 server 遍历（未声明 prompts 能力的 server 标注
+/// 占位行——method-not-found 降级后 cached_prompts 为 None）。每条给出
+/// name/description/argument schema，供模型拼 `read_prompt` 参数。
+fn list_prompts(manager: &Arc<McpManager>, server: Option<&serde_json::Value>) -> ToolResult {
+    let wanted = server.and_then(|value| value.as_str());
+    let cfg_snapshot = manager.config();
+    if let Some(name) = wanted
+        && !cfg_snapshot.servers.contains_key(name)
+    {
+        let available: Vec<&str> = cfg_snapshot.servers.keys().map(String::as_str).collect();
+        return error_result(
+            McpErrorKind::NotFound,
+            format!("unknown MCP server {name:?}; configured: {available:?}"),
+        );
+    }
+    let mut sections = Vec::new();
+    for name in cfg_snapshot.servers.keys() {
+        if let Some(wanted) = wanted
+            && name != wanted
+        {
+            continue;
+        }
+        let Some(conn) = manager.connection(name) else {
+            sections.push(format!(
+                "[{name}] (not connected — call a tool from this server first to establish the connection)"
+            ));
+            continue;
+        };
+        let Some(prompts) = conn.cached_prompts() else {
+            sections.push(format!(
+                "[{name}] (no prompts — server does not declare a prompts capability)"
+            ));
+            continue;
+        };
+        if prompts.is_empty() {
+            sections.push(format!(
+                "[{name}] (declares prompts capability but lists none)"
+            ));
+            continue;
+        }
+        let mut lines = vec![format!("[{name}] {} prompt(s):", prompts.len())];
+        for prompt in prompts.iter() {
+            let description = prompt.description.as_deref().unwrap_or("(no description)");
+            lines.push(format!("  - {} — {description}", prompt.name));
+            if let Some(arguments) = &prompt.arguments {
+                for argument in arguments {
+                    let required = if argument.required.unwrap_or(false) {
+                        "required"
+                    } else {
+                        "optional"
+                    };
+                    lines.push(format!(
+                        "      arg {} ({}): {}",
+                        argument.name,
+                        required,
+                        argument.description.as_deref().unwrap_or("")
+                    ));
+                }
+            }
+        }
+        sections.push(lines.join("\n"));
+    }
+    if sections.is_empty() {
+        return ToolResult::ok("no MCP servers configured");
+    }
+    ToolResult::ok(sections.join("\n\n"))
+}
+
+/// `read_prompt`：代理 `prompts/get`（server+name 必填，arguments 可选）。
+///
+/// 返回渲染后的消息序列（role: text 行式拼接——模型可直接消费；非文本
+/// content 以占位符标注）。经 get_or_connect 的 lazy connect 语义（与
+/// read_resource 同款：未连接时先连）。
+fn read_prompt(
+    manager: &Arc<McpManager>,
+    cancel: &AtomicBool,
+    timeout_hint: Option<u64>,
+    args: &serde_json::Value,
+) -> ToolResult {
+    let Some(server) = args.get("server").and_then(|value| value.as_str()) else {
+        return error_result(
+            McpErrorKind::Protocol,
+            "read_prompt requires `server` (and `name`)".to_owned(),
+        );
+    };
+    let Some(prompt_name) = args.get("name").and_then(|value| value.as_str()) else {
+        return error_result(
+            McpErrorKind::Protocol,
+            format!("read_prompt requires `name` (see list_prompts for {server:?})"),
+        );
+    };
+    let arguments = args
+        .get("arguments")
+        .and_then(|value| value.as_object())
+        .cloned();
+    let (server, prompt_name) = (server.to_owned(), prompt_name.to_owned());
+    let prompt_label = prompt_name.clone();
+    let prompt_label_sync = prompt_label.clone();
+    let cfg_snapshot = manager.config();
+    if !cfg_snapshot.servers.contains_key(&server) {
+        let available: Vec<&str> = cfg_snapshot.servers.keys().map(String::as_str).collect();
+        return error_result(
+            McpErrorKind::NotFound,
+            format!("unknown MCP server {server:?}; configured: {available:?}"),
+        );
+    }
+    let timeout_secs = timeout_hint.unwrap_or(DEFAULT_TIMEOUT_SECS).clamp(1, 3600);
+    let timeout = Duration::from_secs(timeout_secs);
+
+    // 与 read_resource 同款 async→sync 桥（250ms 轮询 cancel/deadline）。
+    let (tx, rx) = std::sync::mpsc::channel();
+    let manager = Arc::clone(manager);
+    crate::bridge::runtime_handle().spawn(async move {
+        let conn = match manager.get_or_connect(&server).await {
+            Ok(conn) => conn,
+            Err(error) => {
+                let _ = tx.send(error_result(error.kind, error.to_string()));
+                return;
+            }
+        };
+        let fetched = tokio::time::timeout(timeout, conn.get_prompt(&prompt_name, arguments)).await;
+        let _ = tx.send(match fetched {
+            Ok(Ok(result)) => {
+                let mut lines = Vec::new();
+                for message in &result.messages {
+                    let role = match message.role {
+                        rmcp::model::Role::User => "user",
+                        rmcp::model::Role::Assistant => "assistant",
+                    };
+                    let text = message
+                        .content
+                        .as_text()
+                        .map(|text| text.text.clone())
+                        .unwrap_or_else(|| "[non-text content]".to_owned());
+                    lines.push(format!("{role}: {text}"));
+                }
+                if let Some(description) = &result.description {
+                    lines.insert(0, format!("# {description}"));
+                }
+                ToolResult::ok(lines.join("\n"))
+            }
+            Ok(Err(error)) => error_result(
+                McpErrorKind::Protocol,
+                format!("prompts/get {prompt_label:?} failed: {error}"),
+            ),
+            Err(_) => error_result(
+                McpErrorKind::Timeout,
+                format!(
+                    "prompts/get {prompt_label:?} timed out after {timeout_secs}s on server {server:?}"
+                ),
+            ),
+        });
+    });
+    let deadline = Instant::now() + timeout + Duration::from_secs(5);
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return error_result(McpErrorKind::Cancelled, "cancelled by user".to_owned());
+        }
+        match rx.try_recv() {
+            Ok(result) => return result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                if Instant::now() >= deadline {
+                    return error_result(
+                        McpErrorKind::Timeout,
+                        format!(
+                            "prompts/get {prompt_label_sync:?} exceeded {timeout_secs}s budget"
+                        ),
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                return error_result(
+                    McpErrorKind::Protocol,
+                    "prompt worker exited unexpectedly".to_owned(),
+                );
+            }
+        }
+    }
 }

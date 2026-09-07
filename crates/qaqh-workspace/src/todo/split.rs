@@ -125,8 +125,8 @@ fn todo_write_schema() -> Value {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "title": {"type": "string", "description": "Task title"},
-                        "description": {"type": "string", "description": "Optional context"}
+                        "title": {"type": "string", "description": "Task title (1-100 chars)."},
+                        "description": {"type": "string", "description": "Optional context (<=200 chars)."}
                     },
                     "required": ["title"],
                     "additionalProperties": false

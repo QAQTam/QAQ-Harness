@@ -117,7 +117,8 @@ Claude/Codex 后发现两家独立收敛**全量重写制**（TodoWrite/update_p
 每次传整个列表、无 ID、无 insert、三态；清空=传空数组，无特判）；
 Claude 另有 Task* 四件套=持久 issue-tracker（taskId+可选字段 patch，
 与 QAQH 单一形态 todo_set 同构）。QAQH 取混合制：**保留 ID 分配**
-（高水位单调不复用）+ **`todo_write` 追加语义**（items 非空=追加新
+（高水位单调不复用；**例外：显式清空重置序列回 T1**——owner 拍板
+"清空=全新清单"，旧 ID 引用随 compact 消失，混淆窗口可忽略）+ **`todo_write` 追加语义**（items 非空=追加新
 ID 条目；**空数组=显式清空**，items 缺省报错防误清空——追加制的特例
 成本，两家全量制无此特判）+ **`todo_update` 单条状态**（原 todo_set
 改名）+ **`todo_list` 保留**（plan 模式只读）。**删**：todo_insert

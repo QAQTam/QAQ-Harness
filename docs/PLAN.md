@@ -131,9 +131,14 @@ tool_search / W3 缓存失效诊断。owner 拍板（同日）：第一版全载
   `todo_update`（单条状态）/ `todo_list`；**删 insert 与单条 title 形态**；
   修改=cancel+重写；**直接替换**（聚合+旧四件退役，dispatch.rs 删除，
   reject_fields 迁 split.rs）；底层契约全保留（HTTP/CLI）。新增 
-  exec_todo_write。测试重写（追加两轮 ID 连续/空清空+高水位持久/形态守卫/
+  exec_todo_write。测试重写（追加两轮 ID 连续/空清空+序列重置/形态守卫/
   v3 注册+旧名退役断言）；workspace 324 绿 / runtime 164 绿 / clippy 0 /
   fmt clean。**实测三件套 1576B vs 原聚合 2705B——净省 1129B**。
+- [x] **PR-DT-1 复盘③**（同日）：**清空重置 ID 序列**（owner 拍板）——
+  `items: []` 清空后 `next_id` 归 1，下次 write 从 T1 重开（原实现断点续配
+  T34 起反直觉）；生产二进制真实链路冒烟全绿（追加/守卫/list/清空
+  cleared:33/current_id 归零/聚合名优雅退役）；evidence 强制（completed→
+  evidence）仍待 owner 拍板。
 - [ ] **PR-DT-2**：skills 拆分（排后，先观察 todo v3 实战效果；见 spec O4）
 - [ ] **PR-DT-3**：ToolExposure 两档 + filtered_defs 过滤 + allow 即 Direct
 - [ ] **PR-DT-4**：`qaqh_tool`（线性检索 + tool_result 返回完整 ToolDef +

@@ -8,6 +8,7 @@ pub mod actions;
 pub mod dispatch;
 pub mod model;
 pub mod parse;
+pub mod split;
 pub mod store;
 
 pub use actions::{todo_list_for, todo_set_for};
@@ -15,6 +16,7 @@ pub use dispatch::register;
 #[cfg(test)]
 pub(crate) use dispatch::{handle_todo, reject_fields};
 pub use model::{TodoItem, TodoMode, TodoStatus, TodoStore};
+pub use split::register as register_split;
 pub use store::{load_todo, load_todo_for, save_todo, todo_cancel_json, todo_status_json};
 
 #[cfg(test)]

@@ -46,6 +46,16 @@ mod schema_spot_check {
             "todo.id description missing"
         );
 
+        // W1 拆分（PR-DT-1）：todo_create 无 action 维、批量 items schema 在位。
+        let tc = params("todo_create");
+        assert!(tc["items"].is_object(), "todo_create.items missing");
+        assert!(
+            tc.get("action").is_none(),
+            "todo_create 不应再有 action 维（拆分语义守卫）"
+        );
+        let ts = params("todo_set");
+        assert!(ts["updates"].is_object(), "todo_set.updates missing");
+
         // 文件修改工具选择指引
         for (tool, needle) in [
             ("edit", "replace_all"),

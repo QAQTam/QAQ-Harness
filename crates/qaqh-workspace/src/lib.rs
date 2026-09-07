@@ -369,7 +369,17 @@ pub(crate) static TEST_RUNTIME_SERIAL: std::sync::LazyLock<std::sync::Mutex<()>>
 
 /// Tools blocked in PLAN mode. 分类与 handler 声明的 category 对应
 /// （Read 类不入表；Write/Exec/Net 按语义列名）。
-pub const PLAN_BLOCKED: &[&str] = &["edit", "exec", "process", "todo"];
+pub const PLAN_BLOCKED: &[&str] = &[
+    "edit",
+    "exec",
+    "process",
+    "todo",
+    // W1 拆分（PR-DT-1）：写类拆分工具同受 plan 阻断；todo_list 是读，
+    // plan 模式需要查看任务清单，不放名单。
+    "todo_create",
+    "todo_insert",
+    "todo_set",
+];
 
 pub fn set_workspace(path: &str) {
     if ACTOR_SESSION.with(|slot| slot.borrow().is_some()) {

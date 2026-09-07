@@ -382,7 +382,10 @@ pub fn needs_permission(
     // touch workspace files, run code, or access external resources. Requiring
     // approval for each model-authored status transition creates recursive,
     // repeated prompts without protecting a user-controlled resource.
-    if matches!(tool_name, "todo") {
+    if matches!(
+        tool_name,
+        "todo" | "todo_create" | "todo_insert" | "todo_set" | "todo_list"
+    ) {
         return PermissionDecision::AutoApprove;
     }
 

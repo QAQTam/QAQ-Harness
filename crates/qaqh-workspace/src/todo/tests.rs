@@ -442,3 +442,154 @@ fn set_edit_rejects_oversized_title() {
         );
     });
 }
+
+// ═══════════════════════════════════════════════════════
+// W1 拆分（PR-DT-1）：todo_create / todo_insert / todo_set / todo_list
+// ═══════════════════════════════════════════════════════
+
+use super::split::{handle_create, handle_insert, handle_list, handle_set};
+
+fn parse_tool_result(text: &str) -> serde_json::Value {
+    serde_json::from_str(text).unwrap()
+}
+
+fn split_ctx(name: &str, args: Value) -> crate::ToolCallCtx {
+    crate::ToolCallCtx {
+        id: format!("test-{name}"),
+        name: name.into(),
+        action: name.into(),
+        args,
+        tx_progress: None,
+        timeout_secs: None,
+        cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        skill_effects: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+    }
+}
+
+#[test]
+fn split_handlers_reject_cross_fields_like_aggregate() {
+    // 拆分薄壳的字段校验表必须与聚合 dispatch 各 action 同表：
+    // 跨形态字段一律 INVALID_INPUT（聚合行为回归守卫）。
+    assert!(
+        handle_create(split_ctx(
+            "todo_create",
+            serde_json::json!({"title": "t", "id": "T1"})
+        ))
+        .error
+        .is_some()
+    );
+    assert!(
+        handle_set(split_ctx(
+            "todo_set",
+            serde_json::json!({"items": [{"title": "t"}]})
+        ))
+        .error
+        .is_some()
+    );
+    assert!(
+        handle_list(split_ctx("todo_list", serde_json::json!({"ids": ["T1"]})))
+            .error
+            .is_some()
+    );
+    assert!(
+        handle_insert(split_ctx(
+            "todo_insert",
+            serde_json::json!({"title": "t", "status": "idle"})
+        ))
+        .error
+        .is_some()
+    );
+}
+
+#[test]
+fn split_roundtrip_via_handlers() {
+    with_isolated_todo(|_seed| {
+        // create 单条
+        let created = parse_tool_result(
+            handle_create(split_ctx(
+                "todo_create",
+                serde_json::json!({"title": "first"}),
+            ))
+            .model_text(),
+        );
+        assert_eq!(created["created"][0]["id"], "T1");
+        // insert 定位（after_id 必选其一）
+        let inserted = parse_tool_result(
+            handle_insert(split_ctx(
+                "todo_insert",
+                serde_json::json!({"title": "sub", "after_id": "T1"}),
+            ))
+            .model_text(),
+        );
+        assert_eq!(inserted["created"][0]["id"], "T2");
+        assert_eq!(ids(&read_store().unwrap()), ["T1", "T2"]);
+        // set 批量同状态
+        let set = parse_tool_result(
+            handle_set(split_ctx(
+                "todo_set",
+                serde_json::json!({"ids": ["T1", "T2"], "status": "completed"}),
+            ))
+            .model_text(),
+        );
+        assert_eq!(set["updated"].as_array().unwrap().len(), 2);
+        // list 过滤
+        let listed = parse_tool_result(
+            handle_list(split_ctx(
+                "todo_list",
+                serde_json::json!({"status": "completed"}),
+            ))
+            .model_text(),
+        );
+        assert_eq!(listed["items"].as_array().unwrap().len(), 2);
+        let idle = parse_tool_result(
+            handle_list(split_ctx("todo_list", serde_json::json!({}))).model_text(),
+        );
+        assert_eq!(idle["counts"]["total"], 2);
+    });
+}
+
+#[test]
+fn split_plan_blocked_and_conflict_semantics() {
+    // 写类拆分工具受 plan 阻断；todo_list 是读，plan 模式放行。
+    for blocked in ["todo_create", "todo_insert", "todo_set"] {
+        assert!(
+            crate::PLAN_BLOCKED.contains(&blocked),
+            "{blocked} 应在 PLAN_BLOCKED"
+        );
+    }
+    assert!(!crate::PLAN_BLOCKED.contains(&"todo_list"));
+    // 冲突键：拆分工具与聚合同一合成键（store 是单一资源，保持同轮
+    // 读写顺序约束与聚合行为一致）。
+    for name in [
+        "todo",
+        "todo_create",
+        "todo_insert",
+        "todo_set",
+        "todo_list",
+    ] {
+        let paths = crate::conflict::file_write_paths(name, &serde_json::json!({}));
+        assert_eq!(paths, vec!["__qaqh_todo__".to_string()], "{name} 冲突键");
+    }
+}
+
+#[test]
+fn aggregate_todo_marked_deprecated_and_split_registered() {
+    let mgr = crate::registration::build_tool_manager(&[]);
+    let todo_desc = mgr
+        .all_defs()
+        .into_iter()
+        .find(|def| def.function.name == "todo")
+        .expect("聚合 todo 仍在场")
+        .function
+        .description;
+    assert!(
+        todo_desc.contains("Deprecated"),
+        "聚合 description 应带 deprecated 标注"
+    );
+    for name in ["todo_create", "todo_insert", "todo_set", "todo_list"] {
+        assert!(
+            mgr.all_defs().iter().any(|def| def.function.name == name),
+            "{name} 应已注册"
+        );
+    }
+}

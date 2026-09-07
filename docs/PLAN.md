@@ -102,7 +102,31 @@ poller 检测（`file change detected; reloaded`）→ reloader diff——
 `kept=1 conn`（配置未变，连接懒恢复）。全链路（轮询→发布→diff→保连）实证通过；
 用户 daemon（194715）全程零影响。
 
-### Phase DT — 动态工具与 tool_search（2026-09-08 立项，设计稿待评审）
+### Phase DT — 动态工具与 tool_search（2026-09-08 立项）
+
+设计文档：`docs/dynamic-tools-design.md`（owner 诉求 U1/U2/U3 + Claude Code/Codex
+实证 + Tool Manager 盘点实测）。三条工作流：W1 聚合工具拆分 / W2 exposure+
+tool_search / W3 缓存失效诊断。owner 拍板（同日）：第一版全载入（全部 Direct）；
+检索工具命名 `qaqh_tool`、参数 `{query}`；D1/D2/D6 已定；O3（prompt 告知工具集）
+与 O4（skills 嵌套 query 澄清：query 只管 schema 发现，不叠路由层）在案。
+
+- [x] **PR-DT-1**：todo 拆分（commit 本轮）——`todo_create/todo_insert/todo_set/
+  todo_list` 薄壳 register（reject_fields 同表 + exec_* 复用）+ 旧聚合
+  description 尾注 deprecated（软迁移）。接入点：PLAN_BLOCKED（写类三件进名单，
+  todo_list 读类放行 plan 模式）、permission AutoApprove、conflict 合成键
+  `__qaqh_todo__`、fold 透传白名单、registration 名单、schema_spot_check 守卫
+  （无 action 维）。测试 +4（跨字段拒绝/roundtrip/plan+conflict 语义/
+  deprecated+注册断言），workspace lib 323 全绿、runtime 164 全绿、clippy 0、
+  fmt clean。**实测字节**：拆分四件 3336B vs 聚合 2705B——净 +631B（每工具
+  ToolDef 固定开销 ~300B ×4；W1 真实收益=调用质量非字节，spec 已修正）。
+- [ ] **PR-DT-2**：skills 拆分（排后，先观察 todo 拆分实战效果；见 spec O4）
+- [ ] **PR-DT-3**：ToolExposure 两档 + filtered_defs 过滤 + allow 即 Direct
+- [ ] **PR-DT-4**：`qaqh_tool`（线性检索 + tool_result 返回完整 ToolDef +
+  description 列 family 名单）
+- [ ] **PR-DT-5**：MCP projection_mode + always_load per-server
+- [ ] **PR-DT-6**：缓存失效原因枚举 + 聚合 `refresh_tools` action
+- [ ] **PR-DT-7**（可选）：BM25 + `_meta.ui.visibility` + 字节预算
+
 
 设计文档：`docs/dynamic-tools-design.md`（owner 诉求 U1/U2/U3 + Claude Code/Codex
 实证 + Tool Manager 盘点实测）。三条工作流：W1 聚合工具拆分（todo/skills →

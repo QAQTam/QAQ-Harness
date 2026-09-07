@@ -99,7 +99,7 @@ pub fn register(mgr: &mut crate::ToolManager) {
     mgr.register_with_placement(
         ToolHandler {
             key: "todo".to_string(),
-            description: "Task list (session-scoped, T1..). IDs auto-assigned & stable, never renumbered; blocked in plan mode. create/insert(after_id,before_id) add tasks (bulk ≤20). set: batch same status via ids:[\"T1\",\"T4-T6\"]+status; per-item {id,status?,evidence?,title?,description?} via updates (edit title/description mid-task there). list(status?) inspects. Provide evidence when marking completed.",
+            description: "Task list (session-scoped, T1..). IDs auto-assigned & stable, never renumbered; blocked in plan mode. create/insert(after_id,before_id) add tasks (bulk ≤20). set: batch same status via ids:[\"T1\",\"T4-T6\"]+status; per-item {id,status?,evidence?,title?,description?} via updates (edit title/description mid-task there). list(status?) inspects. Provide evidence when marking completed. (Deprecated: prefer the split tools todo_create/todo_insert/todo_set/todo_list.)",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

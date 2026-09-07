@@ -31,7 +31,7 @@ pub fn file_write_paths(tool_name: &str, args: &serde_json::Value) -> Vec<String
                 paths.push(p.to_string());
             }
         }
-        "todo" => {
+        "todo" | "todo_create" | "todo_insert" | "todo_set" | "todo_list" => {
             // Todo is session state rather than a workspace file, but multiple
             // model calls in one tool round still share one ordered ID stream.
             // A synthetic conflict key preserves model call order even when a

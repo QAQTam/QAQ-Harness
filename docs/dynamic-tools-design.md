@@ -112,9 +112,14 @@ W3 纯观测。
 | `todo_set` | `ids[] + status`（批量同状态）或 `updates[{id, status?, evidence?, title?, description?}]` | set | ~550 |
 | `todo_list` | `status?` | list | ~180 |
 
-合计 ~1480 B **vs 现聚合 2705 B——省 ~1200 B**（聚合的 oneOf/参数归属说明
-文字是纯开销）。每个工具 description 单一职责、schema 无需"哪些参数属于
-哪个 action"的说明。`skills` 同构（967 B → 4 个 ~1000 B，打平）。
+**实测（PR-DT-1 落地后探针，2026-09-08）**：拆分四件合计 **3336 B**
+（create 737 / insert 1001 / set 1264 / list 334）vs 聚合 2705 B——
+**净 +631 B**。估算偏差根因：每工具 ToolDef 序列化的固定开销
+（name/description/包装 ~300 B）×4 + `todo_set` 的 updates 嵌套 schema
+结构开销；"oneOf 与参数归属说明是纯开销"的判断成立，但固定开销 4 份
+抵消了参数瘦身。**W1 的真实收益是调用质量**（结构即语义、无 oneOf 弱
+约束、错误消息带工具名而非 action 名），字节打平略增可接受。
+`skills` 同构拆分排后（见 O4）。
 
 **迁移策略**：软迁移一版（新工具 register + 旧聚合 description 尾部
 `deprecated: use todo_*`）→ 稳定后删聚合。历史安全：旧会话的
@@ -139,14 +144,14 @@ pub enum ToolExposure { Direct, Deferred }   // 未来按需扩 Hidden（预算�
 - `set_allowed` 的 known 过滤：断言加 deferred 层（allow 名单认可 deferred 名）
 - 新注册入口：`register_with_exposure` / DynamicTool 带 exposure
 
-#### 5.2.2 `tool_search` 内置工具（U3 的直接实现）
+#### 5.2.2 `qaqh_tool` 内置工具（U3 的直接实现，**owner 拍板命名**）
 
-```
-模型调: tool_search { query: "todo 状态" }
-tool result: ToolSearchOutput { tools: [完整 ToolDef（name/description/parameters）] }
-模型下一轮: tool_call(name="todo_set", args={ids:["T1"], status:"in_progress"})
-  → route 命中（注册即分发）→ 执行 ✓
-```
+**命名**：`qaqh_tool`（owner 指定，替代 tool_search）；参数单字段 `{ query: string }`。
+
+**第一版语义（全载入默认下的定位）**：schema 查询/发现工具——工具集默认
+**全 Direct 在场**（owner 拍板，见 D2），`qaqh_tool` 用于：模型不确定参数
+形状时拉取完整 schema、确认某能力是否存在、以及未来 deferred 模式的展开
+入口。返回形态不变：
 
 - **tool result 里的 schema 持续可见**（历史消息），一次搜索多轮复用；
   compact 摘要掉后重新 search 自愈
@@ -154,6 +159,10 @@ tool result: ToolSearchOutput { tools: [完整 ToolDef（name/description/parame
   透传，分发在 client）——已由 Codex 实践验证
 - 检索实现分阶段：**先线性**（name/description 子串+关键词匹配，≤50 工具
   足够，零依赖）；工具数 >100 再引 `bm25` crate（Codex 同款）
+- **description 内列工具集（family）名单**（owner 提出的"从 prompt 告知模型
+  有什么工具集"的轻量替代：system prompt 不动，`qaqh_tool` description 自身
+  声明可查的 family 清单）——否则模型不知道存在什么可查；后续若需要
+  再升级到 system prompt 引导（见 O3）
 - 返回条目带 `exposure` 语义提示（"调用的参数 schema 如下"）——不需要
   "已展开"状态机（Claude Code 的 `isDeferredToolInConversation`）：QAQH
   的分发不看暴露面，重复 search 幂等无害
@@ -188,12 +197,12 @@ tools_changed / mcp_resources_changed / system_changed / messages_compacted / mo
 
 | # | 决策点 | 提案 | 理由 |
 |---|---|---|---|
-| D1 | todo/skills 拆分的暴露档 | **全 Direct**（拆分后 schema 打平或更省） | 高频工具 deferred 反增一跳；拆分本身已解决 schema 膨胀 |
-| D2 | 哪些内置工具低频可 Deferred | 默认**全部 Direct**；候选：`journal`/`process`/`copy_range`/`read_image` | 4.4k tokens 体量健康，不动为上；deferred 收益在 MCP 侧 |
+| D1 | todo/skills 拆分的暴露档 | ✅ 拍板：**全 Direct**（2026-09-08，拆分后 schema 打平或更省，高频工具 deferred 反增一跳） |
+| D2 | 哪些内置工具可 Deferred | ✅ 拍板（2026-09-08）：**第一版全部 Direct 全载入**，deferred 不默认开；`qaqh_tool` 上线为 schema 查询工具（在场工具也可 query 确认 schema）；后续再考虑 prompt 告知哪些需要 query（见 O3） |
 | D3 | 词汇表语义 | `tool_defs`（暴露面）与"可调用集合"（registry）**显式分离**；`authorize_call`/分发查 registry | 对齐 Codex 注册/暴露解耦；本就半解耦，补齐即可 |
 | D4 | allow 即 Direct | `set_allowed` 显式点名的工具**自动升 Direct**（学 Claude Code alwaysLoad） | custom 工具模式语义不变（点名的要在场）；白名单与暴露面的绑定关系保持 |
 | D5 | `mcp` 聚合工具去留 | **保留 Direct**（deferred 模式下是唯一发现入口） | 动态参数无法静态拆分；`RefreshMcpTools` 思路并入它的 `refresh` action |
-| D6 | 检索实现 | 线性先行，>100 工具再 BM25 | 零依赖起步；bm25 的收益门槛远未到 |
+| D6 | 检索实现 | ✅ 拍板（2026-09-08）：线性先行（`qaqh_tool` 第一版即线性），>100 工具再 BM25 |
 | D7 | 模型侧刷新 | 聚合工具加 `refresh_tools` action（重拉已连接 server 工具清单，失败保旧集——学 Claude Code "never dials"） | 补齐"模型可调"闭环；owner 触发（热重载）之外的模型自愈路径 |
 
 ## 7. 分步 PR 规划
@@ -203,7 +212,7 @@ tools_changed / mcp_resources_changed / system_changed / messages_compacted / mo
 | **PR-DT-1** | W1：todo 拆分（4 工具 + 软迁移标注 + 旧聚合 deprecated） | `cargo test -p qaqh-workspace --lib todo` 全绿 + schema 探针复查（总字节下降） |
 | **PR-DT-2** | W1：skills 拆分（同构） | `cargo test -p qaqh-workspace --lib skills` 全绿 |
 | **PR-DT-3** | W2-①：ToolExposure 维度 + filtered_defs 过滤 + allow 即 Direct（D4） | 既有测试全绿（默认 Direct 零回归）+ exposure 单测 |
-| **PR-DT-4** | W2-②：`tool_search` 工具（线性检索 + tool result 返回完整 ToolDef） | 新增 `tool_search` 集成测试（搜索→返回 schema→模型视角可直接调用） |
+| **PR-DT-4** | W2-②：`qaqh_tool` 工具（线性检索 + tool result 返回完整 ToolDef + description 列 family 名单） | 新增 `qaqh_tool` 集成测试（搜索→返回 schema→模型视角可直接调用） |
 | **PR-DT-5** | W2-③：MCP `projection_mode` + deferred 投影 + `always_load` per-server | `cargo test -p qaqh-mcp --test projection_modes` + 热重载下 tools 数组不变断言（缓存不失效实测） |
 | **PR-DT-6** | W3：缓存失效原因枚举 + 聚合工具 `refresh_tools` action | 单测 + daemon 日志验证 |
 | **PR-DT-7**（可选） | BM25 检索升级 + `tool_is_model_visible` + 字节预算 | 触发条件：MCP 工具总数 >100 / 出现真实可见性需求 |
@@ -220,3 +229,12 @@ tools_changed / mcp_resources_changed / system_changed / messages_compacted / mo
 - **O1**：`skills` 拆分的粒度（4 action 的 schema 形状待拆时细化）。
 - **O2**：deferred 模式下 token_calibrator 的 request_key 语义（tools 数组
   稳定 → key 更稳，校准命中应提升——W3 可观测验证）。
+- **O3（owner 提出待设计）**：从 prompt 告知模型"哪些需要 query / 工具集
+  清单"——第一版以 `qaqh_tool` description 列 family 名单替代，是否升级
+  到 system prompt 引导后置观察。
+- **O4（owner 担忧 + 澄清）**：skills 的嵌套 query 稳定性——skills 本身已是
+  二级路由（activate → skill 内部资源发现，有嵌套 query 情况）。**澄清：
+  `qaqh_tool` 只负责工具 schema 发现，不参与工具内部的路由/内容发现**——
+  skills 拆分后 activate/list/resource/validate 均为一级工具，其嵌套资源
+  发现是工具运行时行为，与 query 层正交不叠加；据此 skills 拆分（W1-2）
+  不被阻塞，但排后实施，先观察 todo 拆分实战效果再定。

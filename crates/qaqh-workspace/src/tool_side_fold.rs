@@ -65,7 +65,8 @@ impl ToolResultFoldPolicy for StandardPolicy {
             // 透传白名单：清单 / 收据 / 激活说明——模型必须看到全文
             // （read/edit 更名后再随工具优化，此处同样透传）
             "apply_patch" | "ask" | "confirm_apply" | "copy_range" | "delete" | "edit" | "glob"
-            | "grep" | "read" | "skills" | "todo" | "write" => None,
+            | "grep" | "read" | "skills" | "todo" | "todo_create" | "todo_insert" | "todo_list"
+            | "todo_set" | "write" => None,
             // 命令输出
             "bash" | "exec" | "pwsh" => Some(EXEC_CHAR_LIMIT),
             // 大内容

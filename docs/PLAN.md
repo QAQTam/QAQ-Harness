@@ -88,6 +88,14 @@
 | **PR-M3-3 ✅**（2026-09-07） | E2E 门控测试（`QAQH_MCP_E2E=1` 连真实 `npx @upstash/context7-mcp`）——断言结构不变量（≥1 工具/前缀/批次钉底），不锁上游清单；默认 skip，缺 env 打印原因即返回 | `QAQH_MCP_E2E=1 cargo test -p qaqh-mcp --test e2e_context7` **实测通过（1.35s，本机 npx 缓存）；缺 env 默认 skip ✓** |
 | **PR-M3-4 ✅**（2026-09-07） | 文档：`docs/mcp-client-design.md` 状态改 **Phase 1 已实施**（含实施 commit 记录 + S1 传输行更新）；PLAN M3 全表打勾 | 见 §5 总闸（本轮：948 passed / 0 failed、clippy 0、fmt clean、红线零命中） |
 
+## 4b. Phase 2（2026-09-07 增补；owner 优先级：热重载 > 小项 > prompts；webUI 管理缓行）
+
+| PR | 任务 | 出口命令 |
+|---|---|---|
+| **PR-P2-1 ✅**（2026-09-07） | **配置热重载**——`McpManager::apply_config` diff 保连语义（kept 原连接保留/updated 重建/removed 关闭/added 懒纳管/enabled 总闸）；`cfg` 改 `StdMutex`（热换面）；runtime `spawn_mcp_reloader`（watch 单写口订阅 → [mcp] diff → 外部配置重扫 → apply）；`spawn_config_file_poller`（mtime 1.5s 轮询手改文件 → `watch::reload_from_disk` 统一发布）；`Handle::try_current` 守卫（非 async 调用方跳过）；`ConfigStore::path()` getter | `cargo test -p qaqh-mcp --test lifecycle apply_config` + `cargo test -p qaqh-config --lib watch` 全绿 |
+| PR-P2-2 | 观察项④（ToolInvoke 直调 mcp__ 工具无回合投影 → Unknown tool——执行路径投影前置）+ unix socket 传输（`url=unix://` → rmcp unix-socket feature） | 待办 |
+| PR-P2-3 | prompts 能力（连接缓存 prompts/list + 聚合工具 list_prompts/read_prompt action） | 待办 |
+
 ## 5. 质量门禁总闸（每 PR 合入前必跑，继承旧 PLAN §8）
 
 ```powershell

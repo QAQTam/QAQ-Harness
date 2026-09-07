@@ -142,15 +142,11 @@ fn list_servers(manager: &Arc<McpManager>) -> ToolResult {
 /// （指引模型先看 list_servers 或直接 read_resource 触发 lazy connect）。
 fn list_resources(manager: &Arc<McpManager>, server: Option<&serde_json::Value>) -> ToolResult {
     let wanted = server.and_then(|value| value.as_str());
+    let cfg_snapshot = manager.config();
     if let Some(name) = wanted
-        && !manager.config().servers.contains_key(name)
+        && !cfg_snapshot.servers.contains_key(name)
     {
-        let available: Vec<&str> = manager
-            .config()
-            .servers
-            .keys()
-            .map(String::as_str)
-            .collect();
+        let available: Vec<&str> = cfg_snapshot.servers.keys().map(String::as_str).collect();
         return error_result(
             McpErrorKind::NotFound,
             format!("unknown MCP server {name:?}; configured: {available:?}"),
@@ -214,13 +210,9 @@ fn read_resource(
         );
     };
     let (server, uri) = (server.to_owned(), uri.to_owned());
-    if !manager.config().servers.contains_key(&server) {
-        let available: Vec<&str> = manager
-            .config()
-            .servers
-            .keys()
-            .map(String::as_str)
-            .collect();
+    let cfg_snapshot = manager.config();
+    if !cfg_snapshot.servers.contains_key(&server) {
+        let available: Vec<&str> = cfg_snapshot.servers.keys().map(String::as_str).collect();
         return error_result(
             McpErrorKind::NotFound,
             format!("unknown MCP server {server:?}; configured: {available:?}"),

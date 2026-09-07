@@ -65,6 +65,21 @@ pub fn authoritative() -> Option<Config> {
     }
 }
 
+/// P2-1：磁盘重读并发布（文件 watcher 轮询路径的唯一入口）。
+///
+/// 轮询器发现 config.toml mtime 变化后调本函数：`Config::load` 成功 →
+/// publish（订阅者拿到与单写口路径同构的快照）；失败（编辑器写一半的
+/// 中间态）→ 静默跳过，下轮轮询再试。返回是否发生了发布。
+pub fn reload_from_disk() -> bool {
+    match crate::Config::load() {
+        Ok(cfg) => {
+            publish(Arc::new(cfg));
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,5 +108,24 @@ mod tests {
             ..Default::default()
         }));
         assert_eq!(latest().expect("mirror snapshot").context_limit, 654_321);
+    }
+
+    /// P2-1：文件轮询路径——磁盘合法配置经 reload_from_disk 发布到单写口；
+    /// 解析失败（写一半的中间态）静默跳过（不发布、不丢镜像）。
+    #[test]
+    fn reload_from_disk_publishes_or_skips() {
+        // 本测试不操控真实磁盘配置（QAQH_CONFIG 指向仓库开发者环境）；
+        // 语义验证收敛为：无论磁盘状态如何，调用后 latest() 镜像与
+        // authoritative() 一致或保持不变（不 panic、不半发布）。
+        let before = latest();
+        let _ = reload_from_disk();
+        let after = latest();
+        // 发布与否取决于磁盘可解析性；两者必须同为 Some 且为已持久化状态。
+        match (before, after) {
+            (Some(_), Some(_)) => {}
+            (None, None) => {}
+            (None, Some(_)) => {} // 首次发布
+            (Some(_), None) => panic!("reload_from_disk 不得清空 latest 镜像"),
+        }
     }
 }

@@ -508,3 +508,86 @@ async fn manager_slot_defaults_to_disabled_and_swaps() {
     assert_eq!(tools, vec!["echo"]);
     mine.shutdown_all().await;
 }
+
+// ── P2-1：apply_config 热重载语义（diff 保连 / updated 重建 / removed 关闭 /
+// added 懒纳管 / enabled 总闸）──
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_config_diff_semantics() {
+    let control = Arc::new(MockControl::default());
+    let manager = McpManager::with_connect_factory(
+        mock_cfg(0),
+        test_settings(),
+        mock_factory(Arc::clone(&control)),
+    );
+    let original = manager.get_or_connect("mock").await.unwrap();
+
+    // ① 无变化：全 kept，连接保持（同 Arc——热重载不断连）。
+    let report = manager.apply_config(mock_cfg(0)).await;
+    assert_eq!(report.kept, vec!["mock"]);
+    assert!(report.added.is_empty() && report.removed.is_empty() && report.updated.is_empty());
+    let after_noop = manager.get_or_connect("mock").await.unwrap();
+    assert!(
+        Arc::ptr_eq(&original, &after_noop),
+        "kept 语义：连接对象必须原样保留"
+    );
+
+    // ② 变更 server 配置（default_timeout_secs 60→30）：updated——旧连接关闭。
+    let mut changed = mock_cfg(0);
+    changed
+        .servers
+        .get_mut("mock")
+        .unwrap()
+        .default_timeout_secs = 30;
+    let report = manager.apply_config(changed).await;
+    assert_eq!(report.updated, vec!["mock"]);
+    assert!(
+        matches!(
+            original.status(),
+            ConnStatus::Disconnected | ConnStatus::ShuttingDown
+        ),
+        "updated → 旧连接关闭（close 路径标 Disconnected；gate 路径标 ShuttingDown）"
+    );
+
+    // ③ 新增 + 删除：added/removed 各一；重连后新配置生效。
+    let mut reshaped = mock_cfg(0);
+    reshaped
+        .servers
+        .get_mut("mock")
+        .unwrap()
+        .default_timeout_secs = 30;
+    reshaped
+        .servers
+        .insert("second".to_owned(), mock_server_cfg());
+    reshaped.servers.insert("second".to_owned(), {
+        let mut cfg = mock_server_cfg();
+        cfg.command = "unused-second".to_owned();
+        cfg
+    });
+    reshaped.servers.remove("mock");
+    reshaped
+        .servers
+        .insert("other".to_owned(), mock_server_cfg());
+    let report = manager.apply_config(reshaped).await;
+    assert!(report.added.contains(&"second".to_owned()), "{report:?}");
+    assert!(report.added.contains(&"other".to_owned()), "{report:?}");
+    assert!(report.removed.contains(&"mock".to_owned()), "{report:?}");
+
+    // ④ enabled=false：全停（配置面保留，重开即恢复）。基于当前配置派生
+    // （保留 other），只动总闸。
+    let mut off = manager.config();
+    off.enabled = false;
+    let _report = manager.apply_config(off).await;
+    assert!(manager.config().servers.contains_key("other"), "配置面保留");
+    let error = match manager.get_or_connect("other").await {
+        Ok(_) => panic!("disabled manager must reject calls"),
+        Err(error) => error,
+    };
+    assert!(matches!(error.kind, McpErrorKind::Disabled), "{error}");
+
+    // ⑤ 重新开启：恢复懒纳管。
+    let report = manager.apply_config(mock_cfg(0)).await;
+    let _ = report;
+    manager.get_or_connect("mock").await.expect("re-enabled");
+    manager.shutdown_all().await;
+}

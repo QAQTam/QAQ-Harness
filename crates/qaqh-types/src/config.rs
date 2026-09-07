@@ -231,6 +231,11 @@ impl ConfigStore {
         Self::new(crate::platform::config_path())
     }
 
+    /// 配置文件路径（P2-1 文件轮询器等只读场景用）。
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     /// Check whether the config file exists on disk.
     pub fn exists(&self) -> bool {
         self.path.exists()

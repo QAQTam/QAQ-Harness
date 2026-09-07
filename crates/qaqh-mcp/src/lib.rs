@@ -86,7 +86,7 @@ pub fn manager_slot() -> Arc<McpManager> {
 }
 
 /// 装配全局 manager，返回上一个（调用方负责其关闭——QaqhService 装配点
-/// 一次性调用，Phase 1 无热重载）。
+/// 一次性调用；P2-1 热重载路径经 [`manager_slot`] 读取，manager 单例不变）。
 pub fn install_manager(manager: Arc<McpManager>) -> Arc<McpManager> {
     let mut slot = manager_slot_raw()
         .write()

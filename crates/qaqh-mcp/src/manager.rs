@@ -18,11 +18,21 @@ use crate::connection::{ConnStatus, ConnectFactory, LifecycleSettings, ServerCon
 use crate::error::{McpError, McpErrorKind};
 use qaqh_config::config::McpConfig;
 
+/// P2-1：[`McpManager::apply_config`] 的 diff 报告（热重载日志/观测用）。
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ApplyReport {
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+    pub updated: Vec<String>,
+    pub kept: Vec<String>,
+}
+
 /// daemon 级单例：配置快照 + 连接表 + 关闭闸。
 ///
 /// 配置热重载归 Phase 2（设计 §6）——M1-2 以构建时快照为准。
 pub struct McpManager {
-    cfg: McpConfig,
+    /// 配置面（P2-1 热重载可换；读点短临界区 clone）。
+    cfg: StdMutex<McpConfig>,
     settings: LifecycleSettings,
     gate: Arc<AtomicBool>,
     /// 任一连接的工具缓存变化时置位；`take_projection_batch` 消费后复位。
@@ -70,7 +80,7 @@ impl McpManager {
         secret_store: Option<SecretStore>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            cfg,
+            cfg: StdMutex::new(cfg),
             settings,
             gate: Arc::new(AtomicBool::new(false)),
             dirty: Arc::new(AtomicBool::new(false)),
@@ -85,9 +95,21 @@ impl McpManager {
         Self::new(McpConfig::default())
     }
 
-    /// 配置快照（只读）。
-    pub fn config(&self) -> &McpConfig {
-        &self.cfg
+    /// 配置快照（P2-1 热重载下配置可变——返回 clone 而非引用）。
+    pub fn config(&self) -> McpConfig {
+        self.lock_cfg().clone()
+    }
+
+    fn lock_cfg(&self) -> std::sync::MutexGuard<'_, McpConfig> {
+        self.cfg
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+    fn snapshot_cfg(&self) -> McpConfig {
+        self.lock_cfg().clone()
+    }
+    fn set_cfg(&self, cfg: McpConfig) {
+        *self.lock_cfg() = cfg;
     }
 
     /// `shutting_down` 闸状态。
@@ -116,13 +138,76 @@ impl McpManager {
         self.dirty.store(true, Ordering::Relaxed);
     }
 
+    /// P2-1：热重载——新 `[mcp]` 配置并入运行时（免重启 daemon）。
+    ///
+    /// diff 语义（保连优先）：
+    /// - **kept**：server 配置未变 → 连接原样保留（idle 回收/调用中状态不丢）；
+    /// - **updated**：配置变了 → 旧连接关闭、以新配置重新纳管（下次调用重连）；
+    /// - **removed**：从配置删除 → 关闭并移除；
+    /// - `enabled` 总闸变化：`false` → 全部关闭（配置面保留，重开即恢复）；
+    /// - `idle_shutdown_secs` 变化仅更新 manager 层（已有连接的 idle 参数待
+    ///   下次自然重连后生效——文档化决策，避免全量重建）。
+    ///
+    /// 恒置脏：重载后投影批次重建（工具集/聚合名单可能变化）。
+    pub async fn apply_config(self: &Arc<Self>, new_cfg: McpConfig) -> ApplyReport {
+        let mut report = ApplyReport::default();
+        let old_servers = self.snapshot_cfg().servers;
+
+        // 1) diff：删除/变更 → 关闭移出；未变 → kept。
+        let mut removed_names = Vec::new();
+        for (name, old_server_cfg) in &old_servers {
+            match new_cfg.servers.get(name) {
+                None => removed_names.push(name.clone()),
+                Some(new_server_cfg) if new_server_cfg != old_server_cfg => {
+                    report.updated.push(name.clone());
+                    removed_names.push(name.clone());
+                }
+                Some(_) => report.kept.push(name.clone()),
+            }
+        }
+        for name in &removed_names {
+            let conn = {
+                let mut conns = self.lock_conns();
+                conns.remove(name)
+            };
+            if let Some(conn) = conn {
+                conn.shutdown().await;
+            }
+        }
+        report.removed = removed_names;
+
+        // 2) 新增（不在旧配置的名单）——lazy 语义：不主动连，下次调用/prime 连。
+        for name in new_cfg.servers.keys() {
+            if !old_servers.contains_key(name) {
+                report.added.push(name.clone());
+            }
+        }
+
+        // 3) 总闸：enabled=false → 全停（配置面保留；重开闸即恢复 lazy 连接）。
+        if !new_cfg.enabled {
+            let conns: Vec<Arc<ServerConnection>> = {
+                let mut map = self.lock_conns();
+                std::mem::take(&mut *map).into_values().collect()
+            };
+            for conn in &conns {
+                conn.shutdown().await;
+            }
+            report.removed.append(&mut report.kept);
+        }
+
+        self.set_cfg(new_cfg);
+        self.dirty.store(true, Ordering::Relaxed);
+        report
+    }
+
     /// 取连接并确保已连接（lazy connect 入口；幂等）。
     ///
     /// 拒绝路径（设计 §5.1）：`enabled=false` → `MCP_DISABLED`；闸已落下 →
     /// `MCP_SHUTDOWN`；未知 server → `MCP_NOT_FOUND`（附可用名单）；连接
     /// 失败/超时/冷却 → 对应错误码。
     pub async fn get_or_connect(&self, server: &str) -> Result<Arc<ServerConnection>, McpError> {
-        if !self.cfg.enabled {
+        let cfg_snapshot = self.snapshot_cfg();
+        if !cfg_snapshot.enabled {
             return Err(McpError::new(
                 McpErrorKind::Disabled,
                 "[mcp].enabled=false — enable MCP in config.toml to use MCP tools".to_owned(),
@@ -134,8 +219,8 @@ impl McpManager {
                 "daemon is shutting down; MCP calls rejected".to_owned(),
             ));
         }
-        let server_cfg = self.cfg.servers.get(server).cloned().ok_or_else(|| {
-            let available: Vec<&str> = self.cfg.servers.keys().map(String::as_str).collect();
+        let server_cfg = cfg_snapshot.servers.get(server).cloned().ok_or_else(|| {
+            let available: Vec<&str> = cfg_snapshot.servers.keys().map(String::as_str).collect();
             McpError::new(
                 McpErrorKind::NotFound,
                 format!("unknown MCP server {server:?}; configured: {available:?}"),
@@ -150,7 +235,7 @@ impl McpManager {
                 let conn = Arc::new(ServerConnection::new(
                     server.to_owned(),
                     server_cfg,
-                    self.cfg.idle_shutdown_secs,
+                    cfg_snapshot.idle_shutdown_secs,
                     self.settings.clone(),
                     Arc::clone(&self.gate),
                     Arc::clone(&self.dirty),
@@ -172,10 +257,10 @@ impl McpManager {
     /// 可用优于全部不可用）；成功连接即缓存 tools/list 并置脏，下个回合边界
     /// `take_projection_batch` 即可拉到批次。
     pub async fn prime_all(&self) {
-        if !self.cfg.enabled {
+        if !self.snapshot_cfg().enabled {
             return;
         }
-        for name in self.cfg.servers.keys() {
+        for name in self.snapshot_cfg().servers.keys() {
             if let Err(error) = self.get_or_connect(name).await {
                 log::warn!("[mcp] prime {name}: {error}");
             }
@@ -190,7 +275,7 @@ impl McpManager {
     /// 闸已落下 → 每行标注 shutting_down。
     pub fn server_status_lines(&self) -> Vec<String> {
         let shutting = self.gate.load(Ordering::Relaxed);
-        self.cfg
+        self.snapshot_cfg()
             .servers
             .keys()
             .map(|name| {

@@ -60,6 +60,16 @@ impl QaqhService {
         // store 用默认位置（[secrets.mcp] 段）；禁用配置时 manager 以
         // disabled 形态拒绝一切调用（MCP_DISABLED）。
         qaqh_mcp::install_manager(qaqh_mcp::McpManager::new(config.mcp.clone()));
+        // P2-1：热重载接线——①重载器：订阅 watch 单写口广播，[mcp] 段变化
+        // → 外部配置重扫（Codex/Claude 用户级）→ apply_config diff 保连；
+        // ②文件轮询器：手改 config.toml（不经单写口）→ mtime 检测 →
+        // reload_from_disk 统一发布。fire-and-forget，不阻塞启动。守卫：
+        // 仅在 tokio runtime 上下文内接线（daemon main 是 async；单元测试
+        // 等同步调用方跳过——热重载只对长驻 daemon 有意义）。
+        if tokio::runtime::Handle::try_current().is_ok() {
+            spawn_mcp_reloader();
+            spawn_config_file_poller();
+        }
         // 投影预热（PR-M1-5 冒烟修正）：lazy 连接的唯一触发点是工具执行，
         // 而工具要先投影才会被调用——不预热则全新 daemon 上模型首回合永远
         // 看不到 MCP 工具（鸡生蛋死锁）。fire-and-forget：逐 server 连接
@@ -757,6 +767,79 @@ impl QaqhService {
         self.update_config_and_reload(|cfg| qaqh_config::dto::apply_patch(cfg, &patch))
             .map(|_| ())
     }
+}
+
+/// P2-1：MCP 热重载器——订阅 watch 单写口广播，只对 `[mcp]` 段变化响应。
+///
+/// 链路：`Config::update`（webUI/CLI）或文件轮询发布 → `watch::subscribe`
+/// 唤醒 → 新配置的 [mcp] 与 manager 当前配置不等 → merge_external 重扫
+/// （外部 Codex/Claude 用户级文件的变化在此一并捕获）→ `apply_config`
+/// diff 热更新 → 投影置脏（下一回合投影批次自动重建）。日志记录 diff 报告。
+fn spawn_mcp_reloader() {
+    let mut rx = qaqh_config::watch::subscribe();
+    tokio::spawn(async move {
+        // 首个广播是启动期快照（manager 已按它装配）——消费掉，避免空转 apply。
+        if rx.changed().await.is_ok() {
+            rx.borrow_and_update();
+        }
+        while rx.changed().await.is_ok() {
+            let Some(published) = rx.borrow_and_update().clone() else {
+                continue;
+            };
+            let manager = qaqh_mcp::manager_slot();
+            if published.mcp == manager.config() {
+                continue; // 非 [mcp] 段变更：与 MCP 无关，跳过
+            }
+            let mut new_mcp = published.mcp.clone();
+            // 外部配置重扫：ext-* 条目随用户级外部文件变化增删；本地
+            // 手写面优先的碰撞语义与启动路径一致。
+            let (codex_path, claude_path) = qaqh_config::mcp_import::default_user_paths();
+            let _ =
+                qaqh_config::mcp_import::merge_external(&mut new_mcp, &codex_path, &claude_path);
+            let report = manager.apply_config(new_mcp).await;
+            log::info!(
+                "[mcp] hot-reload applied (added={:?} updated={:?} removed={:?} kept={} conn)",
+                report.added,
+                report.updated,
+                report.removed,
+                report.kept.len()
+            );
+        }
+        log::warn!("[mcp] hot-reload watcher channel closed; exiting");
+    });
+}
+
+/// P2-1：config.toml 文件轮询器——手改文件（不经 `Config::update` 单写口）
+/// 也能触发热重载。
+///
+/// 策略：mtime 检测（1.5s 周期）→ 变化即 `reload_from_disk()`（内部：
+/// 解析失败——编辑器写一半——静默跳过，下轮再试；成功则统一发布，
+/// 重载器随之生效）。轮询而非 inotify：无新依赖，低频配置变更场景足够。
+fn spawn_config_file_poller() {
+    const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1500);
+    tokio::spawn(async move {
+        let path = qaqh_types::ConfigStore::default_location()
+            .path()
+            .to_path_buf();
+        let mut last_mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        loop {
+            tokio::time::sleep(POLL_INTERVAL).await;
+            let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+            if mtime.is_some() && mtime != last_mtime {
+                last_mtime = mtime;
+                if qaqh_config::watch::reload_from_disk() {
+                    log::info!(
+                        "[config] file change detected ({}); reloaded",
+                        path.display()
+                    );
+                }
+            } else if mtime.is_none() && last_mtime.is_some() {
+                // 文件被删除：记录状态，不发布（等待恢复或编辑器原子替换）。
+                log::warn!("[config] config file missing ({}); waiting", path.display());
+                last_mtime = None;
+            }
+        }
+    });
 }
 
 pub(crate) mod common;

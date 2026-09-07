@@ -141,7 +141,7 @@ pub enum McpTransportKind {
 }
 
 /// 单个 MCP server 的运行时配置（已通过 fail-fast 校验）。
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct McpServerConfig {
     pub transport: McpTransportKind,
     /// stdio 启动命令（如 "npx"）；http 时为空。
@@ -163,7 +163,7 @@ pub struct McpServerConfig {
 }
 
 /// MCP 客户端运行时配置。
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct McpConfig {
     pub enabled: bool,
     /// idle 回收阈值（秒）；0 = 常驻不回收。判定口径：`inflight == 0` 连续该时长。

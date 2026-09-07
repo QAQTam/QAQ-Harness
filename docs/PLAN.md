@@ -96,6 +96,12 @@
 | **PR-P2-2 ✅**（2026-09-07） | 观察项④修复（`qaqh_mcp::sync_projection_now` 公开幂等投影 + engine_tool `handle_ui_tool_call` 在 mcp 前缀工具上前置 apply——UI 直调不再依赖回合边界）；unix socket 传输（url 校验放宽 `unix://` + adapter scheme 分发 → `from_unix_socket(path, "/mcp")`；内部路径约定 /mcp） | `cargo test -p qaqh-mcp --test http_transport` 5/5（新增 uds round_trip + missing path 失败语义） |
 | **PR-P2-3 ✅**（2026-09-07） | prompts 能力——连接后 try-fetch `prompts/list` 入缓存（无 prompts 能力的 server method-not-found 静默降级，**不置脏**——不进工具投影）；`cached_prompts` + `get_prompt` 代理；聚合工具扩 `list_prompts`（server 可选，name/description/argument schema 行式清单）与 `read_prompt`（server+name+arguments → 渲染消息序列，lazy connect + 超时/取消同 read_resource 桥） | `cargo test -p qaqh-mcp --test resources` 20/20（新增缓存/渲染/缺 name 三用例） |
 
+**P2 冒烟实录（2026-09-07，隔离实例 QAQH_DATA_DIR）**：手改 config.toml →
+poller 检测（`file change detected; reloaded`）→ reloader diff——
+`added=["demo"]` → `enabled=false` → `removed=["demo"]` → 重开 →
+`kept=1 conn`（配置未变，连接懒恢复）。全链路（轮询→发布→diff→保连）实证通过；
+用户 daemon（194715）全程零影响。
+
 ## 5. 质量门禁总闸（每 PR 合入前必跑，继承旧 PLAN §8）
 
 ```powershell

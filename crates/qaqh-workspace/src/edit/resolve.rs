@@ -182,11 +182,6 @@ pub(crate) fn resolve(view: &FileView, hunk: &Hunk, loc: &Located) -> ResolvedOp
             };
             ResolvedOp::Replace { range, new }
         }
-        Hunk::Overwrite { new } => ResolvedOp::Replace {
-            // 无缩进补偿：new 是全文，Tier1 恒命中。
-            range: 0..view.content.len(),
-            new: new.clone(),
-        },
         Hunk::InsertAfter { new, .. } => {
             let pos = view.char_starts[loc.start_line + loc.win_lines];
             // 锚点窗口是文件尾且无尾随换行：先补换行，避免新内容粘在最后一行上。

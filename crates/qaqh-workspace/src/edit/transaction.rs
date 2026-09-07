@@ -56,26 +56,6 @@ pub(crate) fn run_edit(
     notes: Vec<String>,
     mode: Mode,
 ) -> FileOutcome {
-    // overwrite 是整文件独占语义：单个调用里只能有它自己。
-    let overwrite_count = hunks
-        .iter()
-        .filter(|h| matches!(h, Hunk::Overwrite { .. }))
-        .count();
-    if overwrite_count > 1 || (overwrite_count == 1 && hunks.len() > 1) {
-        return FileOutcome {
-            edited: None,
-            new_hash: None,
-            diff: String::new(),
-            reports: Vec::new(),
-            code: Some("OVERWRITE_EXCLUSIVE".to_string()),
-            message: Some(
-                "overwrite replaces the WHOLE file and must be the only hunk in the call; use one overwrite alone, or prepend_file/append_file/replace hunks for incremental edits"
-                    .to_string(),
-            ),
-            notes,
-            shifts: Vec::new(),
-        };
-    }
     let view = FileView::new(content);
     let mut reports: Vec<HunkReport> = Vec::with_capacity(hunks.len());
     let mut located: Vec<Vec<Located>> = Vec::with_capacity(hunks.len());

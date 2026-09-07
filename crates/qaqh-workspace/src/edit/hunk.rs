@@ -19,11 +19,6 @@ pub(crate) enum Hunk {
         /// 不触碰默认路径（未提供时行为与原来完全一致）。
         hint_line: Option<usize>,
     },
-    /// 整文件覆盖（等价 write 的 content 语义）：不要求 `old`，恒成功；
-    /// **独占**——必须单独调用，与其它 hunk 混用报 OVERWRITE_EXCLUSIVE。
-    Overwrite {
-        new: String,
-    },
     InsertAfter {
         anchor: String,
         new: String,
@@ -57,7 +52,6 @@ impl Hunk {
     pub(crate) fn kind_name(&self) -> &'static str {
         match self {
             Hunk::Replace { .. } => "replace",
-            Hunk::Overwrite { .. } => "overwrite",
             Hunk::InsertAfter { .. } => "insert_after",
             Hunk::InsertBefore { .. } => "insert_before",
             Hunk::PrependFile { .. } => "prepend_file",
@@ -110,16 +104,6 @@ impl Hunk {
                     context_after: norm(context_after, notes),
                     replace_all,
                     hint_line: parse_hint_line(v),
-                })
-            }
-            "overwrite" => {
-                let new = v
-                    .get("new")
-                    .and_then(|x| x.as_str())
-                    .ok_or_else(|| "overwrite hunk requires 'new'".to_string())?;
-                // 整文件语义：忽略可能误传的 old/context（write 语义不看旧内容）。
-                Ok(Hunk::Overwrite {
-                    new: norm(new, notes),
                 })
             }
             "insert_after" | "insert_before" => {

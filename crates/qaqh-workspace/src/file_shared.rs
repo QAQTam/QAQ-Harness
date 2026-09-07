@@ -6,7 +6,6 @@ use std::path::Path;
 // ── Shared limits (read/edit 统一上限，单点维护) ──
 pub(crate) const READ_MAX_LINES: usize = 400;
 pub(crate) const READ_MAX_CHARS: usize = 24_000;
-pub(crate) const READ_MAX_CONTEXT: usize = 100;
 pub(crate) const CONTENT_CAP: usize = 64 * 1024;
 pub(crate) const CANDIDATE_MAX: usize = 3;
 pub(crate) const SNIPPET_MAX: usize = 120;

@@ -419,28 +419,15 @@ pub fn needs_permission(
         return PermissionDecision::AutoApprove;
     }
 
-    // `process` / `edit` 按调用形态细分（per-action 授权颗粒度的扩展点）：
+    // `process` 按调用形态细分（per-action 授权颗粒度的扩展点）：
     // - process: check/wait 只读、kill/write 控制进程；
-    // - edit: hunks 缺失/空 = 读路径（Read，不触发写确认；整文件 /
-    //   行号范围 / 锚定读三种形态均只读），非空 = 编辑/创建（Write）。未来对
-    //   read/edit/create/overwrite 各自粒度授权时，在本 match 内扩展。
+    // - edit 已收敛为纯写工具（read 模式移除，行号系统归 read 工具）。
     let category = match tool_name {
         "process" => match args.get("action").and_then(|value| value.as_str()) {
             Some("check" | "wait") => ToolCategory::Read,
             Some("write" | "kill") => ToolCategory::Exec,
             _ => ToolCategory::Write,
         },
-        "edit" => {
-            let has_hunks = args
-                .get("hunks")
-                .and_then(|v| v.as_array())
-                .is_some_and(|a| !a.is_empty());
-            if has_hunks {
-                ToolCategory::Write
-            } else {
-                ToolCategory::Read
-            }
-        }
         _ => declared_category,
     };
     let paths = extract_target_paths(tool_name, args);
@@ -676,38 +663,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn edit_empty_hunks_classified_as_read() {
-        // 空 hunks = 读路径 → 动态分类 Read（handler 声明仍为 Write，由
-        // admit() 按调用形态覆盖）→ ReadFree 下自动放行。
-        let read = needs_permission(
-            PermissionLevel::ReadFree,
-            "edit",
-            &serde_json::json!({"path": "a.txt", "hunks": []}),
-            Path::new("."),
-            &HashSet::new(),
-            ToolCategory::Write,
-        );
-        assert!(
-            matches!(read, PermissionDecision::AutoApprove),
-            "read path should auto-approve at ReadFree, got: {read:?}"
-        );
-
-        // 非空 hunks = 编辑 → Write → ReadFree 下需确认。
-        let edit = needs_permission(
-            PermissionLevel::ReadFree,
-            "edit",
-            &serde_json::json!({"path": "a.txt", "hunks": [{"kind": "replace", "old": "a", "new": "b"}]}),
-            Path::new("."),
-            &HashSet::new(),
-            ToolCategory::Write,
-        );
-        assert!(
-            matches!(edit, PermissionDecision::AskUser { .. }),
-            "edit path should ask at ReadFree, got: {edit:?}"
-        );
     }
 
     #[test]

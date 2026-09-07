@@ -37,7 +37,7 @@ pub(crate) const MAX_HUNKS: usize = 64;
 
 /// 读取相关上限（复用 file_shared 单点上限）
 pub(crate) use crate::file_shared::{
-    CANDIDATE_MAX, CONTENT_CAP, READ_MAX_CHARS, READ_MAX_CONTEXT, READ_MAX_LINES, SNIPPET_MAX,
+    CANDIDATE_MAX, CONTENT_CAP, READ_MAX_CHARS, READ_MAX_LINES, SNIPPET_MAX,
 };
 /// hint_line 兜底窗口
 pub(crate) const HINT_WINDOW: usize = 10;
@@ -50,7 +50,6 @@ pub mod handler;
 pub mod hunk;
 pub mod locate;
 pub mod matching;
-pub mod read;
 pub mod resolve;
 pub mod transaction;
 pub mod view;

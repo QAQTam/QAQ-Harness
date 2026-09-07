@@ -685,134 +685,21 @@ fn multibyte_replace_with_trailing_newline() {
     );
 }
 
-// ── overwrite（D10）──
-
 // O1. 整文件覆盖：new 全文替换，Tier1 恒命中
-#[test]
-fn overwrite_replaces_whole_file() {
-    let out = edit(
-        "a\nb\nc\n",
-        &[Hunk::Overwrite {
-            new: "x\ny\n".into(),
-        }],
-    );
-    assert_eq!(out.edited.as_deref(), Some("x\ny\n"));
-    assert_eq!(out.reports[0].tier, Some(1));
-    assert_eq!(out.reports[0].kind, "overwrite");
-    assert_eq!(out.reports[0].status, "ok");
-}
 
 // O2. 空内容（创建路径）上 overwrite = 创建
-#[test]
-fn overwrite_on_empty_content_creates() {
-    let out = edit("", &[Hunk::Overwrite { new: "x\n".into() }]);
-    assert_eq!(out.edited.as_deref(), Some("x\n"));
-}
 
 // O3. overwrite 与其他 hunk 混用 → OVERWRITE_EXCLUSIVE（独占语义）
-#[test]
-fn overwrite_mixed_with_other_hunks_rejected() {
-    let out = edit(
-        "a\n",
-        &[rp("a", "b"), Hunk::Overwrite { new: "x\n".into() }],
-    );
-    assert_eq!(err_code(&out), "OVERWRITE_EXCLUSIVE");
-    assert!(out.edited.is_none());
-    assert_eq!(out.reports.len(), 0);
-}
 
 // O4. 两个 overwrite → OVERWRITE_EXCLUSIVE
-#[test]
-fn two_overwrites_rejected() {
-    let out = edit(
-        "a\n",
-        &[
-            Hunk::Overwrite { new: "x\n".into() },
-            Hunk::Overwrite { new: "y\n".into() },
-        ],
-    );
-    assert_eq!(err_code(&out), "OVERWRITE_EXCLUSIVE");
-    assert!(out.edited.is_none());
-}
 
 // O5. parse：overwrite 只要 new；误传的 old 被忽略（整文件语义不看旧内容）
-#[test]
-fn overwrite_parse_ignores_old() {
-    let mut notes = Vec::new();
-    let h = Hunk::parse(
-        &json!({"kind": "overwrite", "new": "x\ny\n", "old": "irrelevant"}),
-        &mut notes,
-    );
-    assert_eq!(
-        h,
-        Ok(Hunk::Overwrite {
-            new: "x\ny\n".into()
-        })
-    );
-    // 缺 new → 报错
-    let h2 = Hunk::parse(&json!({"kind": "overwrite"}), &mut notes);
-    assert!(h2.is_err());
-    // unknown kind 消息包含 overwrite
-    let h3 = Hunk::parse(&json!({"kind": "nope", "new": "x"}), &mut notes);
-    assert!(
-        h3.unwrap_err()
-            .contains("expected replace / overwrite / insert_after")
-    );
-}
 
 // O6. exec 层：overwrite 创建新文件
-#[test]
-fn overwrite_creates_new_file_via_exec() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("new.txt");
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "hunks": [{"kind": "overwrite", "new": "hello\nworld\n"}],
-    }));
-    assert!(result.is_success(), "model text: {}", result.model.text);
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello\nworld\n");
-    // 台账已记录（创建）
-    assert!(crate::file_state::last_hash(&path.to_string_lossy()).is_some());
-}
 
 // O7. exec 层：overwrite 覆盖已有文件
-#[test]
-fn overwrite_replaces_existing_file_via_exec() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    std::fs::write(&path, "old content\n").unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "hunks": [{"kind": "overwrite", "new": "brand new\n"}],
-    }));
-    assert!(result.is_success(), "model text: {}", result.model.text);
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "brand new\n");
-}
 
 // O8. overwrite + expected_hash：错值拒绝（防覆盖竞争写），对值通过
-#[test]
-fn overwrite_with_expected_hash_guards_stale() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    std::fs::write(&path, "a\nb\n").unwrap();
-    let bad = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "expected_hash": "deadbeef",
-        "hunks": [{"kind": "overwrite", "new": "x\n"}],
-    }));
-    assert!(!bad.is_success());
-    assert_eq!(bad.data["code"], "HASH_MISMATCH");
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\nb\n");
-
-    let good = content_hash("a\nb\n");
-    let ok = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "expected_hash": good,
-        "hunks": [{"kind": "overwrite", "new": "x\n"}],
-    }));
-    assert!(ok.is_success(), "model text: {}", ok.model.text);
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "x\n");
-}
 
 // O9. 不存在文件上误用 replace → NO_MATCH + 创建提示（hint 含 does not exist）
 #[test]
@@ -838,379 +725,48 @@ fn replace_on_missing_file_hints_creation() {
 }
 
 // O10. exec 层混用 → OVERWRITE_EXCLUSIVE 透传
-#[test]
-fn overwrite_mixed_rejected_via_exec() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    std::fs::write(&path, "a\n").unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "hunks": [
-            {"kind": "replace", "old": "a", "new": "b"},
-            {"kind": "overwrite", "new": "x\n"}
-        ],
-    }));
-    assert!(!result.is_success());
-    assert_eq!(result.data["code"], "OVERWRITE_EXCLUSIVE");
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\n");
-}
 
 // ── 读路径（空 hunks = 读，二元组场景）──
 
 // R1. 空 hunks 读已有文件：read_only + content + hash + line_count，不写盘
-#[test]
-fn empty_hunks_reads_existing_file() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    std::fs::write(&path, "a\nb\nc\n").unwrap();
-    let mtime_before = std::fs::metadata(&path).unwrap().modified().unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "hunks": [],
-    }));
-    assert!(result.is_success(), "model text: {}", result.model.text);
-    assert_eq!(result.data["read_only"], true);
-    // 内容在 model_text（对齐 read：data 只放元数据）
-    assert!(result.model_text().contains("a\nb\nc\n"));
-    assert_eq!(result.data["line_count"], 3);
-    assert_eq!(result.data["hash"], content_hash("a\nb\nc\n"));
-    assert_eq!(result.data["truncated"], false);
-    // 不写盘（mtime 不变）
-    let mtime_after = std::fs::metadata(&path).unwrap().modified().unwrap();
-    assert_eq!(mtime_before, mtime_after);
-}
 
 // R2. 省略 hunks 字段同样走读路径
-#[test]
-fn missing_hunks_reads_existing_file() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    std::fs::write(&path, "hello\n").unwrap();
-    let result = exec_edit(&json!({ "path": path.to_string_lossy() }));
-    assert!(result.is_success(), "model text: {}", result.model.text);
-    assert_eq!(result.data["read_only"], true);
-    assert_eq!(result.data["hash"], content_hash("hello\n"));
-}
 
 // R3. 空 hunks 读不存在的文件 → FILE_NOT_FOUND，且不创建
-#[test]
-fn empty_hunks_on_missing_file_reports_not_found() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("ghost.txt");
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "hunks": [],
-    }));
-    assert!(!result.is_success());
-    assert_eq!(result.data["code"], "FILE_NOT_FOUND");
-    assert!(!path.exists());
-}
 
 // R4. 读→编辑闭环：读的 hash 直接作 expected_hash 编辑成功
-#[test]
-fn read_hash_chains_into_edit() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    std::fs::write(&path, "x\n").unwrap();
-    let read = exec_edit(&json!({ "path": path.to_string_lossy(), "hunks": [] }));
-    assert!(read.is_success());
-    let h = read.data["hash"].as_str().unwrap().to_string();
-    let edit = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "expected_hash": h,
-        "hunks": [{"kind": "replace", "old": "x", "new": "y"}],
-    }));
-    assert!(edit.is_success(), "model text: {}", edit.model.text);
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "y\n");
-}
 
 // ── 读路径扩展：行号范围读（grep 直连）──
 
 // R5. 范围读：L 前缀行 + 元数据，hash 为全文件 hash
-#[test]
-fn range_read_returns_prefixed_lines() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    std::fs::write(&path, "a\nb\nc\nd\ne\n").unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "start_line": 2,
-        "end_line": 4,
-    }));
-    assert!(result.is_success(), "model text: {}", result.model.text);
-    assert!(result.model_text().contains("L2: b\nL3: c\nL4: d"));
-    assert_eq!(result.data["start_line"], 2);
-    assert_eq!(result.data["end_line"], 4);
-    assert_eq!(result.data["total_lines"], 5);
-    assert_eq!(result.data["hash"], content_hash("a\nb\nc\nd\ne\n"));
-    assert_eq!(result.data["truncated"], false);
-}
 
 // R6. 只给 start_line：读到文件尾
-#[test]
-fn range_read_start_only_reads_to_eof() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    std::fs::write(&path, "a\nb\nc\nd\ne\n").unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "start_line": 4,
-    }));
-    assert!(result.is_success(), "model text: {}", result.model.text);
-    assert!(result.model_text().contains("L4: d\nL5: e"));
-    assert_eq!(result.data["end_line"], 5);
-}
 
 // R7. 越界 → LINE_OUT_OF_RANGE（带 total_lines + hash）
-#[test]
-fn range_read_out_of_range_reports_total_lines() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    std::fs::write(&path, "a\nb\nc\n").unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "start_line": 6,
-    }));
-    assert!(!result.is_success());
-    assert_eq!(result.data["code"], "LINE_OUT_OF_RANGE");
-    assert_eq!(result.data["total_lines"], 3);
-    assert_eq!(result.data["hash"], content_hash("a\nb\nc\n"));
-}
 
 // R8. end < start → PARSE_ERROR
-#[test]
-fn range_read_inverted_bounds_rejected() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    std::fs::write(&path, "a\nb\nc\n").unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "start_line": 4,
-        "end_line": 2,
-    }));
-    assert!(!result.is_success());
-    assert_eq!(result.error.as_ref().unwrap().code, "PARSE_ERROR");
-}
 
 // R9. 行号从 1 开始
-#[test]
-fn range_read_zero_line_rejected() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    std::fs::write(&path, "a\n").unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "start_line": 0,
-    }));
-    assert!(!result.is_success());
-    assert_eq!(result.error.as_ref().unwrap().code, "PARSE_ERROR");
-}
 
 // R10. 行数超上限 → RANGE_TOO_LARGE
-#[test]
-fn range_read_too_many_lines_rejected() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    std::fs::write(&path, "x\n".repeat(450)).unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "start_line": 1,
-        "end_line": 450,
-    }));
-    assert!(!result.is_success());
-    assert_eq!(result.data["code"], "RANGE_TOO_LARGE");
-}
 
 // R11. 字符预算超限 → RANGE_TOO_LARGE
-#[test]
-fn range_read_exceeding_char_budget_rejected() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    let line = "y".repeat(100);
-    let content = (0..300)
-        .map(|_| line.clone())
-        .collect::<Vec<_>>()
-        .join("\n");
-    std::fs::write(&path, content).unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "start_line": 1,
-        "end_line": 300,
-    }));
-    assert!(!result.is_success());
-    assert_eq!(result.data["code"], "RANGE_TOO_LARGE");
-}
 
 // ── 读路径扩展：锚定读（复用定位引擎）──
 
 // R12. 锚定读基本：唯一命中 → 窗口 + anchor_line + tier + 全文件 hash
-#[test]
-fn anchored_read_locates_unique_anchor() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.rs");
-    std::fs::write(
-        &path,
-        "line one\nfn foo(a: i32) -> i32 {\n    a + 1\n}\nline five\n",
-    )
-    .unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "anchor": "fn foo(a: i32) -> i32 {",
-    }));
-    assert!(result.is_success(), "model text: {}", result.model.text);
-    assert!(result.model_text().contains("L2: fn foo(a: i32) -> i32 {"));
-    assert_eq!(result.data["anchor_line"], 2);
-    assert_eq!(result.data["anchor_lines"], 1);
-    assert_eq!(result.data["tier"], 1);
-    assert_eq!(result.data["start_line"], 1);
-    assert_eq!(result.data["end_line"], 5);
-    assert_eq!(result.data["total_lines"], 5);
-    assert_eq!(
-        result.data["hash"],
-        content_hash("line one\nfn foo(a: i32) -> i32 {\n    a + 1\n}\nline five\n")
-    );
-}
 
 // R13. 锚定读上下文窗口：context_before/context_after 控制展示范围
-#[test]
-fn anchored_read_context_window() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.rs");
-    std::fs::write(
-        &path,
-        "line one\nfn foo(a: i32) -> i32 {\n    a + 1\n}\nline five\n",
-    )
-    .unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "anchor": "fn foo(a: i32) -> i32 {",
-        "context_before": 1,
-        "context_after": 1,
-    }));
-    assert!(result.is_success(), "model text: {}", result.model.text);
-    assert_eq!(
-        result.model_text(),
-        "L1: line one\nL2: fn foo(a: i32) -> i32 {\nL3:     a + 1"
-    );
-    assert_eq!(result.data["start_line"], 1);
-    assert_eq!(result.data["end_line"], 3);
-}
 
 // R14. 模糊锚 → ANCHOR_AMBIGUOUS + 候选（读阶段消歧，改阶段不再失败）
-#[test]
-fn anchored_read_ambiguous_returns_candidates() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    std::fs::write(&path, "dup\ndup\n").unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "anchor": "dup",
-    }));
-    assert!(!result.is_success());
-    assert_eq!(result.data["code"], "ANCHOR_AMBIGUOUS");
-    let cands = result.data["candidates"].as_array().unwrap();
-    assert!(!cands.is_empty());
-    assert!(
-        result
-            .error
-            .as_ref()
-            .and_then(|e| e.hint.as_deref())
-            .is_some_and(|h| h.contains("context_before"))
-    );
-}
 
 // R15. 未命中 → NO_MATCH + 候选
-#[test]
-fn anchored_read_no_match_returns_candidates() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    std::fs::write(&path, "alpha\nbeta\n").unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "anchor": "zzz_nope",
-    }));
-    assert!(!result.is_success());
-    assert_eq!(result.data["code"], "NO_MATCH");
-}
 
 // R16. 参数互斥与依赖校验
-#[test]
-fn read_mode_parameter_conflicts_rejected() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    std::fs::write(&path, "a\n").unwrap();
-    // start_line 与 anchor 互斥
-    let r1 = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "start_line": 1,
-        "anchor": "a",
-    }));
-    assert!(!r1.is_success());
-    assert_eq!(r1.data["code"], "PARSE_ERROR");
-    // context 必须配 anchor
-    let r2 = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "context_before": 3,
-    }));
-    assert!(!r2.is_success());
-    assert_eq!(r2.data["code"], "PARSE_ERROR");
-    // context 窗口超上限
-    let r3 = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "anchor": "a",
-        "context_after": 200,
-    }));
-    assert!(!r3.is_success());
-    assert_eq!(r3.data["code"], "PARSE_ERROR");
-}
 
 // R17. 范围读的 hash 链进编辑（grep → 读 → 改 闭环）
-#[test]
-fn range_read_hash_chains_into_edit() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    std::fs::write(&path, "a\nb\nc\n").unwrap();
-    let read = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "start_line": 2,
-        "end_line": 2,
-    }));
-    assert!(read.is_success());
-    let h = read.data["hash"].as_str().unwrap().to_string();
-    let edit = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "expected_hash": h,
-        "hunks": [{"kind": "replace", "old": "b", "new": "B"}],
-    }));
-    assert!(edit.is_success(), "model text: {}", edit.model.text);
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\nB\nc\n");
-}
 
 // R18. 锚定读的 hash 链进编辑（锚定读 → 同锚编辑 闭环）
-#[test]
-fn anchored_read_hash_chains_into_edit() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    std::fs::write(&path, "pre\ntarget\npost\n").unwrap();
-    let read = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "anchor": "target",
-        "context_before": 1,
-        "context_after": 1,
-    }));
-    assert!(read.is_success());
-    let h = read.data["hash"].as_str().unwrap().to_string();
-    let edit = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "expected_hash": h,
-        "hunks": [{"kind": "insert_after", "anchor": "target", "new": "inserted\n"}],
-    }));
-    assert!(edit.is_success(), "model text: {}", edit.model.text);
-    assert_eq!(
-        std::fs::read_to_string(&path).unwrap(),
-        "pre\ntarget\ninserted\npost\n"
-    );
-}
 
 // ── replace_inline（sed `s///` 语义）──
 
@@ -1410,9 +966,10 @@ fn replace_inline_hash_chains() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("f.rs");
     std::fs::write(&path, "fn f() {\n    let x = input;\n}\n").unwrap();
-    let read = exec_edit(&json!({ "path": path.to_string_lossy() }));
-    assert!(read.is_success());
-    let h = read.data["hash"].as_str().unwrap().to_string();
+    // read 模式已退役——hash 链改走 read 工具（file_query）
+    let read = crate::file_query::exec_read(&json!({ "path": path.to_string_lossy() }));
+    assert!(read.is_success(), "read: {}", read.model.text);
+    let h = read.data["files"][0]["hash"].as_str().unwrap().to_string();
     let edit = exec_edit(&json!({
         "path": path.to_string_lossy(),
         "expected_hash": h,
@@ -1457,8 +1014,6 @@ fn failed_edit_has_empty_shifts() {
     assert!(outcome.edited.is_none());
     assert!(outcome.shifts.is_empty());
 }
-
-// ── R30-R35：hint_line 宽松行号 ──────────────────────────────
 
 #[test]
 fn hint_line_disambiguates_repeated_content() {

@@ -102,27 +102,25 @@ mod schema_spot_check {
             "edit description must not mention legacy name"
         );
 
-        // edit：读/编辑模式 oneOf 互斥（P3）——编辑分支要求 hunks 非空且
-        // 禁止读模式字段；读分支拒绝非空 hunks。
+        // edit：read 模式已移除（行号系统归 read 工具）——hunks required 且
+        // schema 不得再宣传 read 形态。
         let edit_params = &by_name("edit").function.parameters;
-        let one_of = edit_params["oneOf"]
-            .as_array()
-            .expect("edit missing oneOf read/edit branches");
-        assert_eq!(one_of.len(), 2, "edit oneOf must have edit+read branches");
         assert!(
-            one_of[0]["required"]
+            edit_params["required"]
                 .as_array()
-                .is_some_and(|r| r.contains(&serde_json::json!("hunks"))),
-            "edit branch must require hunks"
+                .unwrap()
+                .contains(&serde_json::json!("hunks")),
+            "edit must require hunks"
+        );
+        assert!(
+            edit_params.get("oneOf").is_none()
+                && edit_params["properties"].get("start_line").is_none(),
+            "edit schema must not carry read-mode branches"
         );
         assert_eq!(
-            one_of[0]["properties"]["hunks"]["minItems"].as_u64(),
+            edit_params["properties"]["hunks"]["minItems"].as_u64(),
             Some(1),
-            "edit branch hunks must be non-empty"
-        );
-        assert!(
-            one_of[1]["not"].is_object(),
-            "read branch must reject non-empty hunks via not"
+            "edit hunks must be non-empty"
         );
     }
 }

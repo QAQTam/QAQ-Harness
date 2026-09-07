@@ -2,7 +2,6 @@
 
 use crate::edit::MAX_HUNKS;
 use crate::edit::hunk::Hunk;
-use crate::edit::read::*;
 use crate::edit::transaction::*;
 use crate::file_shared::{atomic_write, content_hash, normalize_newlines};
 use crate::{ToolCallCtx, ToolHandler, ToolManager, ToolPlacement, ToolResult, ToolRisk};
@@ -43,20 +42,8 @@ pub fn exec_edit(args: &serde_json::Value) -> ToolResult {
         .map(str::to_string);
 
     let mut notes: Vec<String> = Vec::new();
-    // ── 读路径（二元组场景：edit 兼读）──
-    // hunks 缺失/空 = 无编辑意图 → 退化为读：返回 content + hash + line_count
-    // （对齐 read 结构，hash 可直接作 expected_hash 续接编辑，闭环在同一
-    // 工具内完成）。文件必须存在——创建需要显式 hunks，防"读"误当"建"。
-    // 不写盘、不 record、无 diff；权限层按空 hunks 动态分类为 Read（permission.rs）。
-    if args
-        .get("hunks")
-        .and_then(|v| v.as_array())
-        .is_none_or(|a| a.is_empty())
-    {
-        // 读路径：整文件 / 行号范围（grep 直连）/ 锚定读（复用定位引擎）。
-        // 不写盘、不 record、无 diff；权限层按空 hunks 动态分类为 Read（permission.rs）。
-        return read_path(&path, raw_path, args);
-    }
+    // read 模式已移除（行号系统归 read 工具，行号匹配同步完成）——hunks
+    // 缺失/空一律 PARSE_ERROR（下方分支统一处理）。
     let hunks = match args.get("hunks").and_then(|v| v.as_array()) {
         Some(arr) if !arr.is_empty() => arr,
         _ => {
@@ -369,7 +356,7 @@ pub fn register(mgr: &mut ToolManager) {
     mgr.register_with_placement(
         ToolHandler {
             key: "edit".to_string(),
-            description: "File editor (hunk-based, content-matched, supports replace_all). Kinds: replace(old/new), insert_after/insert_before(anchor/new), replace_inline(anchor/old/new), overwrite(new), prepend/append_file(new). Use shortest unique old/anchor; supports expected_hash, dry_run+confirm_apply, partial. Omit hunks for read mode.",
+            description: "File editor (hunk-based, content-matched, supports replace_all). Kinds: replace(old/new), insert_after/insert_before(anchor/new), replace_inline(anchor/old/new), prepend/append_file(new). Use shortest unique old/anchor; supports expected_hash, dry_run+confirm_apply, partial.",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -380,7 +367,7 @@ pub fn register(mgr: &mut ToolManager) {
                     },
                     "hunks": {
                         "type": "array",
-                        "description": "Hunks: replace/insert_after/insert_before/replace_inline/overwrite/prepend_file/append_file. Omit or [] = read mode"
+                        "description": "Hunks: replace/insert_after/insert_before/replace_inline/prepend_file/append_file (required, at least one)"
                     },
                     "mode": {
                         "type": "string",
@@ -392,62 +379,9 @@ pub fn register(mgr: &mut ToolManager) {
                         "type": "boolean",
                         "default": false,
                         "description": "Preview only, return pending_id for confirm_apply"
-                    },
-                    "start_line": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "Read mode: start line (1-based)"
-                    },
-                    "end_line": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "Read mode: end line inclusive"
-                    },
-                    "anchor": {
-                        "type": "string",
-                        "description": "Read mode: anchor line"
-                    },
-                    "context_before": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "default": 10,
-                        "description": "Read mode: lines before anchor"
-                    },
-                    "context_after": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "default": 10,
-                        "description": "Read mode: lines after anchor"
                     }
                 },
-                "oneOf": [
-                    {
-                        "title": "Edit mode",
-                        "required": ["hunks"],
-                        "properties": {
-                            "hunks": {"minItems": 1}
-                        },
-                        "not": {
-                            "anyOf": [
-                                {"required": ["start_line"]},
-                                {"required": ["end_line"]},
-                                {"required": ["anchor"]},
-                                {"required": ["context_before"]},
-                                {"required": ["context_after"]}
-                            ]
-                        }
-                    },
-                    {
-                        "title": "Read mode",
-                        "not": {
-                            "required": ["hunks"],
-                            "properties": {
-                                "hunks": {"minItems": 1}
-                            }
-                        }
-                    }
-                ],
-                "required": ["path"],
+                "required": ["path", "hunks"],
                 "additionalProperties": false
             }),
             handler: handle_edit,

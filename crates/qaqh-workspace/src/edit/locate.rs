@@ -256,16 +256,6 @@ pub(crate) fn locate_hunk(view: &FileView, hunk: &Hunk) -> Result<Vec<Located>, 
             ..
         } => locate_replace(view, old, context_before, context_after).map(|l| vec![l]),
         // 整文件区间；空文件（创建路径）自动退化为零长度区间。
-        Hunk::Overwrite { .. } => Ok(vec![Located {
-            start_char: 0,
-            end_char: view.content.len(),
-            start_line: 0,
-            win_lines: 0,
-            tier: 1,
-            score: 1.0,
-            note: "overwrite".to_string(),
-            hint_line: None,
-        }]),
         Hunk::InsertAfter { anchor, .. } | Hunk::InsertBefore { anchor, .. } => {
             locate_anchor(view, anchor).map(|l| vec![l])
         }

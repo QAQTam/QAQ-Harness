@@ -216,6 +216,30 @@ pub(crate) fn connect(name: &str, cfg: &McpServerConfig, secrets: &SecretStore) 
                     );
                     return Err(Box::new(error) as Box<dyn std::error::Error + Send + Sync>);
                 }
+                // PR-P2-2：unix domain socket 分发（url=unix:///path/to.sock）。
+                // HTTP 内部路径约定 "/mcp"（常见 unix-socket MCP server 根路径）。
+                if let Some(socket_path) = resolved.url.strip_prefix("unix://") {
+                    #[cfg(unix)]
+                    {
+                        log::info!(
+                            "[mcp] server {name}: connecting unix-socket transport (socket={socket_path})"
+                        );
+                        let transport =
+                            StreamableHttpClientTransport::from_unix_socket(socket_path, "/mcp");
+                        let service = NotifyBridge { name: name.clone() }
+                            .serve_with_lifecycle(transport, auto_lifecycle())
+                            .await?;
+                        return Ok(service);
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let error = McpError::new(
+                            McpErrorKind::ConnectFailed,
+                            format!("server {name}: unix-socket transport requires unix platform"),
+                        );
+                        return Err(Box::new(error) as Box<dyn std::error::Error + Send + Sync>);
+                    }
+                }
                 log::info!(
                     "[mcp] server {name}: connecting streamable HTTP transport (url={})",
                     resolved.url

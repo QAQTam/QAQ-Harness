@@ -306,3 +306,116 @@ async fn http_url_required() {
 /// factory 失败路径的 Ok 分支占位类型（与 ClientService 同型；仅编译期需要）。
 type RunningServicePlaceholder =
     rmcp::service::RunningService<rmcp::RoleClient, qaqh_mcp::adapter::NotifyBridge>;
+
+// ── PR-P2-2：unix domain socket 传输（url=unix:///path/to.sock）──
+// axum 0.8 原生支持 serve(UnixListener)；rmcp 端 from_unix_socket(path, "/mcp")。
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unix_socket_round_trip() {
+    use qaqh_config::config::McpConfig;
+    use qaqh_mcp::connection::LifecycleSettings;
+
+    let dir = tempfile::tempdir().unwrap();
+    let socket_path = dir.path().join("mock.sock");
+    let service = StreamableHttpService::new(
+        || Ok(HttpMockServer),
+        Arc::new(LocalSessionManager::default()),
+        Default::default(),
+    );
+    let app = axum::Router::new().fallback_service(service);
+    let listener = tokio::net::UnixListener::bind(&socket_path).unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let manager = McpManager::with_settings(
+        McpConfig {
+            enabled: true,
+            idle_shutdown_secs: 0,
+            import_external: false,
+            servers: BTreeMap::from([(
+                "mock".to_owned(),
+                McpServerConfig {
+                    transport: McpTransportKind::Http,
+                    command: String::new(),
+                    args: vec![],
+                    env: BTreeMap::new(),
+                    url: format!("unix://{}", socket_path.display()),
+                    headers: BTreeMap::new(),
+                    tools: None,
+                    resources_enabled: true,
+                    default_timeout_secs: 60,
+                    max_concurrent_calls: 4,
+                },
+            )]),
+        },
+        LifecycleSettings {
+            connect_timeout: Duration::from_secs(3),
+            reconnect_cooldown: Duration::from_millis(300),
+            close_timeout: Duration::from_secs(2),
+            idle_tick: Duration::from_millis(50),
+        },
+    );
+    manager
+        .get_or_connect("mock")
+        .await
+        .expect("unix socket connect");
+    wait_caches(&manager, "mock").await;
+
+    let cancel = AtomicBool::new(false);
+    let result = qaqh_mcp::bridge_for_tests::dispatch_with(
+        &manager,
+        "mcp__mock__echo",
+        &serde_json::json!({ "text": "hi over uds" }),
+        &cancel,
+        None,
+    );
+    assert!(result.is_success(), "{}", result.model_text());
+    assert!(result.model_text().contains("echo: hi over uds"));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unix_socket_missing_path_fails_connect() {
+    use qaqh_config::config::McpConfig;
+    use qaqh_mcp::connection::LifecycleSettings;
+
+    let manager = McpManager::with_settings(
+        McpConfig {
+            enabled: true,
+            idle_shutdown_secs: 0,
+            import_external: false,
+            servers: BTreeMap::from([(
+                "mock".to_owned(),
+                McpServerConfig {
+                    transport: McpTransportKind::Http,
+                    command: String::new(),
+                    args: vec![],
+                    env: BTreeMap::new(),
+                    url: "unix:///tmp/qaqh-mcp-nonexistent-socket.sock".to_owned(),
+                    headers: BTreeMap::new(),
+                    tools: None,
+                    resources_enabled: true,
+                    default_timeout_secs: 60,
+                    max_concurrent_calls: 4,
+                },
+            )]),
+        },
+        LifecycleSettings {
+            connect_timeout: Duration::from_millis(800),
+            reconnect_cooldown: Duration::from_millis(200),
+            close_timeout: Duration::from_secs(1),
+            idle_tick: Duration::from_millis(50),
+        },
+    );
+    let error = match manager.get_or_connect("mock").await {
+        Ok(_) => panic!("missing socket path must fail"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(
+            error.kind,
+            qaqh_mcp::McpErrorKind::ConnectFailed | qaqh_mcp::McpErrorKind::Timeout
+        ),
+        "socket 不可达 → 连接期语义：{error}"
+    );
+}

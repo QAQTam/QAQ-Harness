@@ -38,6 +38,23 @@ pub mod adapter;
 pub use bridge::{
     dispatch, prime_all_async, runtime_handle, shutdown_global, take_projection_batch,
 };
+
+/// P2-2（观察项④修复）：UI ToolInvoke 直调不经回合边界（投影 apply 在
+/// `run_lap`）——会话从未跑过回合时 `mcp__*` 工具不在 dynamic 词汇表，
+/// 授权报 Unknown tool。生产入口（engine_tool `handle_ui_tool_call`）在
+/// mcp 前缀工具上先调本函数同步 apply 一次。
+///
+/// 幂等：`take_projection_batch` 消费即清脏，重复调用返回 false 无副作用。
+pub fn sync_projection_now() -> bool {
+    match take_projection_batch() {
+        Some(batch) => {
+            let applied = qaqh_workspace::runtime::replace_dynamic_tools(batch);
+            log::info!("[mcp] projection applied on UI invoke path ({applied} tools)");
+            true
+        }
+        None => false,
+    }
+}
 pub use connection::{
     CallGuard, ClientService, ConnStatus, ConnectFactory, ConnectFuture, LifecycleSettings,
     ServerConnection,

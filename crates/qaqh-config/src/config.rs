@@ -218,9 +218,15 @@ pub(crate) fn map_mcp_config(
         let transport = match (command.trim().is_empty(), url.trim().is_empty()) {
             (false, true) => McpTransportKind::Stdio,
             (true, false) => {
-                if !(url.starts_with("http://") || url.starts_with("https://")) {
+                if !(url.starts_with("http://")
+                    || url.starts_with("https://")
+                    // PR-P2-2：unix domain socket（本机长驻 server）；
+                    // 形如 unix:///path/to.sock——adapter 分发到 rmcp
+                    // unix-socket client（仅 unix 平台）。
+                    || url.starts_with("unix://"))
+                {
                     return Err(format!(
-                        "[mcp] server {name:?}: url 必须以 http:// 或 https:// 开头"
+                        "[mcp] server {name:?}: url 必须以 http:// 或 https:// 或 unix:// 开头"
                     ));
                 }
                 McpTransportKind::Http

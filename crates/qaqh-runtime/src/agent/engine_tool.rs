@@ -151,6 +151,13 @@ impl ToolEngine {
     ) {
         let effective_name = crate::agent::util::resolve_effective_name(name, action, args);
 
+        // P2-2（观察项④修复）：UI 直调不经回合边界（投影 apply 在 run_lap）
+        // —— mcp 前缀工具在投影未入册的会话里先同步 apply 一次（幂等：
+        // 批次消费即清脏；已入册时 take 返回 None 无副作用）。
+        if effective_name == "mcp" || effective_name.starts_with("mcp__") {
+            qaqh_mcp::sync_projection_now();
+        }
+
         match qaqh_workspace::authorize_call(
             &ctx.agent.session.seed,
             id,

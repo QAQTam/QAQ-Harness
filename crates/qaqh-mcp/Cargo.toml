@@ -17,6 +17,9 @@ rmcp = { workspace = true, features = [
     "transport-child-process",
     # PR-M3-1：streamable HTTP 传输（[mcp.servers.x] url=… 路径）。
     "transport-streamable-http-client-reqwest",
+    # PR-P2-2：unix domain socket（url=unix://…；rmcp 内部 cfg(unix)，
+    # 非 unix 平台此 feature 不生效）。
+    "transport-streamable-http-client-unix-socket",
 ] }
 # PR-M3-1：自定义 headers 需要直接构造 reqwest client（default_headers）——
 # 版本对齐 rmcp 内部（0.13），避免双 reqwest 实例。
@@ -37,6 +40,7 @@ log = "0.4"
 serde_json = "1"
 
 [dev-dependencies]
+tempfile = "3"
 # 仅测试/clippy --all-targets 构建启用：in-memory 双工 + mock server 所需。
 # feature unification 影响面：release 产物不含 server 代码（PLAN §2 E-1 注）。
 rmcp = { workspace = true, features = [

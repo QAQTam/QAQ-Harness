@@ -93,7 +93,7 @@
 | PR | 任务 | 出口命令 |
 |---|---|---|
 | **PR-P2-1 ✅**（2026-09-07） | **配置热重载**——`McpManager::apply_config` diff 保连语义（kept 原连接保留/updated 重建/removed 关闭/added 懒纳管/enabled 总闸）；`cfg` 改 `StdMutex`（热换面）；runtime `spawn_mcp_reloader`（watch 单写口订阅 → [mcp] diff → 外部配置重扫 → apply）；`spawn_config_file_poller`（mtime 1.5s 轮询手改文件 → `watch::reload_from_disk` 统一发布）；`Handle::try_current` 守卫（非 async 调用方跳过）；`ConfigStore::path()` getter | `cargo test -p qaqh-mcp --test lifecycle apply_config` + `cargo test -p qaqh-config --lib watch` 全绿 |
-| PR-P2-2 | 观察项④（ToolInvoke 直调 mcp__ 工具无回合投影 → Unknown tool——执行路径投影前置）+ unix socket 传输（`url=unix://` → rmcp unix-socket feature） | 待办 |
+| **PR-P2-2 ✅**（2026-09-07） | 观察项④修复（`qaqh_mcp::sync_projection_now` 公开幂等投影 + engine_tool `handle_ui_tool_call` 在 mcp 前缀工具上前置 apply——UI 直调不再依赖回合边界）；unix socket 传输（url 校验放宽 `unix://` + adapter scheme 分发 → `from_unix_socket(path, "/mcp")`；内部路径约定 /mcp） | `cargo test -p qaqh-mcp --test http_transport` 5/5（新增 uds round_trip + missing path 失败语义） |
 | PR-P2-3 | prompts 能力（连接缓存 prompts/list + 聚合工具 list_prompts/read_prompt action） | 待办 |
 
 ## 5. 质量门禁总闸（每 PR 合入前必跑，继承旧 PLAN §8）

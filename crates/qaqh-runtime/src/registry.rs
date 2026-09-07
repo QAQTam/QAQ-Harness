@@ -641,11 +641,11 @@ impl AgentRegistry {
         }
     }
 
-    pub fn activities(&self) -> Vec<qaqh_proto::SessionActivity> {
+    pub fn activities(&self) -> Vec<qaqh_domain::SessionActivity> {
         self.activity.snapshot()
     }
 
-    pub fn activity(&self, seed: &str) -> Option<qaqh_proto::SessionActivity> {
+    pub fn activity(&self, seed: &str) -> Option<qaqh_domain::SessionActivity> {
         self.activity.get(seed)
     }
 

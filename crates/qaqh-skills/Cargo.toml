@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+qaqh-types = { path = "../qaqh-types", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde-saphyr = "1.1"
 

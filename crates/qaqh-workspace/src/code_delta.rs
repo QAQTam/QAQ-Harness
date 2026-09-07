@@ -3,7 +3,7 @@
 pub(crate) fn compute(
     tool_name: &str,
     args: &serde_json::Value,
-) -> Option<qaqh_proto::CodeDeltaRecord> {
+) -> Option<qaqh_domain::CodeDeltaRecord> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -21,7 +21,7 @@ pub(crate) fn compute(
                 .get("content")
                 .and_then(|value| value.as_str())
                 .unwrap_or("");
-            Some(qaqh_proto::CodeDeltaRecord {
+            Some(qaqh_domain::CodeDeltaRecord {
                 timestamp: now,
                 lines_added: content.lines().count(),
                 lines_removed: 0,
@@ -30,7 +30,7 @@ pub(crate) fn compute(
                 file: file_path.map(String::from),
             })
         }
-        ("delete", _) => Some(qaqh_proto::CodeDeltaRecord {
+        ("delete", _) => Some(qaqh_domain::CodeDeltaRecord {
             timestamp: now,
             lines_added: 0,
             lines_removed: 0,
@@ -52,7 +52,7 @@ pub(crate) fn compute(
                     }
                 }
             }
-            Some(qaqh_proto::CodeDeltaRecord {
+            Some(qaqh_domain::CodeDeltaRecord {
                 timestamp: now,
                 lines_added: added,
                 lines_removed: removed,

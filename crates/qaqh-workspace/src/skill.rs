@@ -64,18 +64,18 @@ fn handle_skill(ctx: crate::ToolCallCtx) -> ToolResult {
                 )
             }).to_string())
         }
-        Err(error) => ToolResult::error(crate::json_err(
+        Err(error) => crate::json_err(
             "SKILL_NOT_AVAILABLE",
             error,
             "Use an exact name from the current skill catalog.",
-        )),
+        ),
     }
 }
 
 fn handle_skill_resource(ctx: crate::ToolCallCtx) -> ToolResult {
     match load_skill_resource(&ctx.args) {
         Ok(content) => ToolResult::ok(content),
-        Err((code, message, hint)) => ToolResult::error(crate::json_err(code, message, hint)),
+        Err((code, message, hint)) => crate::json_err(code, message, hint),
     }
 }
 
@@ -117,20 +117,20 @@ fn handle_skills_list(_ctx: crate::ToolCallCtx) -> ToolResult {
 fn handle_skill_validate(ctx: crate::ToolCallCtx) -> ToolResult {
     let name = ctx.args.s("name");
     if name.is_empty() {
-        return ToolResult::error(crate::json_err(
+        return crate::json_err(
             "MISSING_NAME",
             "skill name is required",
             "Use an exact name from the skill catalog.",
-        ));
+        );
     }
     let workspace = current_workspace();
     let catalog = qaqh_skills::discover(Path::new(&workspace));
     let Some(skill) = catalog.skills.iter().find(|skill| skill.name == name) else {
-        return ToolResult::error(crate::json_err(
+        return crate::json_err(
             "SKILL_NOT_AVAILABLE",
             format!("unknown skill '{name}'"),
             "Use an exact name from the current skill catalog.",
-        ));
+        );
     };
     let diagnostics = qaqh_skills::validate_file(&skill.path);
     let errors = diagnostics
@@ -157,16 +157,16 @@ fn handle_skills(ctx: crate::ToolCallCtx) -> ToolResult {
         "list" if !has_name && !has_path => handle_skills_list(ctx),
         "resource" if has_name && has_path => handle_skill_resource(ctx),
         "validate" if has_name && !has_path => handle_skill_validate(ctx),
-        "activate" | "list" | "resource" | "validate" => ToolResult::error(crate::json_err(
+        "activate" | "list" | "resource" | "validate" => crate::json_err(
             "INVALID_ARGUMENTS",
             format!("arguments do not match skills action '{action}'"),
             "activate and validate require name; list accepts only action; resource requires name and path.",
-        )),
-        _ => ToolResult::error(crate::json_err(
+        ),
+        _ => crate::json_err(
             "INVALID_ACTION",
             "skills action must be activate, list, resource, or validate",
             "Choose the action matching the required skill operation.",
-        )),
+        ),
     }
 }
 

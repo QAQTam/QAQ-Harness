@@ -1,4 +1,4 @@
-//! resolve — split from file_edit_v2.rs
+//! resolve — split from the v2 edit core
 
 use crate::edit::hunk::Hunk;
 use crate::edit::matching::Located;

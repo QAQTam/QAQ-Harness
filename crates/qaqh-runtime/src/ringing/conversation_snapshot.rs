@@ -43,7 +43,7 @@ pub fn persisted_conversation_state(
 }
 
 /// 把 legacy `TurnData` 投影成中立 JSON（Ringing snapshot 不携带 legacy wire 类型）。
-fn neutral_turn(turn: &qaqh_proto::TurnData) -> serde_json::Value {
+fn neutral_turn(turn: &qaqh_domain::TurnData) -> serde_json::Value {
     json!({
         "turn_id": turn.turn_id,
         "user_text": turn.user_text,
@@ -51,7 +51,7 @@ fn neutral_turn(turn: &qaqh_proto::TurnData) -> serde_json::Value {
     })
 }
 
-fn neutral_round(round: &qaqh_proto::RoundData) -> serde_json::Value {
+fn neutral_round(round: &qaqh_domain::RoundData) -> serde_json::Value {
     json!({
         "round_num": round.round_num,
         "is_final": round.is_final,
@@ -66,7 +66,7 @@ fn neutral_round(round: &qaqh_proto::RoundData) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qaqh_proto::{RoundData, TurnData};
+    use qaqh_domain::{RoundData, TurnData};
 
     #[test]
     fn turns_are_projected_to_neutral_json() {

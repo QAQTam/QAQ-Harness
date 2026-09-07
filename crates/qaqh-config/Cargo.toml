@@ -2,7 +2,7 @@
 name = "qaqh-config"
 version.workspace = true
 edition.workspace = true
-description = "QAQ-Harness configuration: provider registry, prompts, config load/save"
+description = "QAQ-Harness configuration: provider registry, config load/save"
 
 [features]
 default = []
@@ -12,7 +12,6 @@ qaqh-types = { path = "../qaqh-types" }
 qaqh-config-api = { path = "../qaqh-config-api" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-ureq = { version = "3", features = ["json"] }
 toml = "1.1"
 log = "0.4"
 tokio = { version = "1", features = ["sync"] }

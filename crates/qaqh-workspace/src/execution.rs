@@ -12,11 +12,12 @@ pub struct ToolExecResult {
     pub success: bool,
     pub result: crate::ToolResult,
     pub meta: crate::ToolExecMeta,
-    pub code_delta: Option<qaqh_proto::CodeDeltaRecord>,
+    pub code_delta: Option<qaqh_domain::CodeDeltaRecord>,
     pub skill_effects: Vec<crate::ToolEffect>,
 }
 
 /// Consume an authorization proof and dispatch the bound handler.
+#[allow(clippy::result_large_err)] // 错误装箱属结构塑形，另立项（闭包返回大 Err）
 pub fn execute_authorized(
     call: AuthorizedToolCall,
     progress_tx: Option<crate::ExecProgressSender>,
@@ -399,8 +400,9 @@ mod tests {
             .next()
             .expect("typed activation")
         {
+            // ToolEffect / SkillEffect 目前均为单变体 enum，此臂已穷尽；
+            // 若未来新增变体，单臂 match 编译失败即强制此处显式处理。
             crate::ToolEffect::Skill(qaqh_skills::SkillEffect::Activate(activation)) => activation,
-            other => panic!("unexpected effect: {other:?}"),
         };
         assert_eq!(activation.metadata.name, "typed-skill");
         assert!(activation.body.contains("Typed instructions"));
@@ -444,7 +446,14 @@ mod tests {
             &crate::runtime::ToolCtx::admitted("test_session"),
         );
         assert!(!traversal.success);
-        assert!(traversal.content.contains("SKILL_RESOURCE_UNAVAILABLE"));
+        assert_eq!(
+            traversal
+                .result
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("SKILL_RESOURCE_UNAVAILABLE")
+        );
 
         let list = execute_with_context(
             "skills",
@@ -466,7 +475,14 @@ mod tests {
             &crate::runtime::ToolCtx::admitted("test_session"),
         );
         assert!(!invalid.success);
-        assert!(invalid.content.contains("INVALID_ARGUMENTS"));
+        assert_eq!(
+            invalid
+                .result
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("INVALID_ARGUMENTS")
+        );
         crate::set_workspace(".");
     }
 
@@ -757,11 +773,11 @@ mod tests {
 
         let a1 = match admit(inv1, 4, &ws, &trusted) {
             Admission::Authorized(a) => a,
-            other => panic!("expected Authorized"),
+            _other => panic!("expected Authorized"),
         };
         let a2 = match admit(inv2, 4, &ws, &trusted) {
             Admission::Authorized(a) => a,
-            other => panic!("expected Authorized"),
+            _other => panic!("expected Authorized"),
         };
 
         assert_eq!(a1.call_id(), "bound-1");
@@ -814,7 +830,7 @@ mod tests {
                     "should not contain error prefix"
                 );
             }
-            other => panic!("expected Authorized"),
+            _other => panic!("expected Authorized"),
         }
     }
 
@@ -830,24 +846,17 @@ mod tests {
         let ws = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let trusted = HashSet::new();
 
-        // test_write has ToolRisk::Destructive, so it's in PLAN_BLOCKED (via the "Test" default for PLAN_BLOCKED?
-        // Actually PLAN_BLOCKED checks specific names. Let me check PLAN_BLOCKED:
-        // pub const PLAN_BLOCKED: &[&str] = &["edit_file", "write", "delete", "exec", "git"];
-        // So "test_write" is NOT in PLAN_BLOCKED. The admission will Authorize at level 4.
-        // The block happens inside execute_authorized based on PLAN_BLOCKED list.
+        // `test_write` 不在 PLAN_BLOCKED 名单（`["edit", "exec", "process", "todo"]`，
+        // 见 `crate::PLAN_BLOCKED`）中：PLAN 模式下仍放行，阻断只发生在名单内工具。
 
         let inv = make_invocation("test_write", "plan-write");
-        match admit(inv, 4, &ws, &trusted) {
-            Admission::Authorized(auth) => {
-                let result = execute_authorized(auth, None);
-                // "test_write" is NOT in PLAN_BLOCKED, so it succeeds
-                assert!(
-                    result.success,
-                    "test_write not in PLAN_BLOCKED, should succeed even in plan mode: {}",
-                    result.content
-                );
-            }
-            _ => {}
+        if let Admission::Authorized(auth) = admit(inv, 4, &ws, &trusted) {
+            let result = execute_authorized(auth, None);
+            assert!(
+                result.success,
+                "test_write not in PLAN_BLOCKED, should succeed even in plan mode: {}",
+                result.content
+            );
         }
 
         crate::runtime::set_mode(previous_mode);

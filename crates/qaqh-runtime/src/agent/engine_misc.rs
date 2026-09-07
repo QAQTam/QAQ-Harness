@@ -17,6 +17,12 @@ use super::types::Emitter;
 
 pub struct MiscEngine;
 
+impl Default for MiscEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MiscEngine {
     pub fn new() -> Self {
         Self

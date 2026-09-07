@@ -1,4 +1,4 @@
-//! Mutation tools: write, delete（统一编辑入口见 file_edit_v2.rs 的 edit）。
+//! Mutation tools: write, delete（统一编辑入口见 edit/ 模块的 edit 工具）。
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};

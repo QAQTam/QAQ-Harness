@@ -22,6 +22,7 @@ type JournalKey = (RingingChannel, String);
 /// 磁盘操作日志条目（按序重放）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)] // 装箱改造属结构塑形，另立项
 pub enum JournalOp {
     /// reliable 追加或 replaceable 覆盖（按 `envelope.delivery` 重放）。
     Append { envelope: RingingEventEnvelope },
@@ -231,10 +232,10 @@ impl JournalStore {
                     if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                         continue;
                     }
-                    if let Some(seed) = path.file_stem().and_then(|s| s.to_str()) {
-                        if !seed.is_empty() {
-                            out.entry(channel).or_default().insert(seed.to_string());
-                        }
+                    if let Some(seed) = path.file_stem().and_then(|s| s.to_str())
+                        && !seed.is_empty()
+                    {
+                        out.entry(channel).or_default().insert(seed.to_string());
                     }
                 }
             }
@@ -535,7 +536,7 @@ mod tests {
                 .expect("write corrupt");
         }
         let loaded = JournalStore::load(&root).expect("load");
-        let (_, _, ops) = &loaded.per_seed[0];
+        let (_, _, _ops) = &loaded.per_seed[0];
         let loaded = JournalStore::load(&root).expect("load");
         let (_, _, ops) = &loaded.per_seed[0];
         assert_eq!(ops.len(), 1, "corrupt line skipped");
@@ -586,7 +587,7 @@ mod tests {
                 .rewrite(
                     RingingChannel::Conversation,
                     "s",
-                    &[turn_started.clone()],
+                    std::slice::from_ref(&turn_started),
                     &[("tool:c1".to_string(), 9)],
                 )
                 .expect("rewrite");

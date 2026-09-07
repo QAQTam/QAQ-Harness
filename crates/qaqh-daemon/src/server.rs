@@ -2,10 +2,10 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-use qaqh_proto::{CONTROL_PROTOCOL_VERSION, DaemonDiscovery};
 use qaqh_runtime::QaqhService;
 use qaqh_runtime::RingingHub;
 use qaqh_runtime::{WorkspaceMode, WorkspaceSupervisor};
+use qaqh_types::{CONTROL_PROTOCOL_VERSION, DaemonDiscovery};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 

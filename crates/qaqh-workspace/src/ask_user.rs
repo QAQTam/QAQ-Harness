@@ -161,11 +161,11 @@ pub(super) fn exec_ask_user(args: &serde_json::Value) -> ToolResult {
         Ok(ask) => ToolResult::ok(crate::json_ok(
             serde_json::to_value(ask).expect("NormalizedAsk serializes"),
         )),
-        Err(error) => ToolResult::error(crate::json_err(
+        Err(error) => crate::json_err(
             error.code,
             format!("ask: {}", error.message),
             "Fix the ask arguments and retry.",
-        )),
+        ),
     }
 }
 
@@ -291,9 +291,8 @@ mod tests {
     fn empty_questions_error() {
         let args = serde_json::json!({ "questions": [] });
         let result = exec_ask_user(&args);
-        let value: serde_json::Value =
-            serde_json::from_str(result.model_text()).expect("valid JSON");
-        assert_eq!(value["status"], "error");
+        let err = result.error.as_ref().expect("structured error");
+        assert_eq!(err.code, "EMPTY_QUESTIONS");
     }
 
     #[test]
@@ -305,9 +304,8 @@ mod tests {
             ]
         });
         let result = exec_ask_user(&args);
-        let value: serde_json::Value =
-            serde_json::from_str(result.model_text()).expect("valid JSON");
-        assert_eq!(value["status"], "error");
+        let err = result.error.as_ref().expect("structured error");
+        assert_eq!(err.code, "MISSING_QUESTION");
     }
 
     #[test]

@@ -55,6 +55,8 @@ fn spawn_daemon() -> (Child, String) {
     kill_leftover_daemon();
     let daemon = find_daemon_binary();
 
+    // 测试进程管理：正常路径显式 kill+wait；panic 路径由守护断言兜底
+    #[allow(clippy::zombie_processes)]
     let mut child = Command::new(&daemon)
         .arg("run")
         .stdout(Stdio::null())
@@ -71,12 +73,11 @@ fn spawn_daemon() -> (Child, String) {
 
     let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
-        if let Ok(raw) = std::fs::read_to_string(&discovery_path) {
-            if let Ok(parsed) = serde_json::from_str::<Value>(&raw) {
-                if let Some(ep) = parsed.get("endpoint").and_then(|v| v.as_str()) {
-                    return (child, ep.to_string());
-                }
-            }
+        if let Ok(raw) = std::fs::read_to_string(&discovery_path)
+            && let Ok(parsed) = serde_json::from_str::<Value>(&raw)
+            && let Some(ep) = parsed.get("endpoint").and_then(|v| v.as_str())
+        {
+            return (child, ep.to_string());
         }
         thread::sleep(Duration::from_millis(200));
     }

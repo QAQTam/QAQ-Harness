@@ -52,6 +52,19 @@ pub(crate) fn publish(cfg: Arc<Config>) {
     let _ = channel().send(Some(cfg));
 }
 
+/// 单一权威读入口（PR-1-8 / B5）：磁盘为权威源，读失败时回退单写口
+/// 广播的最新镜像。返回 `None` = 两条路径都没有配置——调用方自行决定
+/// `unwrap_or_default()`（启动装配）还是跳过 apply（reload）。
+///
+/// agent loop（runtime/agent）内禁止直接 `Config::load()`；所有权威读经本函数收敛，
+/// 与 config-revamp P2-D1 单写口同向。
+pub fn authoritative() -> Option<Config> {
+    match crate::Config::load() {
+        Ok(cfg) => Some(cfg),
+        Err(_) => latest().map(|arc| (*arc).clone()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,18 +93,5 @@ mod tests {
             ..Default::default()
         }));
         assert_eq!(latest().expect("mirror snapshot").context_limit, 654_321);
-    }
-}
-
-/// 单一权威读入口（PR-1-8 / B5）：磁盘为权威源，读失败时回退单写口
-/// 广播的最新镜像。返回 `None` = 两条路径都没有配置——调用方自行决定
-/// `unwrap_or_default()`（启动装配）还是跳过 apply（reload）。
-///
-/// agent loop（runtime/agent）内禁止直接 `Config::load()`；所有权威读经本函数收敛，
-/// 与 config-revamp P2-D1 单写口同向。
-pub fn authoritative() -> Option<Config> {
-    match crate::Config::load() {
-        Ok(cfg) => Some(cfg),
-        Err(_) => latest().map(|arc| (*arc).clone()),
     }
 }

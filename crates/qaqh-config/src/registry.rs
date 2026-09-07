@@ -156,8 +156,8 @@ fn glm() -> ProviderSpec {
 /// ZCode — 智谱编码套餐（走 Anthropic 原生协议）
 ///
 /// 对接 `https://open.bigmodel.cn/api/anthropic/v1/messages` 的标准
-/// Anthropic Messages 规范（`proxybun/src/index.ts:292 openAIToAnthropic`
-/// 已验证：system 顶层、messages/shadow、tools input_schema 直通，
+/// Anthropic Messages 规范（`openAIToAnthropic` 映射已验证：system 顶层、
+/// messages/shadow、tools input_schema 直通，
 /// `glm-5.3-flash` 直通 200）。
 /// 反代网关 `zcode2harness` 之前因 harness 缺少 anthropic 支持而临时做
 /// OpenAI→Anthropic 转换；此原生端点让 harness 直连上游或直连反代，原
@@ -176,7 +176,7 @@ fn zcode() -> ProviderSpec {
             models_url: Some("https://open.bigmodel.cn/api/paas/v4".into()),
             anthropic_path: Some("/api/anthropic/v1/messages".into()),
             cache_field: CacheTokenField::PromptDetailsCached,
-            // ZCode GLM-5.3 系列经 Anthropic 透传：复刻 out/host/index.js:1601332 Ase
+            // ZCode GLM-5.3 系列经 Anthropic 透传（复刻上游宿主 effort 透传语义）
             // `output_config:{effort:low|high|max}+thinking:{budget_tokens}`，harness 已有一整套
             // low/medium/high/xhigh/max ↔ 1024/2048/4096/8192/16384 预算，透传后 GLM 按强度回 thinking_delta
             supports_thinking: true,
@@ -600,49 +600,6 @@ pub fn models_url_for(provider_id: &str, endpoint_id: &str) -> Option<String> {
     Some(format!("{}/models", stripped))
 }
 
-pub fn fetch_models(provider_id: &str, endpoint_id: &str, api_key: &str) -> Vec<String> {
-    if find_endpoint(provider_id, endpoint_id).is_none() {
-        return vec![];
-    };
-
-    let url = match models_url_for(provider_id, endpoint_id) {
-        Some(u) => u,
-        None => return vec![],
-    };
-
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(10)))
-        .user_agent(qaqh_types::QAQH_USER_AGENT)
-        .build()
-        .into();
-
-    match agent
-        .get(&url)
-        .header("Authorization", &format!("Bearer {}", api_key))
-        .call()
-    {
-        Ok(resp) => {
-            let body: Result<serde_json::Value, _> = resp.into_body().read_json();
-            match body {
-                Ok(v) => {
-                    let models: Vec<String> = v["data"]
-                        .as_array()
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|m| m["id"].as_str().map(String::from))
-                                .filter(|id| !id.starts_with("deepseek-re"))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    if models.is_empty() { vec![] } else { models }
-                }
-                Err(_) => vec![],
-            }
-        }
-        Err(_) => vec![],
-    }
-}
-
 pub fn default_model_for(provider_id: &str, endpoint_id: &str) -> String {
     find_endpoint(provider_id, endpoint_id)
         .map(|e| e.default_model.clone())
@@ -672,6 +629,13 @@ pub fn migrate_provider_id(old_pid: &str) -> (String, String) {
     } else {
         ("deepseek".into(), "openai".into())
     }
+}
+
+/// Resolve the endpoint spec for an already-loaded [`crate::Config`]
+/// (PR-1-9 / B7): the loop resolves once at config-assembly/reload time and
+/// engines read the stored field instead of walking the registry per call.
+pub fn resolve_for_config(cfg: &crate::Config) -> Option<EndpointSpec> {
+    find_endpoint(&cfg.provider_id, &cfg.endpoint)
 }
 
 #[cfg(test)]
@@ -986,11 +950,4 @@ mod tests {
         // minimax 走 anthropic messages 协议（未实现）→ 不进任何端点。
         assert!(!endpoint.models.contains(&"minimax-m3".to_string()));
     }
-}
-
-/// Resolve the endpoint spec for an already-loaded [`crate::Config`]
-/// (PR-1-9 / B7): the loop resolves once at config-assembly/reload time and
-/// engines read the stored field instead of walking the registry per call.
-pub fn resolve_for_config(cfg: &crate::Config) -> Option<EndpointSpec> {
-    find_endpoint(&cfg.provider_id, &cfg.endpoint)
 }

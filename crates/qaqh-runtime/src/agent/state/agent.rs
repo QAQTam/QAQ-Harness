@@ -455,14 +455,6 @@ impl AgentState {
         };
         runtime::set_allowed_tools(allowed);
         self.tool_defs = runtime::all_tools();
-        // 已移除 minimal:dsh 投影（bash_v2 已下线），当前为恒等。
-        // 只存在于 qaqh-types 契约，新增档位无需再改此循环。
-        for def in &mut self.tool_defs {
-            let model_name = qaqh_types::model_tool_name(tool_mode, &def.function.name);
-            if model_name != def.function.name {
-                def.function.name = model_name.to_string();
-            }
-        }
         // 同步内存态会话元数据：daemon 已 persist meta.json，但 worker 内存
         // 若不同步，session 恢复（lifecycle.rs）会用旧值（standard）重新应用，
         // 导致极限/创造模式在恢复后退回全量工具。
@@ -491,11 +483,9 @@ impl AgentState {
         );
     }
 
-    /// 极简模式（minimal:dsh）：模型面工具名 → 内部注册 key。
-    /// 模型在极简模式看到的是 `bash`（minimal 规范名），但实际执行要路由回
-    /// 恒等投影（已移除 bash_v2 PTY，下线 minimal:dsh）。
-    pub fn normalize_tool_name_for_mode(tool_mode: &str, name: &str) -> String {
-        qaqh_types::internal_tool_name(tool_mode, name).to_string()
+    /// 模型面工具名 → 内部注册 key（当前恒等：投影已随 minimal:dsh 下线移除）。
+    pub fn normalize_tool_name_for_mode(_tool_mode: &str, name: &str) -> String {
+        name.to_string()
     }
 
     /// Consume any pending cache diagnostics set by build_context().
@@ -601,11 +591,6 @@ impl AgentState {
     /// message lands at the "latest message" position and is never re-injected
     /// or removed afterwards — the request prefix stays byte-stable.
     pub fn sync_skill_injection(&mut self, flow: &mut qaqh_message::ContextFlow) {
-        // 极简模式（minimal:dsh）：完全对齐 deepseek-harness minimal preset——
-        // 不注入任何 skills envelope（minimal 无 skills / runtime context）。
-        if qaqh_types::is_minimal_dsh(&self.session.tool_mode) {
-            return;
-        }
         let epoch = self.skills.context_epoch();
         if epoch == self.last_injected_epoch {
             return;
@@ -755,6 +740,28 @@ fn execute_persist_op(op: &qaqh_message::PersistOp, sm: &SessionManager) {
     sm.apply_persist_op(op);
 }
 
+// ═══════════════════════════════════════════════════════
+// Permission-related types (shared across old and new Loop)
+// ═══════════════════════════════════════════════════════
+
+/// Tool call suspended while waiting for user permission.
+/// Holds the immutable challenge — only the stored fields are used for
+/// authorization; the approval response must not supply replacement values.
+pub struct PendingApproval {
+    pub challenge: qaqh_workspace::PermissionChallenge,
+    pub is_llm_tool: bool,
+}
+
+/// Saved state to resume an LLM turn after all pending permission
+/// approvals have been resolved.
+pub struct TurnResumeState {
+    pub session_id: String,
+    pub turn_id: String,
+    pub round_num: u32,
+    pub pending_call_ids: Vec<String>,
+    pub usage: Option<qaqh_types::UsageInfo>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -768,7 +775,7 @@ mod tests {
         // hashes must flag an EXISTING message changing (e.g. annotation
         // moving between user messages) while ignoring pure appends (new
         // rounds/turns).
-        let sys = vec![qaqh_types::Message::system("base")];
+        let sys = [qaqh_types::Message::system("base")];
         let u1 = qaqh_types::Message::user("first turn");
         let u1_annotated = {
             let mut m = u1.clone();
@@ -796,7 +803,7 @@ mod tests {
         );
 
         // System text change is still caught by the component hash.
-        let sys2 = vec![qaqh_types::Message::system("base v2")];
+        let sys2 = [qaqh_types::Message::system("base v2")];
         let sys_changed = PrefixShape::capture(&[sys2[0].clone(), u1.clone()], &[]);
         assert!(
             sys_changed
@@ -937,6 +944,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)] // AgentState::new 有构造逻辑，非纯 Default
     fn compact_request_usage_cannot_pollute_normal_request_context() {
         let mut agent = AgentState::new(qaqh_config::Config::default());
         agent.session.seed = "token-session".into();
@@ -959,8 +967,10 @@ mod tests {
 
     #[test]
     fn post_compact_next_lap_keeps_last_api_context_until_fresh_usage() {
-        let mut config = qaqh_config::Config::default();
-        config.context_limit = 1_000;
+        let config = qaqh_config::Config {
+            context_limit: 1_000,
+            ..Default::default()
+        };
         let mut agent = AgentState::new(config);
         agent.session.seed = "token-session".into();
 
@@ -1198,33 +1208,11 @@ mod tests {
             for t in &all_names {
                 if !expected_set.contains(t.as_str()) {
                     assert!(
-                        !names.iter().any(|n| *n == t.as_str()),
+                        !names.contains(&t.as_str()),
                         "mode {mode}: tool '{t}' outside the allowlist leaked into API schema ({names:?})"
                     );
                 }
             }
         }
     }
-}
-
-// ═══════════════════════════════════════════════════════
-// Permission-related types (shared across old and new Loop)
-// ═══════════════════════════════════════════════════════
-
-/// Tool call suspended while waiting for user permission.
-/// Holds the immutable challenge — only the stored fields are used for
-/// authorization; the approval response must not supply replacement values.
-pub struct PendingApproval {
-    pub challenge: qaqh_workspace::PermissionChallenge,
-    pub is_llm_tool: bool,
-}
-
-/// Saved state to resume an LLM turn after all pending permission
-/// approvals have been resolved.
-pub struct TurnResumeState {
-    pub session_id: String,
-    pub turn_id: String,
-    pub round_num: u32,
-    pub pending_call_ids: Vec<String>,
-    pub usage: Option<qaqh_types::UsageInfo>,
 }

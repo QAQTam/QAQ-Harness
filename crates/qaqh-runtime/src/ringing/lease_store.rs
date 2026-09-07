@@ -90,10 +90,10 @@ impl RingingLeaseStore {
                 .iter()
                 .find(|(_, e)| e.client_session_id == client_session_id)
                 .map(|(k, _)| k.clone());
-            if let Some(k) = victim {
-                if let Some(entry) = self.leases.remove(&k) {
-                    self.seed_leases.remove(&entry.client_session_id);
-                }
+            if let Some(k) = victim
+                && let Some(entry) = self.leases.remove(&k)
+            {
+                self.seed_leases.remove(&entry.client_session_id);
             }
             return false;
         }

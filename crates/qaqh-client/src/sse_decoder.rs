@@ -1,6 +1,13 @@
 //! 游标式 SSE 帧解码器（qaqh-client 专用，替代两处 O(n²) 的
 //! `split_off`+`extend` 搬移实现）。
 //!
+//! 与 `qaqh-gate/src/sse.rs` 的同名解码器**刻意不合一**（D3 决策，暂缓）：
+//! 本实现产出 `SseFrame{id, event_type, data}` 且 `event:`/`id:` 行为字段累
+//! 积（daemon 发送端保证空行定界）；gate 实现产出聚合 `data: String` 且
+//! `event:` 行触发前一事件冲刷（LLM 网关的无空行分离流）。`data:` 空白处理
+//! 亦不同（本实现 `trim()`，gate 仅去单个前导空格）。另：本实现 EOF 不冲
+//! 刷残帧（上层报 `SSE stream ended`），gate 有 `has_pending` 残帧冲刷路径。
+//!
 //! 背景：旧实现（`sse.rs` 与 `timeline.rs` 各一份 `drain_frames`）对每个
 //! 完整帧把剩余字节从缓冲头部搬走（`Vec::split_off` + `extend`），累计
 //! O(n²)；且用 `String::from_utf8_lossy` 解码（可能注入 U+FFFD 替换符，
@@ -18,6 +25,7 @@
 //! - 流结束（EOF）不冲刷残帧——上层对无终帧的流直接报
 //!   `SSE stream ended`（与旧实现一致）。
 
+use crate::error::Result as ClientResult;
 use crate::types::SseFrame;
 
 /// 游标式 SSE 帧解码器。`push` 追加字节，`next_frame` 逐帧产出。
@@ -86,6 +94,26 @@ impl SseDecoder {
             // 其他字段（unknown）忽略。
         }
     }
+}
+
+/// 从解码器排空完整帧并逐帧分发（`sse.rs`/`timeline.rs` 双份 `drain_frames`
+/// 收敛，Phase 3-5）。空 data 帧（keepalive）跳过；解码失败帧跳过。
+pub(crate) fn drain_frames(
+    decoder: &mut SseDecoder,
+    server_epoch: &str,
+    mut dispatch: impl FnMut(SseFrame, &str) -> ClientResult<()>,
+) -> ClientResult<()> {
+    while let Some(frame) = decoder.next_frame() {
+        let frame = match frame {
+            Ok(frame) => frame,
+            Err(()) => continue,
+        };
+        if frame.data.trim().is_empty() {
+            continue; // keepalive/空 data 帧
+        }
+        dispatch(frame, server_epoch)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

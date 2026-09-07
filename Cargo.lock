@@ -1771,6 +1771,7 @@ dependencies = [
  "log",
  "qaqh-domain",
  "qaqh-ringing",
+ "qaqh-types",
  "reqwest",
  "serde",
  "serde_json",
@@ -1792,7 +1793,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "toml",
- "ureq",
  "windows",
 ]
 
@@ -1813,7 +1813,6 @@ dependencies = [
  "log",
  "qaqh-config",
  "qaqh-domain",
- "qaqh-proto",
  "qaqh-ringing",
  "qaqh-runtime",
  "qaqh-session",
@@ -1869,15 +1868,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "qaqh-proto"
-version = "1.0.0"
-dependencies = [
- "qaqh-types",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "qaqh-ringing"
 version = "1.0.0"
 dependencies = [
@@ -1900,7 +1890,6 @@ dependencies = [
  "qaqh-domain",
  "qaqh-gate",
  "qaqh-message",
- "qaqh-proto",
  "qaqh-ringing",
  "qaqh-session",
  "qaqh-skills",
@@ -1937,6 +1926,7 @@ dependencies = [
 name = "qaqh-skills"
 version = "1.0.0"
 dependencies = [
+ "qaqh-types",
  "serde",
  "serde-saphyr",
  "tempfile",
@@ -1960,7 +1950,6 @@ dependencies = [
 name = "qaqh-types"
 version = "1.0.0"
 dependencies = [
- "qaqh-skills",
  "serde",
  "serde_json",
  "sha2",
@@ -1985,7 +1974,7 @@ dependencies = [
  "libc",
  "log",
  "qaqh-config",
- "qaqh-proto",
+ "qaqh-domain",
  "qaqh-skills",
  "qaqh-types",
  "regex",

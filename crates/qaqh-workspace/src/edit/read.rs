@@ -1,4 +1,4 @@
-//! read — split from file_edit_v2.rs
+//! read — split from the v2 edit core
 
 use crate::ToolResult;
 use crate::edit::CONTENT_CAP;
@@ -11,6 +11,7 @@ use crate::edit::{READ_MAX_CHARS, READ_MAX_CONTEXT, READ_MAX_LINES};
 use crate::file_shared::{content_hash, normalize_newlines};
 use serde_json::json;
 
+#[allow(clippy::type_complexity)]
 pub(crate) fn read_range(
     content: &str,
     total_lines: usize,
@@ -75,6 +76,8 @@ pub(crate) fn read_range(
 
 /// 锚定读：复用 hunk 的四层定位引擎——读时的 anchor 命中 = 改时的 hunk 定位，
 /// 读到的上下文就是将要编辑的上下文。模糊/未命中返回候选（与 hunk 同款）。
+#[allow(clippy::too_many_arguments)] // 参数面塑形另立项（PLAN D-5）
+#[allow(clippy::type_complexity)]
 pub(crate) fn read_anchored(
     content: &str,
     total_lines: usize,

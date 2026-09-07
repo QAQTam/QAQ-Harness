@@ -11,6 +11,12 @@ const INITIAL_LOAD_COUNT: usize = 20;
 
 pub struct SessionEngine;
 
+impl Default for SessionEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionEngine {
     pub fn new() -> Self {
         Self
@@ -50,11 +56,11 @@ impl SessionEngine {
 
             // SessionRestored is emitted by the caller (Loop::dispatch)
             // since it needs access to the emitter.
-            let loaded = INITIAL_LOAD_COUNT.min(agent.msg.turn_count() as usize);
+            let loaded = INITIAL_LOAD_COUNT.min(agent.msg.turn_count());
             log::info!(
                 "[SESSION] restored, {} turns (has_more={})",
                 loaded,
-                agent.msg.turn_count() as usize > INITIAL_LOAD_COUNT
+                agent.msg.turn_count() > INITIAL_LOAD_COUNT
             );
             true
         } else {

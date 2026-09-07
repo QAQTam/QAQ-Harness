@@ -29,28 +29,3 @@ pub fn parse_arg_or(args: &str, key: &str, default: &str) -> String {
 pub fn parse_opt(args: &str, key: &str) -> Option<String> {
     parse_arg(args, key)
 }
-
-/// Extract a u64 field from a JSON arguments object.
-///
-/// Supports both numeric (`{"count": 5}`) and string (`{"count": "5"}`) formats.
-pub fn parse_opt_u64(args: &str, key: &str) -> Option<u64> {
-    let v: Value = serde_json::from_str(args).ok()?;
-    let val = v.get(key)?;
-    val.as_u64()
-        .or_else(|| val.as_str().and_then(|s| s.parse::<u64>().ok()))
-}
-
-/// Extract the "action" field from tool arguments.
-pub fn tool_action(args: &str) -> String {
-    parse_arg_or(args, "action", "")
-}
-
-/// Extract the "path" field from tool arguments.
-pub fn parse_file_arg(args: &str) -> Option<String> {
-    parse_arg(args, "path")
-}
-
-/// Extract the "command" field from tool arguments.
-pub fn parse_cmd_arg(args: &str) -> Option<String> {
-    parse_arg(args, "command")
-}

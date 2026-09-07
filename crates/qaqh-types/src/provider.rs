@@ -133,7 +133,7 @@ pub struct EndpointSpec {
     ///   first-party endpoints like opencode-go);
     /// - `Some`  → only listed models accept images. Entries match exactly,
     ///   or by prefix when ending in `*` (e.g. `"google/gemini-*"`).
-    /// Matched case-insensitively against the active model id.
+    ///   Matched case-insensitively against the active model id.
     pub image_models: Option<Vec<String>>,
     /// When true, the gate sends only incremental messages instead of full conversation
     /// history. Used for stateful proxy endpoints (e.g. DeepSeek Web CDP proxy).

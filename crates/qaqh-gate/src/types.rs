@@ -75,6 +75,7 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
+    #[allow(clippy::should_implement_trait)] // 固有方法名为既有公开 API
     pub fn from_str(s: &str) -> Self {
         match s {
             "responses" => Self::Responses,
@@ -272,6 +273,7 @@ pub(crate) fn safe_provider_error_body(body: &str, api_key: &str) -> String {
 }
 
 impl ProviderConfig {
+    #[allow(clippy::too_many_arguments)] // 参数面塑形另立项（PLAN D-5）
     pub fn openai(
         base_url: &str,
         api_key: &str,
@@ -400,7 +402,7 @@ impl ProviderConfig {
 
     /// Apply the management headers onto an HTTP request builder, mirroring
     /// the official client's LLM request headers. The per-request User-Agent
-    /// overrides the client-level default set in `GLOBAL_CLIENT`.
+    /// overrides the client-level default set by `crate::shared_http_client`.
     pub(crate) fn apply_opencode_headers(
         &self,
         req: reqwest::RequestBuilder,

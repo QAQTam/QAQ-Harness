@@ -101,45 +101,6 @@ fn replace_file(source: &Path, target: &Path) -> std::io::Result<()> {
     .map_err(std::io::Error::other)
 }
 
-#[cfg(test)]
-mod atomic_write_tests {
-    use super::*;
-
-    #[test]
-    fn atomic_write_replaces_an_existing_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("target.txt");
-        std::fs::write(&target, "before").unwrap();
-
-        atomic_write(&target.to_string_lossy(), "after").unwrap();
-
-        assert_eq!(std::fs::read_to_string(target).unwrap(), "after");
-    }
-
-    #[test]
-    fn diff_stats_between_counts_changes_and_first_line() {
-        let before = "a\nb\nc\nd\ne\n";
-        let after = "a\nb\nX\nY\ne\n";
-        // 第 3 行起：替换 2 行
-        let (added, removed, first_line) = diff_stats_between(before, after);
-        assert_eq!((added, removed, first_line), (2, 2, 3));
-    }
-
-    #[test]
-    fn diff_stats_between_handles_insert_and_delete() {
-        let before = "a\nb\nc\n";
-        let after = "a\nb\nB2\nc\nd\n";
-        let (added, removed, first_line) = diff_stats_between(before, after);
-        assert_eq!((added, removed, first_line), (2, 0, 3));
-    }
-
-    #[test]
-    fn diff_stats_between_identical_content_is_zero() {
-        let (added, removed, first_line) = diff_stats_between("x\ny\n", "x\ny\n");
-        assert_eq!((added, removed, first_line), (0, 0, 1));
-    }
-}
-
 /// Normalize CRLF → LF in content. Returns (normalized, was_crlf).
 ///
 /// # 换行统一契约（LF canonical view）
@@ -216,4 +177,43 @@ pub(super) fn is_binary_read_error(err: &str) -> bool {
         || err.contains("utf8")
         || err.contains("utf-8")
         || err.contains("UTF-8")
+}
+
+#[cfg(test)]
+mod atomic_write_tests {
+    use super::*;
+
+    #[test]
+    fn atomic_write_replaces_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.txt");
+        std::fs::write(&target, "before").unwrap();
+
+        atomic_write(&target.to_string_lossy(), "after").unwrap();
+
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "after");
+    }
+
+    #[test]
+    fn diff_stats_between_counts_changes_and_first_line() {
+        let before = "a\nb\nc\nd\ne\n";
+        let after = "a\nb\nX\nY\ne\n";
+        // 第 3 行起：替换 2 行
+        let (added, removed, first_line) = diff_stats_between(before, after);
+        assert_eq!((added, removed, first_line), (2, 2, 3));
+    }
+
+    #[test]
+    fn diff_stats_between_handles_insert_and_delete() {
+        let before = "a\nb\nc\n";
+        let after = "a\nb\nB2\nc\nd\n";
+        let (added, removed, first_line) = diff_stats_between(before, after);
+        assert_eq!((added, removed, first_line), (2, 0, 3));
+    }
+
+    #[test]
+    fn diff_stats_between_identical_content_is_zero() {
+        let (added, removed, first_line) = diff_stats_between("x\ny\n", "x\ny\n");
+        assert_eq!((added, removed, first_line), (0, 0, 1));
+    }
 }

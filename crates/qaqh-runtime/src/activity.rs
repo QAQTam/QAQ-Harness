@@ -2,28 +2,22 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use qaqh_domain::{ActivityState, ControlEvent, DomainEvent};
-use qaqh_proto::{SessionActivity, SessionActivityState};
+use qaqh_domain::{ActivityState, ControlEvent, DomainEvent, SessionActivity};
 
 use crate::RingingHub;
 
-/// 活动状态双发：legacy `SessionActivity` 流 + Ringing `SessionActivityChanged`。
+/// 活动发布：tracker 快照 → Ringing 会话活动变更领域事件。
+/// （原为「双发」：legacy 流 + domain 事件流；PR-3-2 起
+/// legacy 类型已删，状态单一源于 domain。）
 pub fn publish_activity(hub: Option<&RingingHub>, activity: &SessionActivity) {
     let Some(hub) = hub else {
         return;
-    };
-    let state = match activity.state {
-        SessionActivityState::Starting => ActivityState::Starting,
-        SessionActivityState::Idle => ActivityState::Idle,
-        SessionActivityState::Working => ActivityState::Working,
-        SessionActivityState::WaitingUser => ActivityState::WaitingUser,
-        SessionActivityState::Disconnected => ActivityState::Disconnected,
     };
     let _ = hub.publish_with_causation(
         &activity.seed,
         DomainEvent::Control(ControlEvent::SessionActivityChanged {
             seed: activity.seed.clone(),
-            state,
+            state: activity.state,
             turn_id: activity.turn_id.clone(),
             seq: activity.seq,
             updated_at: activity.updated_at,
@@ -106,7 +100,7 @@ impl SessionActivityTracker {
         let seq = previous.map_or(1, |value| value.activity.seq.saturating_add(1));
         let activity = SessionActivity {
             seed: seed.to_string(),
-            state: SessionActivityState::Starting,
+            state: ActivityState::Starting,
             turn_id: None,
             seq,
             updated_at: now_millis(),
@@ -138,32 +132,32 @@ impl SessionActivityTracker {
         // initialization Ready arrives. Do not let that Ready reopen the
         // session before the queued UserInput reaches TurnStart.
         if event_type == "ready"
-            && tracked.activity.state == SessionActivityState::Working
+            && tracked.activity.state == ActivityState::Working
             && tracked.activity.turn_id.is_none()
         {
             return None;
         }
         let current_turn = tracked.activity.turn_id.clone();
         let (state, turn_id) = match event_type {
-            "ready" | "done" | "turn_end" | "cancelled" => (SessionActivityState::Idle, None),
-            "shutdown_ack" => (SessionActivityState::Disconnected, None),
+            "ready" | "done" | "turn_end" | "cancelled" => (ActivityState::Idle, None),
+            "shutdown_ack" => (ActivityState::Disconnected, None),
             "turn_start" => (
-                SessionActivityState::Working,
+                ActivityState::Working,
                 event
                     .get("turn_id")
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_string),
             ),
             "permission_request" | "ask_user" | "plan_submitted" => {
-                (SessionActivityState::WaitingUser, current_turn)
+                (ActivityState::WaitingUser, current_turn)
             }
             "ask_resolved" | "plan_resolved" | "round_delta" | "round_complete"
             | "tool_results" | "tool_exec_delta" | "exec_progress" | "tool_call_preview"
             | "code_delta" | "compact_start" | "compact_delta" => {
-                (SessionActivityState::Working, current_turn)
+                (ActivityState::Working, current_turn)
             }
-            "compact_end" if current_turn.is_none() => (SessionActivityState::Idle, None),
-            "compact_end" => (SessionActivityState::Working, current_turn),
+            "compact_end" if current_turn.is_none() => (ActivityState::Idle, None),
+            "compact_end" => (ActivityState::Working, current_turn),
             _ => return None,
         };
         if tracked.activity.state == state && tracked.activity.turn_id == turn_id {
@@ -187,12 +181,11 @@ impl SessionActivityTracker {
     pub fn disconnect(&self, seed: &str, generation: u64) -> Option<SessionActivity> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let tracked = inner.get_mut(seed)?;
-        if tracked.generation != generation
-            || tracked.activity.state == SessionActivityState::Disconnected
+        if tracked.generation != generation || tracked.activity.state == ActivityState::Disconnected
         {
             return None;
         }
-        tracked.activity.state = SessionActivityState::Disconnected;
+        tracked.activity.state = ActivityState::Disconnected;
         tracked.activity.turn_id = None;
         tracked.activity.seq = tracked.activity.seq.saturating_add(1);
         tracked.activity.updated_at = now_millis();
@@ -220,6 +213,41 @@ fn now_millis() -> u64 {
 mod tests {
     use super::*;
 
+    // PR-3-2 shape 快照锚（重构前落地）：`session.activity` 方法与 daemon `/activity`
+    // 端点直接序列化本类型，JSON 形状必须逐字段冻结：
+    // {"seed","state","turn_id"(缺省省略),"seq","updated_at"}，state 为 snake_case。
+    #[test]
+    fn session_activity_json_shape_is_frozen() {
+        let activity = SessionActivity {
+            seed: "abcd1234".into(),
+            state: ActivityState::WaitingUser,
+            turn_id: Some("turn-9".into()),
+            seq: 7,
+            updated_at: 1_700_000_000_000,
+        };
+        assert_eq!(
+            serde_json::to_string(&activity).unwrap(),
+            r#"{"seed":"abcd1234","state":"waiting_user","turn_id":"turn-9","seq":7,"updated_at":1700000000000}"#
+        );
+        // turn_id 为 None 时字段整体缺席（skip_serializing_if）。
+        let idle = SessionActivity {
+            seed: "abcd1234".into(),
+            state: ActivityState::Idle,
+            turn_id: None,
+            seq: 8,
+            updated_at: 1_700_000_000_001,
+        };
+        assert_eq!(
+            serde_json::to_string(&idle).unwrap(),
+            r#"{"seed":"abcd1234","state":"idle","seq":8,"updated_at":1700000000001}"#
+        );
+        // 旧样本解析 → 序列化 → 再解析字段保全。
+        let legacy = r#"{"seed":"abcd1234","state":"working","seq":3,"updated_at":42}"#;
+        let parsed: SessionActivity = serde_json::from_str(legacy).unwrap();
+        assert_eq!(parsed.state, ActivityState::Working);
+        assert_eq!(parsed.turn_id, None);
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), legacy);
+    }
     fn idle_tracker(seed: &str) -> (SessionActivityTracker, u64) {
         let tracker = SessionActivityTracker::default();
         let (generation, _) = tracker.begin(seed);
@@ -256,7 +284,7 @@ mod tests {
             )
             .expect("compact completion");
 
-        assert_eq!(completed.state, SessionActivityState::Idle);
+        assert_eq!(completed.state, ActivityState::Idle);
         assert_eq!(completed.turn_id, None);
     }
 
@@ -280,7 +308,7 @@ mod tests {
                 .observe("seed", generation, &ready)
                 .expect("ready")
                 .state,
-            SessionActivityState::Idle
+            ActivityState::Idle
         );
 
         // turn_start → Working + turn_id
@@ -293,7 +321,7 @@ mod tests {
         let activity = tracker
             .observe("seed", generation, &start)
             .expect("turn start");
-        assert_eq!(activity.state, SessionActivityState::Working);
+        assert_eq!(activity.state, ActivityState::Working);
         assert_eq!(activity.turn_id.as_deref(), Some("t1"));
 
         // ask_user → WaitingUser
@@ -310,7 +338,7 @@ mod tests {
                 .observe("seed", generation, &ask)
                 .expect("ask")
                 .state,
-            SessionActivityState::WaitingUser
+            ActivityState::WaitingUser
         );
 
         // ask_resolved → Working（回合继续）
@@ -325,7 +353,7 @@ mod tests {
                 .observe("seed", generation, &resolved)
                 .expect("resolved")
                 .state,
-            SessionActivityState::Working
+            ActivityState::Working
         );
 
         // turn_end → Idle（回合结束，turn_id 清空）
@@ -338,7 +366,7 @@ mod tests {
         ))
         .expect("turn_end maps");
         let finished = tracker.observe("seed", generation, &end).expect("turn end");
-        assert_eq!(finished.state, SessionActivityState::Idle);
+        assert_eq!(finished.state, ActivityState::Idle);
         assert_eq!(finished.turn_id, None);
 
         // permission_request → WaitingUser
@@ -361,7 +389,7 @@ mod tests {
                 .observe("seed", generation, &perm)
                 .expect("perm")
                 .state,
-            SessionActivityState::WaitingUser
+            ActivityState::WaitingUser
         );
 
         // 无关事件不产生观察事件

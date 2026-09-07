@@ -1,7 +1,7 @@
 //! qaqh-message: structured conversation state with state-machine lifecycle.
 //!
 //! `MessageStore` is the single source of truth for messages.
-//! Every `push_*` returns an [`Effect`] telling the caller what to do next.
+//! Every `push_*` returns `bool` — `true` when the push completed the current turn (last step all tools satisfied, none pending).
 
 pub mod context_flow;
 pub mod effect;
@@ -13,6 +13,6 @@ pub use context_flow::{
     IngestTraceEntry, LifecyclePolicy, PendingIngest, Sink, Timing, UndoBehavior, Visibility,
     builtin,
 };
-pub use effect::{Effect, PendingTool, PersistOp};
+pub use effect::{PendingTool, PersistOp};
 pub use store::{MessageStore, Turn};
 pub use wal::WalWriter;

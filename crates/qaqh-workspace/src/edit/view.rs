@@ -1,4 +1,4 @@
-//! view — split from file_edit_v2.rs
+//! view — split from the v2 edit core
 
 use std::ops::Range;
 

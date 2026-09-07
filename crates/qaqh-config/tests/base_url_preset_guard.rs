@@ -9,7 +9,7 @@
 //! 注意：QAQH_DATA_DIR 是进程级环境变量，多个 #[test] 并行会互相污染，
 //! 因此所有场景在单个测试函数内串行执行。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn setup(tag: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!(
@@ -24,7 +24,7 @@ fn setup(tag: &str) -> PathBuf {
     root
 }
 
-fn write_config(root: &PathBuf, toml: &str) {
+fn write_config(root: &Path, toml: &str) {
     std::fs::write(root.join("config.toml"), toml).expect("write test config");
 }
 

@@ -50,34 +50,34 @@ pub fn parse_xml_tool_calls(content: &str, tool_names: &[String]) -> (String, Ve
     let mut remaining = content;
 
     'outer: while let Some(tc_start) = remaining.find('<') {
-        if remaining[tc_start..].starts_with("<tool_use>") {
-            if let Some((name, args_text, rest)) = parse_tool_use_block(&remaining[tc_start..]) {
-                cleaned.push_str(&remaining[..tc_start]);
-                let arguments = normalize_args(&args_text);
-                tool_calls.push(ToolCall {
-                    id: format!("xml_tc_{tc_index}"),
-                    call_type: "function".to_string(),
-                    function: FunctionCall { name, arguments },
-                });
-                tc_index += 1;
-                remaining = rest;
-                continue 'outer;
-            }
+        if remaining[tc_start..].starts_with("<tool_use>")
+            && let Some((name, args_text, rest)) = parse_tool_use_block(&remaining[tc_start..])
+        {
+            cleaned.push_str(&remaining[..tc_start]);
+            let arguments = normalize_args(&args_text);
+            tool_calls.push(ToolCall {
+                id: format!("xml_tc_{tc_index}"),
+                call_type: "function".to_string(),
+                function: FunctionCall { name, arguments },
+            });
+            tc_index += 1;
+            remaining = rest;
+            continue 'outer;
         }
 
-        if remaining[tc_start..].starts_with("<invoke ") {
-            if let Some((name, args_text, rest)) = parse_invoke_block(&remaining[tc_start..]) {
-                cleaned.push_str(&remaining[..tc_start]);
-                let arguments = normalize_args(&args_text);
-                tool_calls.push(ToolCall {
-                    id: format!("xml_tc_{tc_index}"),
-                    call_type: "function".to_string(),
-                    function: FunctionCall { name, arguments },
-                });
-                tc_index += 1;
-                remaining = rest;
-                continue 'outer;
-            }
+        if remaining[tc_start..].starts_with("<invoke ")
+            && let Some((name, args_text, rest)) = parse_invoke_block(&remaining[tc_start..])
+        {
+            cleaned.push_str(&remaining[..tc_start]);
+            let arguments = normalize_args(&args_text);
+            tool_calls.push(ToolCall {
+                id: format!("xml_tc_{tc_index}"),
+                call_type: "function".to_string(),
+                function: FunctionCall { name, arguments },
+            });
+            tc_index += 1;
+            remaining = rest;
+            continue 'outer;
         }
 
         let after_lt = &remaining[tc_start..];
@@ -88,28 +88,28 @@ pub fn parse_xml_tool_calls(content: &str, tool_names: &[String]) -> (String, Ve
                 .unwrap_or("");
             let closing = format!("</{tag_name}>");
 
-            if let Some((_, tool_name)) = tag_map.iter().find(|(tag, _)| *tag == tag_name) {
-                if let Some(close_pos) = after_lt[end..].find(&closing) {
-                    let block_content = &after_lt[end + 1..end + close_pos];
-                    let full_xml_len = end + close_pos + closing.len();
+            if let Some((_, tool_name)) = tag_map.iter().find(|(tag, _)| *tag == tag_name)
+                && let Some(close_pos) = after_lt[end..].find(&closing)
+            {
+                let block_content = &after_lt[end + 1..end + close_pos];
+                let full_xml_len = end + close_pos + closing.len();
 
-                    cleaned.push_str(&remaining[..tc_start]);
+                cleaned.push_str(&remaining[..tc_start]);
 
-                    let args = extract_child_args(block_content);
-                    let arguments = normalize_args(&args);
+                let args = extract_child_args(block_content);
+                let arguments = normalize_args(&args);
 
-                    tool_calls.push(ToolCall {
-                        id: format!("xml_tc_{tc_index}"),
-                        call_type: "function".to_string(),
-                        function: FunctionCall {
-                            name: tool_name.to_string(),
-                            arguments,
-                        },
-                    });
-                    tc_index += 1;
-                    remaining = &after_lt[full_xml_len..];
-                    continue 'outer;
-                }
+                tool_calls.push(ToolCall {
+                    id: format!("xml_tc_{tc_index}"),
+                    call_type: "function".to_string(),
+                    function: FunctionCall {
+                        name: tool_name.to_string(),
+                        arguments,
+                    },
+                });
+                tc_index += 1;
+                remaining = &after_lt[full_xml_len..];
+                continue 'outer;
             }
         }
 
@@ -159,8 +159,7 @@ fn parse_invoke_block(s: &str) -> Option<(String, String, &str)> {
     let param_close = "</parameter>";
     let mut args_map = serde_json::Map::new();
     let mut rem = body;
-    loop {
-        let Some(p) = rem.find(param_tag) else { break };
+    while let Some(p) = rem.find(param_tag) {
         let after_p = &rem[p + param_tag.len()..];
         let param_name = extract_attr_value(after_p, "name")?.trim().to_string();
         let str_attr = extract_attr_value(after_p, "string").unwrap_or_default();
@@ -211,10 +210,10 @@ fn extract_child_args(xml: &str) -> String {
 
 fn normalize_args(args_text: &str) -> String {
     let trimmed = args_text.trim();
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        if v.is_object() {
-            return trimmed.to_string();
-        }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed)
+        && v.is_object()
+    {
+        return trimmed.to_string();
     }
     serde_json::json!({"query": trimmed}).to_string()
 }
@@ -292,10 +291,7 @@ pub fn parse_dsml_tool_calls(content: &str, tool_defs: &[ToolDef]) -> (String, V
         remaining = &after_tc[tc_end_pos + tc_end.len()..];
 
         let mut bq = block;
-        loop {
-            let Some(inv_pos) = bq.find(&invoke_tag) else {
-                break;
-            };
+        while let Some(inv_pos) = bq.find(&invoke_tag) {
             let after_inv = &bq[inv_pos + invoke_tag.len()..];
             let name = extract_attr_value(after_inv, "name").unwrap_or_default();
             let name = name.trim().to_string();
@@ -341,15 +337,15 @@ fn repair_param_dict(
 ) -> serde_json::Map<String, serde_json::Value> {
     let allowed: std::collections::HashSet<&str> = param_types.keys().map(|k| k.as_str()).collect();
     for wrapper in &["arguments", "input"] {
-        if map.len() == 1 && !allowed.contains(wrapper) {
-            if let Some(inner) = map.get(*wrapper) {
-                if let Some(obj) = inner.as_object() {
-                    let obj_keys: std::collections::HashSet<&str> =
-                        obj.keys().map(|k| k.as_str()).collect();
-                    if obj_keys.is_subset(&allowed) {
-                        return obj.clone();
-                    }
-                }
+        if map.len() == 1
+            && !allowed.contains(wrapper)
+            && let Some(inner) = map.get(*wrapper)
+            && let Some(obj) = inner.as_object()
+        {
+            let obj_keys: std::collections::HashSet<&str> =
+                obj.keys().map(|k| k.as_str()).collect();
+            if obj_keys.is_subset(&allowed) {
+                return obj.clone();
             }
         }
     }
@@ -397,8 +393,7 @@ fn extract_dsml_params_typed(
 ) -> String {
     let mut map = serde_json::Map::new();
     let mut rem = body;
-    loop {
-        let Some(p) = rem.find(param_tag) else { break };
+    while let Some(p) = rem.find(param_tag) {
         let after = &rem[p + param_tag.len()..];
         let name = extract_attr_value(after, "name")
             .unwrap_or_default()

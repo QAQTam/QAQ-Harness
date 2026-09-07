@@ -85,6 +85,7 @@ impl ChannelOutbox {
 
     /// 取下一个待发事件（reliable 优先于 replaceable 的旧值）。
     /// 返回 `(envelope, 是否为 final 批次末尾)`。
+    #[allow(clippy::should_implement_trait)] // 固有方法名为既有公开 API
     pub fn next(&mut self) -> Option<RingingEventEnvelope> {
         if let Some(env) = self.reliable.pop_front() {
             return Some(env);

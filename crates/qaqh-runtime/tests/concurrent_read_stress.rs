@@ -48,10 +48,10 @@ fn ten_parallel_reads_same_file() {
         for line in reader.lines() {
             match line {
                 Ok(line) => {
-                    if let Ok(env) = serde_json::from_str::<RingingWorkerEventEnvelope>(&line) {
-                        if event_tx.send(env.event).is_err() {
-                            break;
-                        }
+                    if let Ok(env) = serde_json::from_str::<RingingWorkerEventEnvelope>(&line)
+                        && event_tx.send(env.event).is_err()
+                    {
+                        break;
                     }
                 }
                 Err(_) => break,

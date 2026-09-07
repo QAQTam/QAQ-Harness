@@ -146,6 +146,7 @@ impl ToolManager {
 
     /// Phase 1: validate, safety-check, register inflight. Returns a [`PreparedCall`]
     /// that can be executed without the manager lock.
+    #[allow(clippy::result_large_err)] // 错误装箱属结构塑形，另立项
     pub(crate) fn prepare_req(
         &mut self,
         id: String,

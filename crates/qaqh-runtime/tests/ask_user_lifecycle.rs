@@ -455,10 +455,9 @@ fn run_case_with_delay(
                 continue;
             }
             if let Ok(env) = serde_json::from_str::<qaqh_ringing::RingingWorkerEventEnvelope>(&line)
+                && event_tx.send(env.event).is_err()
             {
-                if event_tx.send(env.event).is_err() {
-                    break;
-                }
+                break;
             }
         }
     });

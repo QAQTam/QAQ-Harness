@@ -126,7 +126,7 @@ fn serve_scenario(req: tiny_http::Request, scenario: &[SseChunk]) {
     for chunk in scenario {
         match chunk {
             SseChunk::Data(val) => {
-                sse.push_str(&format!("data: {}\n\n", val.to_string()));
+                sse.push_str(&format!("data: {val}\n\n"));
             }
             SseChunk::Raw(raw) => {
                 if raw == "[DONE]" {

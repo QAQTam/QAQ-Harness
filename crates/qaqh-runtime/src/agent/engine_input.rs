@@ -6,6 +6,12 @@ use super::types::*;
 
 pub struct InputEngine;
 
+impl Default for InputEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InputEngine {
     pub fn new() -> Self {
         Self
@@ -58,18 +64,17 @@ impl InputEngine {
                 Err(e) => format!("目标模式恢复失败：{e}"),
             }
         } else {
-            if let Ok(mut store) = qaqh_workspace::todo::load_todo() {
-                if store.mode == qaqh_workspace::todo::TodoMode::Goal {
-                    if let Some(ref current_id) = store.current_id.clone() {
-                        if let Some(item) = store.items.iter_mut().find(|i| &i.id == current_id) {
-                            if item.status == qaqh_workspace::todo::TodoStatus::InProgress {
-                                item.status = qaqh_workspace::todo::TodoStatus::Pending;
-                            }
-                        }
-                    }
-                    store.mode = qaqh_workspace::todo::TodoMode::Manual;
-                    let _ = qaqh_workspace::todo::save_todo(&store);
+            if let Ok(mut store) = qaqh_workspace::todo::load_todo()
+                && store.mode == qaqh_workspace::todo::TodoMode::Goal
+            {
+                if let Some(ref current_id) = store.current_id.clone()
+                    && let Some(item) = store.items.iter_mut().find(|i| &i.id == current_id)
+                    && item.status == qaqh_workspace::todo::TodoStatus::InProgress
+                {
+                    item.status = qaqh_workspace::todo::TodoStatus::Pending;
                 }
+                store.mode = qaqh_workspace::todo::TodoMode::Manual;
+                let _ = qaqh_workspace::todo::save_todo(&store);
             }
             text.to_string()
         };
@@ -81,38 +86,38 @@ impl InputEngine {
         // newest user message and break the prefix cache at turn-1's message.
         qaqh_workspace::clear_cancel();
 
-        if ctx.agent.config.compliance_enabled {
-            if let Err(reason) = crate::agent::input_guard::content_guard(&text) {
-                log::info!("[INPUT] compliance blocked: {reason}");
-                // Ringing 双发：OperationFailed（Control 频道错误终态）
-                ctx.emitter.emit_domain(qaqh_domain::DomainEvent::Control(
-                    qaqh_domain::ControlEvent::OperationFailed {
-                        occurrence_id: format!(
-                            "op-failed-{}",
+        if ctx.agent.config.compliance_enabled
+            && let Err(reason) = crate::agent::input_guard::content_guard(&text)
+        {
+            log::info!("[INPUT] compliance blocked: {reason}");
+            // Ringing 双发：OperationFailed（Control 频道错误终态）
+            ctx.emitter.emit_domain(qaqh_domain::DomainEvent::Control(
+                qaqh_domain::ControlEvent::OperationFailed {
+                    occurrence_id: format!(
+                        "op-failed-{}",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis())
+                            .unwrap_or(0),
+                    ),
+                    scope: qaqh_domain::ErrorScope::Control,
+                    error: qaqh_domain::DomainError {
+                        error_id: format!(
+                            "compliance-{}",
                             std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .map(|d| d.as_millis())
                                 .unwrap_or(0),
                         ),
-                        scope: qaqh_domain::ErrorScope::Control,
-                        error: qaqh_domain::DomainError {
-                            error_id: format!(
-                                "compliance-{}",
-                                std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_millis())
-                                    .unwrap_or(0),
-                            ),
-                            code: "compliance_block".into(),
-                            message: reason,
-                            retryable: false,
-                            dedupe_key: Some("compliance_block".into()),
-                        },
-                        operation_id: None,
+                        code: "compliance_block".into(),
+                        message: reason,
+                        retryable: false,
+                        dedupe_key: Some("compliance_block".into()),
                     },
-                ));
-                return Outcome::Handled;
-            }
+                    operation_id: None,
+                },
+            ));
+            return Outcome::Handled;
         }
 
         ctx.agent.activate_explicit_skills(&text);

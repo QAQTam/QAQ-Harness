@@ -93,7 +93,7 @@ pub enum SessionState {
     Deleted,
 }
 
-/// 会话活动状态（与 legacy `SessionActivityState` 同义，domain 化）。
+/// 会话活动状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
@@ -105,8 +105,40 @@ pub enum ActivityState {
     Disconnected,
 }
 
+/// 会话活动快照：`session.activity` 方法与 daemon `/activity` 观测端点的
+/// 直接序列化载体（原 proto 同名类型，PR-3-2 迁入 domain 后删除）。
+/// JSON 形状由 runtime 侧 shape 快照测试逐字段冻结，不得漂移；
+/// 刻意不加 ts-rs 导出（维持零前端曝光现状，bindings 数不变）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionActivity {
+    /// Session identifier (8 hex chars).
+    pub seed: String,
+    /// Current lifecycle state.
+    pub state: ActivityState,
+    /// Active turn ID, if a turn is in progress or suspended.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    /// Monotonic event sequence number for this session.
+    pub seq: u64,
+    /// Unix timestamp of this state change.
+    pub updated_at: u64,
+}
+
+/// A single code delta record for persistence.
+/// （原 proto 同名类型，PR-3-5 溶解时回流迁入；刻意不加 ts-rs 导出。）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeDeltaRecord {
+    pub timestamp: u64,
+    pub lines_added: usize,
+    pub lines_removed: usize,
+    pub files_created: usize,
+    pub files_deleted: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+}
+
 /// agent **进程**生命周期（决策记录 Q8：只含进程状态；回合结束走
-/// `SessionActivityChanged(Idle)`，transport 状态另由客户端健康判定）。
+/// 会话活动变更事件（Idle），transport 状态另由客户端健康判定）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
@@ -414,6 +446,7 @@ impl ConversationEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
+#[allow(clippy::large_enum_variant)] // 装箱改造属结构塑形，另立项
 pub enum ToolEvent {
     /// 流式响应中检测到工具调用（决策记录 Q1：replaceable 预览，可被 ToolStarted 覆盖）。
     ToolCallPrepared {
@@ -653,6 +686,7 @@ impl ControlEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "channel", rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
+#[allow(clippy::large_enum_variant)] // 装箱改造属结构塑形，另立项
 pub enum DomainEvent {
     Control(ControlEvent),
     Conversation(ConversationEvent),

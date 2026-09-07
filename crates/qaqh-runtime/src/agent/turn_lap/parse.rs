@@ -4,7 +4,6 @@
 
 use std::collections::HashSet;
 
-use qaqh_message::Effect;
 use qaqh_types::{ContentBlock, Message, ToolCall};
 
 use crate::agent::types::RingContext;
@@ -12,12 +11,12 @@ use crate::agent::util;
 
 /// 一次 parse 阶段的聚合结果（knife-7 A2 step4：从 run_lap 收敛出的贯穿状态）。
 ///
-/// `parsed`/`assistant_msg`/`effect` 供后续 admit/tools 消费；
+/// `parsed`/`assistant_msg`/`turn_completed` 供后续 admit/tools 消费；
 /// `active_stream_block`/`timeline_tools_open` 通过 `&mut` 原地更新，调用方直接持有。
 pub(crate) struct ParseOutput {
     pub(crate) parsed: Vec<ToolCall>,
     pub(crate) assistant_msg: Message,
-    pub(crate) effect: Effect,
+    pub(crate) turn_completed: bool,
 }
 
 /// 响应→assistant 入库 + RoundComplete + seal。
@@ -26,13 +25,14 @@ pub(crate) struct ParseOutput {
 /// - `util::parse_tool_calls_from_response`
 /// - 为未提前 `ToolCallProgress` 的结构化工具调用补 `BlockOpened`
 /// - `util::build_assistant_message` + `response_output_items` 追加
-/// - `ctx.flow.ingest(MODEL, assistant_msg)` + `unwrap_or(Effect::None)` + `flush_meta`
+/// - `ctx.flow.ingest(MODEL, assistant_msg)` + `receipt.turn_completed` + `flush_meta`
 /// - `util::emit_round_complete_via_emitter`
 /// - `gate::seal_active_stream_block`
 /// - `parsed.is_empty() ⇒ RoundSealed(is_final:true)`
 ///
 /// `active_stream_block` / `timeline_tools_open` 通过 `&mut` 原地更新；
 /// 返回的 `ParseOutput` 供剩余 `run_lap` 消费（tools/admit 回填）。
+#[allow(clippy::too_many_arguments)] // 参数面塑形另立项（PLAN D-5）
 pub(crate) fn parse_and_ingest(
     ctx: &mut RingContext<'_>,
     turn_id: &str,
@@ -46,7 +46,7 @@ pub(crate) fn parse_and_ingest(
 ) -> ParseOutput {
     // ── Parse ──
     let parsed =
-        util::parse_tool_calls_from_response(content, reasoning, tool_calls_raw, &ctx.agent);
+        util::parse_tool_calls_from_response(content, reasoning, tool_calls_raw, ctx.agent);
     // Structured/non-streamed tool calls can arrive without a prior
     // ToolCallProgress event. Open their native blocks here so every
     // later lifecycle patch has one stable target.
@@ -81,9 +81,9 @@ pub(crate) fn parse_and_ingest(
         qaqh_message::builtin::MODEL,
         assistant_msg.clone(),
     );
-    // model 源（Sink::Step）的 store 层决策透传：TurnComplete 结束回合，
-    // None 表示可能有工具待执行。
-    let effect = receipt.effect.unwrap_or(Effect::None);
+    // model 源（Sink::Step）的 store 层决策透传：true 结束回合，
+    // false 表示可能有工具待执行。
+    let turn_completed = receipt.turn_completed;
     ctx.agent
         .msg
         .flush_meta(&ctx.agent.config.model, &ctx.agent.config.reasoning_effort);
@@ -144,6 +144,6 @@ pub(crate) fn parse_and_ingest(
     ParseOutput {
         parsed,
         assistant_msg,
-        effect,
+        turn_completed,
     }
 }

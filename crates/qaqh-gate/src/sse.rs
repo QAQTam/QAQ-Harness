@@ -1,13 +1,20 @@
 //! 游标式 SSE 帧解码器（共享于 chat 与 responses 两条流式路径）。
 //!
+//! 与 `qaqh-client/src/sse_decoder.rs` 的同名解码器**刻意不合一**（D3 决策，
+//! 暂缓）：两者行切分骨架相似，但帧语义不同——本实现产出聚合 `data: String`
+//! 且 `event:` 行触发前一事件冲刷（LLM 网关的无空行分离流）；client 实现产
+//! 出 `SseFrame{id, event_type, data}` 且 `event:`/`id:` 行为字段累积（daemon
+//! 发送端保证空行定界）。`data:` 空白处理亦不同（本实现仅去单个前导空格，
+//! client 用 `trim()`）。合一需泛型 sink + 语义开关，收益 60 行不抵复杂度。
+//!
 //! 背景：旧实现两条路径各有性能缺陷——
 //! - openai.rs 用 `eventsource_stream`（逐字节 poll 推进，实测 ~180KB/s CPU
 //!   吞吐，且 200 token/s 时表现"总是很慢"）；
 //! - responses.rs 用 `Vec::drain(..=line_end)` 逐行从头部搬移剩余字节
 //!   （O(n²)，实测 20 万行/12MB 数据 5 分钟+ 无法跑完）。
 //!
-//! 本实现按 `\n` 定位行（O(n) 总体、无搬移，实测 ~143MB/s 与 serde_json
-//! 解析同级），聚合 SSE 事件的 `data:` 字段，空行分隔事件。
+//! 本实现按 `\n` 定位行（目标 O(n) 总体、无搬移；历史实测数据仅供参考，
+//! 以 bench 为准），聚合 SSE 事件的 `data:` 字段，空行分隔事件。
 //!
 //! 语义与旧实现保持一致：
 //! - 只在拿到完整 `\n` 结尾行后做严格 UTF-8 解码；非法行跳过（绝不 lossy）；

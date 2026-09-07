@@ -60,12 +60,6 @@ pub fn is_minimal_family(mode: &str) -> bool {
     mode.starts_with(MINIMAL_PREFIX)
 }
 
-/// Deprecated: minimal:dsh 已移除（PTY bash_v2 + str_replace_editor 已下线）。
-/// 保留函数签名仅为兼容旧调用，恒返回 false。
-pub fn is_minimal_dsh(_mode: &str) -> bool {
-    false
-}
-
 /// The internal tool allowlist for a fixed preset.
 ///
 /// `standard`, `custom`, the empty legacy value, and unknown names return
@@ -77,20 +71,6 @@ pub fn preset_tools(mode: &str) -> Option<&'static [&'static str]> {
         MINIMAL_C => Some(MINIMAL_TOOLS_C),
         _ => None,
     }
-}
-
-/// Project an internal tool key to its model-facing name.
-///
-/// 已移除 minimal:dsh 的 bash_v2->bash 投影，当前为恒等映射。
-pub fn model_tool_name<'a>(_mode: &str, internal_name: &'a str) -> &'a str {
-    internal_name
-}
-
-/// Resolve a model-facing tool name back to the internal registration key.
-///
-/// 已移除投影，当前为恒等映射。
-pub fn internal_tool_name<'a>(_mode: &str, model_name: &'a str) -> &'a str {
-    model_name
 }
 
 #[cfg(test)]

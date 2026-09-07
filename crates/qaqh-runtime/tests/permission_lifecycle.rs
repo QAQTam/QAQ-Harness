@@ -318,7 +318,7 @@ fn assert_single_completion(events: &[RingingEvent], expected_results: usize) {
     );
 }
 
-fn finished_result<'a>(events: &'a [RingingEvent]) -> Option<&'a qaqh_types::ToolResult> {
+fn finished_result(events: &[RingingEvent]) -> Option<&qaqh_types::ToolResult> {
     events.iter().find_map(|event| match event {
         RingingEvent::Tool(ToolEvent::ToolFinished { result, .. }) => Some(result),
         _ => None,
@@ -357,10 +357,10 @@ fn run_case(
     let (event_tx, event_rx) = std::sync::mpsc::channel();
     thread::spawn(move || {
         for line in BufReader::new(output_reader).lines().map_while(Result::ok) {
-            if let Ok(env) = serde_json::from_str::<RingingWorkerEventEnvelope>(&line) {
-                if event_tx.send(env.event).is_err() {
-                    break;
-                }
+            if let Ok(env) = serde_json::from_str::<RingingWorkerEventEnvelope>(&line)
+                && event_tx.send(env.event).is_err()
+            {
+                break;
             }
         }
     });

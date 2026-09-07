@@ -284,3 +284,89 @@ pub enum TimelineIntent {
         failure: Option<TimelineFailure>,
     },
 }
+
+// ═══════════════════════════════════════════════════════════
+// Aggregate projections（PR-3-4 迁入：resume 路径的回合聚合树）
+// ═══════════════════════════════════════════════════════════
+//
+// TurnData/RoundData/RoundBlock/ToolCallDef/ToolResultDef 是 resume /
+// compact-context 检查点链使用的**聚合投影**（回合聚合树 ≠ domain 事件流）。
+// 原 proto 同名类型原样迁入；刻意不加 ts-rs 导出（维持零前端曝光现状）。
+// JSON/磁盘形状（含字段顺序与 skip_serializing_if）保持逐字节不变。
+
+/// Tool call definition used in turn projections.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallDef {
+    pub id: String,
+    pub name: String,
+    /// Human-readable args summary (e.g. "foo.rs", "search pattern")
+    pub args_display: String,
+    /// Raw JSON arguments string
+    pub args_json: String,
+}
+
+/// Tool execution result used in turn projections.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolResultDef {
+    pub tool_call_id: String,
+    pub output: String,
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<FileSnapshotInfo>,
+}
+
+/// File metadata snapshot for rich rendering.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileSnapshotInfo {
+    pub path: String,
+    pub lines: u32,
+    pub size_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+}
+
+/// One round of a turn (one API call).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoundData {
+    pub round_num: u32,
+    #[serde(default)]
+    pub is_final: bool,
+    pub thinking: Option<String>,
+    pub answer: Option<String>,
+    pub tool_calls: Vec<ToolCallDef>,
+    pub tool_results: Vec<ToolResultDef>,
+    /// Ordered blocks preserving the LLM's output sequence (reasoning ↔ text ↔ tool).
+    #[serde(default)]
+    pub blocks: Vec<RoundBlock>,
+}
+
+/// One full turn (user message + all rounds).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnData {
+    pub turn_id: String,
+    pub user_text: String,
+    pub rounds: Vec<RoundData>,
+}
+
+/// One block in a round, preserving the LLM's output order.
+///
+/// Blocks are streamed to the frontend in order so it can reconstruct
+/// the exact sequence of reasoning → text → tool calls from the model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RoundBlock {
+    /// Model reasoning/thinking block (collapsible in UI).
+    Reasoning { content: String },
+    /// Plain text answer block.
+    Text { content: String },
+    /// A tool call the model wants to invoke.
+    Tool { card: ToolCallDef },
+    /// A server-side web search performed by the model's built-in tool
+    /// (Responses API). Shown as a record line; the search itself ran on the
+    /// provider, so there is no local tool card or result round-trip.
+    WebSearch { action: String },
+}

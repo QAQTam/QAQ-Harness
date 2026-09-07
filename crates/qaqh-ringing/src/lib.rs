@@ -12,7 +12,7 @@
 //!
 //! ## 架构硬规则
 //!
-//! - 本 crate 依赖 `qaqh-domain`（wire → domain），**不得**依赖 `qaqh-proto`（legacy）。
+//! - 本 crate 依赖 `qaqh-domain`（wire → domain）；legacy proto crate 已删除（PR-3-5），依赖关系由编译图天然禁止。
 //! - Wire 不决定业务可靠性；envelope 的 `delivery` 由领域事件定义填充。
 //! - 本 crate 不含任何传输实现（HTTP/SSE/WebSocket/pipe 在 transport 层）。
 

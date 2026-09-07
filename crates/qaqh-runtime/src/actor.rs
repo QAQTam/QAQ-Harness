@@ -77,7 +77,6 @@ fn publish_worker_event(
 /// selection, panic isolation and cleanup. Agent construction and the loop
 /// itself live behind [`crate::agent::spawn_agent`] (PR-2-3).
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_actor(
     seed: String,
     kind: ActorKind,

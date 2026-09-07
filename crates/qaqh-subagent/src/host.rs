@@ -74,13 +74,3 @@ pub fn host() -> Option<Arc<dyn SubagentHost>> {
     let guard = slot.lock().ok()?;
     guard.clone()
 }
-
-/// 测试：清空宿主（仅测试路径；生产仅 `install_host` 一次）。
-#[cfg(test)]
-pub(crate) fn clear_host_for_test() {
-    if let Some(slot) = HOST.get() {
-        if let Ok(mut guard) = slot.lock() {
-            *guard = None;
-        }
-    }
-}

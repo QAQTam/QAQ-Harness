@@ -14,12 +14,14 @@ pub mod hub;
 pub mod journal;
 pub mod journal_store;
 pub mod lease_store;
+pub mod orphan_seal;
 pub mod outbox;
 pub mod pending_store;
 pub mod projection;
 pub mod router;
 pub mod sequencer;
 pub mod service_methods;
+pub mod timeline_hub;
 pub(crate) mod timeline_rebuild;
 
 pub use attachment::hydrate_attachment_previews;

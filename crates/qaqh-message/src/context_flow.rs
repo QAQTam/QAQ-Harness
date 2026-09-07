@@ -1,9 +1,11 @@
 //! ContextFlow — unified context-ingestion orchestration.
 //!
-//! Every message entering the model context (user input, assistant output,
-//! tool results, skills envelopes, subagent reports, goal-mode prompts, env
-//! annotations) flows through [`ContextFlow::ingest`] — the single door to
-//! [`MessageStore`](crate::store::MessageStore).
+//! Most messages entering the model context (user input, assistant output,
+//! skills envelopes, subagent reports, goal-mode prompts)
+//! flow through [`ContextFlow::ingest`]. Tool execution results are the
+//! deliberate exception: they bypass the flow via
+//! `MessageStore::push_tool_result_direct_with_attachments` (the admit layer
+//! attaches attachments + permission metadata the flow never sees).
 //!
 //! # Roles
 //!
@@ -84,12 +86,8 @@ pub enum Sink {
     Turn,
     /// Append an assistant step to the current turn.
     Step,
-    /// Attach a tool result to the current step.
-    ToolResult,
     /// Append to `trailing_messages` — position never moves, prefix cache stable.
     Trailing,
-    /// Do not persist; only visible to `build_context` callers (annotation-style).
-    Annotation,
 }
 
 impl Sink {
@@ -97,9 +95,7 @@ impl Sink {
         match self {
             Sink::Turn => "turn",
             Sink::Step => "step",
-            Sink::ToolResult => "tool_result",
             Sink::Trailing => "trailing",
-            Sink::Annotation => "annotation",
         }
     }
 }
@@ -107,20 +103,18 @@ impl Sink {
 /// When an ingested message is committed to the store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Timing {
-    /// Synchronous commit inside `ingest` (main-line user/model/tool traffic).
+    /// Synchronous commit inside `ingest` (main-line user/model traffic).
     Immediate,
     /// Held in the pending queue until `drain_turn_boundary` runs at a lap
     /// boundary (runtime injections such as subagent reports).
     TurnBoundary,
 }
 
-/// Frontend / persistence visibility of an ingested message.
+/// Ingest visibility of a message: whether the flow accepts it into the
+/// store at all. (Former `timeline`/`persist` flags were write-only — no
+/// reader ever consulted them — and were removed in Phase 3-2.)
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Visibility {
-    /// Emit timeline/domain events (TurnOpened / TurnStarted …).
-    pub timeline: bool,
-    /// Persist to messages.jsonl (store `save_msg`).
-    pub persist: bool,
     /// Include in `build_context_for_gate` output.
     pub context: bool,
 }
@@ -204,9 +198,9 @@ pub struct IngestReceipt {
     pub stored: bool,
     pub deduped: bool,
     /// Store-layer decision for `Sink::Step` (assistant messages):
-    /// `Effect::TurnComplete` ends the turn, `Effect::None` means tools may
-    /// run. `None` for every other sink.
-    pub effect: Option<crate::Effect>,
+    /// `true` ends the turn, `false` means tools may run. Always `false`
+    /// for every other sink.
+    pub turn_completed: bool,
 }
 
 #[derive(Debug)]
@@ -358,63 +352,39 @@ impl ContextFlow {
         // 扫描会吞掉间隔数小时重现的相同报告）。A,B,A 全链路放行，
         // 由 aba_pattern_passes_by_design 测试锁定。
         let pending_key = src.dedupe_key(&msg);
-        if let Some(key) = &pending_key {
-            if self.last_keys.get(source_id) == Some(key) {
-                self.trace_push(source_id, role.as_str(), sink.as_str(), "deduped");
-                return IngestReceipt {
-                    stored: false,
-                    deduped: true,
-                    effect: None,
-                };
-            }
+        if let Some(key) = &pending_key
+            && self.last_keys.get(source_id) == Some(key)
+        {
+            self.trace_push(source_id, role.as_str(), sink.as_str(), "deduped");
+            return IngestReceipt {
+                stored: false,
+                deduped: true,
+                turn_completed: false,
+            };
         }
 
-        // (stored, effect) — effect carries the store-layer decision for
-        // Sink::Step (assistant messages: Effect::None vs Effect::TurnComplete).
-        let (stored, effect) = match sink {
+        // (stored, turn_completed) — the flag carries the store-layer decision
+        // for Sink::Step (assistant messages: false = tools may run, true = turn done).
+        let (stored, turn_completed) = match sink {
             Sink::Turn => {
                 let text = extract_text(&msg);
                 match role {
                     FlowRole::User => {
                         store.push_user(&text);
-                        (true, None)
+                        (true, false)
                     }
                     FlowRole::System | FlowRole::Developer => {
                         store.push_system_input(&text);
-                        (true, None)
+                        (true, false)
                     }
-                    _ => (false, None), // unreachable via role_sink_compatible
+                    _ => (false, false), // unreachable via role_sink_compatible
                 }
             }
             Sink::Step => {
-                let effect = store.push_assistant(msg.clone());
-                (true, Some(effect))
+                let turn_completed = store.push_assistant(msg.clone());
+                (true, turn_completed)
             }
-            Sink::ToolResult => {
-                let mut any = false;
-                for block in &msg.content {
-                    if let ContentBlock::ToolResult {
-                        tool_use_id,
-                        result,
-                    } = block
-                    {
-                        let projected = result.render_xml_envelope();
-                        store.push_tool_result_direct(
-                            tool_use_id,
-                            &projected,
-                            result.status.is_success(),
-                        );
-                        any = true;
-                    }
-                }
-                (any, None)
-            }
-            Sink::Trailing => (store.push_trailing_system(msg.clone()), None),
-            // Annotation never persists through the flow; the consumer pulls
-            // pending annotations from `ContextFlow::annotations` when
-            // building context. Not implemented in the first cut — callers
-            // keep their existing build-time path.
-            Sink::Annotation => (false, None),
+            Sink::Trailing => (store.push_trailing_system(msg.clone()), false),
         };
 
         // G1：last_keys 在 store 确定性接受之后落账——原先先记账后落盘，
@@ -432,7 +402,7 @@ impl ContextFlow {
         IngestReceipt {
             stored,
             deduped: false,
-            effect,
+            turn_completed,
         }
     }
 
@@ -478,12 +448,10 @@ fn role_sink_compatible(role: FlowRole, sink: Sink) -> bool {
             FlowRole::User | FlowRole::System | FlowRole::Developer
         ),
         Sink::Step => role == FlowRole::Assistant,
-        Sink::ToolResult => role == FlowRole::Tool,
         Sink::Trailing => matches!(
             role,
             FlowRole::System | FlowRole::Developer | FlowRole::User
         ),
-        Sink::Annotation => true,
     }
 }
 
@@ -505,13 +473,11 @@ pub mod builtin {
     use super::*;
 
     /// Stable ids of the built-in sources.
-    pub const USER: &'static str = "user";
-    pub const MODEL: &'static str = "model";
-    pub const TOOL: &'static str = "tool";
-    pub const SKILLS: &'static str = "skills";
-    pub const SUBAGENT: &'static str = "subagent";
-    pub const GOAL: &'static str = "goal";
-    pub const ENV: &'static str = "env";
+    pub const USER: &str = "user";
+    pub const MODEL: &str = "model";
+    pub const SKILLS: &str = "skills";
+    pub const SUBAGENT: &str = "subagent";
+    pub const GOAL: &str = "goal";
 
     fn base(
         id: &'static str,
@@ -571,11 +537,7 @@ pub mod builtin {
             FlowRole::User,
             Sink::Turn,
             Timing::Immediate,
-            Visibility {
-                timeline: true,
-                persist: true,
-                context: true,
-            },
+            Visibility { context: true },
             LifecyclePolicy {
                 undo: UndoBehavior::RemoveLast,
                 compact: CompactBehavior::Compressable,
@@ -590,30 +552,7 @@ pub mod builtin {
             FlowRole::Assistant,
             Sink::Step,
             Timing::Immediate,
-            Visibility {
-                timeline: true,
-                persist: true,
-                context: true,
-            },
-            LifecyclePolicy {
-                undo: UndoBehavior::RemoveLast,
-                compact: CompactBehavior::Compressable,
-            },
-        )
-    }
-
-    /// Tool execution results.
-    pub fn tool_source() -> Arc<dyn ContextSource> {
-        base(
-            TOOL,
-            FlowRole::Tool,
-            Sink::ToolResult,
-            Timing::Immediate,
-            Visibility {
-                timeline: false,
-                persist: true,
-                context: true,
-            },
+            Visibility { context: true },
             LifecyclePolicy {
                 undo: UndoBehavior::RemoveLast,
                 compact: CompactBehavior::Compressable,
@@ -630,11 +569,7 @@ pub mod builtin {
             FlowRole::Developer,
             Sink::Trailing,
             Timing::Immediate,
-            Visibility {
-                timeline: false,
-                persist: true,
-                context: true,
-            },
+            Visibility { context: true },
             LifecyclePolicy {
                 undo: UndoBehavior::Keep,
                 compact: CompactBehavior::Preserved,
@@ -653,11 +588,7 @@ pub mod builtin {
             FlowRole::User,
             Sink::Trailing,
             Timing::TurnBoundary,
-            Visibility {
-                timeline: false,
-                persist: true,
-                context: true,
-            },
+            Visibility { context: true },
             LifecyclePolicy {
                 undo: UndoBehavior::Keep,
                 compact: CompactBehavior::Preserved,
@@ -672,33 +603,10 @@ pub mod builtin {
             FlowRole::User,
             Sink::Turn,
             Timing::Immediate,
-            Visibility {
-                timeline: true,
-                persist: true,
-                context: true,
-            },
+            Visibility { context: true },
             LifecyclePolicy {
                 undo: UndoBehavior::RemoveLast,
                 compact: CompactBehavior::Compressable,
-            },
-        )
-    }
-
-    /// Environment annotations (`[Environment]` block). Build-time only.
-    pub fn env_source() -> Arc<dyn ContextSource> {
-        base(
-            ENV,
-            FlowRole::System,
-            Sink::Annotation,
-            Timing::Immediate,
-            Visibility {
-                timeline: false,
-                persist: false,
-                context: true,
-            },
-            LifecyclePolicy {
-                undo: UndoBehavior::Keep,
-                compact: CompactBehavior::Preserved,
             },
         )
     }
@@ -707,11 +615,9 @@ pub mod builtin {
     pub fn register_all(flow: &mut ContextFlow) {
         flow.register(user_source());
         flow.register(model_source());
-        flow.register(tool_source());
         flow.register(skills_source());
         flow.register(subagent_source());
         flow.register(goal_source());
-        flow.register(env_source());
     }
 }
 
@@ -728,11 +634,9 @@ mod tests {
         let all: Vec<Arc<dyn ContextSource>> = vec![
             builtin::user_source(),
             builtin::model_source(),
-            builtin::tool_source(),
             builtin::skills_source(),
             builtin::subagent_source(),
             builtin::goal_source(),
-            builtin::env_source(),
         ];
         for s in &all {
             if ids.contains(&s.id()) {
@@ -757,15 +661,16 @@ mod tests {
         // user → Turn ✓, Step ✗
         assert!(role_sink_compatible(FlowRole::User, Sink::Turn));
         assert!(!role_sink_compatible(FlowRole::User, Sink::Step));
-        // developer → Trailing ✓, Turn ✓, ToolResult ✗
+        // developer → Trailing ✓, Turn ✓
         assert!(role_sink_compatible(FlowRole::Developer, Sink::Trailing));
         assert!(role_sink_compatible(FlowRole::Developer, Sink::Turn));
-        assert!(!role_sink_compatible(FlowRole::Developer, Sink::ToolResult));
         // assistant → Step ✓ only
         assert!(role_sink_compatible(FlowRole::Assistant, Sink::Step));
         assert!(!role_sink_compatible(FlowRole::Assistant, Sink::Turn));
-        // tool → ToolResult ✓ only
-        assert!(role_sink_compatible(FlowRole::Tool, Sink::ToolResult));
+        // tool role parses (stored-message compat) but has no flow sink:
+        // tool results bypass the flow via push_tool_result_direct*.
+        assert!(!role_sink_compatible(FlowRole::Tool, Sink::Turn));
+        assert!(!role_sink_compatible(FlowRole::Tool, Sink::Step));
         assert!(!role_sink_compatible(FlowRole::Tool, Sink::Trailing));
     }
 
@@ -827,11 +732,7 @@ mod tests {
                 Timing::Immediate
             }
             fn visibility(&self) -> Visibility {
-                Visibility {
-                    timeline: false,
-                    persist: true,
-                    context: true,
-                }
+                Visibility { context: true }
             }
             fn lifecycle(&self) -> LifecyclePolicy {
                 LifecyclePolicy {
@@ -872,11 +773,7 @@ mod tests {
                 Timing::TurnBoundary
             }
             fn visibility(&self) -> Visibility {
-                Visibility {
-                    timeline: false,
-                    persist: true,
-                    context: true,
-                }
+                Visibility { context: true }
             }
             fn lifecycle(&self) -> LifecyclePolicy {
                 LifecyclePolicy {

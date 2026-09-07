@@ -76,13 +76,14 @@ fn process_info_ok(id: u32, info: serde_json::Value) -> String {
 }
 
 fn process_error(code: &str, message: impl Into<String>, hint: &str) -> ToolResult {
-    ToolResult::error(crate::json_err(code, message, hint))
+    crate::json_err(code, message, hint)
 }
 
 fn process_ok(payload: String) -> ToolResult {
     ToolResult::ok(payload)
 }
 
+#[allow(clippy::result_large_err)] // 错误装箱属结构塑形，另立项
 fn process_id(ctx: &ToolCallCtx, operation: &str) -> Result<u32, ToolResult> {
     match ctx.args.get("id").and_then(|v| v.as_u64()) {
         Some(v) if v <= u32::MAX as u64 => Ok(v as u32),

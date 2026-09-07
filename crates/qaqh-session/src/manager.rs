@@ -121,17 +121,17 @@ impl SessionManager {
         let mut metas = store::read_index(&self.sessions_dir);
 
         // Fallback: scan directories if index is empty
-        if metas.is_empty() {
-            if let Ok(entries) = std::fs::read_dir(&self.sessions_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if !path.is_dir() {
-                        continue;
-                    }
-                    let meta = store::read_meta(&path);
-                    if let Some(meta) = meta {
-                        metas.push(meta);
-                    }
+        if metas.is_empty()
+            && let Ok(entries) = std::fs::read_dir(&self.sessions_dir)
+        {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let meta = store::read_meta(&path);
+                if let Some(meta) = meta {
+                    metas.push(meta);
                 }
             }
         }
@@ -309,7 +309,7 @@ impl SessionManager {
                 } => {
                     let fresh: Vec<Message> = messages
                         .into_iter()
-                        .filter(|message| message.msg_id.map_or(true, |id| id > applied_max_msg_id))
+                        .filter(|message| message.msg_id.is_none_or(|id| id > applied_max_msg_id))
                         .collect();
                     if fresh.is_empty() {
                         continue;
@@ -360,7 +360,6 @@ impl SessionManager {
         };
         if let Err(error) = self.write_compact_context(seed, &context) {
             log::error!("SessionManager: write compact context failed for {seed}: {error}");
-            return;
         }
     }
 
@@ -380,7 +379,6 @@ impl SessionManager {
         context.messages = messages.to_vec();
         if let Err(error) = self.write_compact_context(seed, &context) {
             log::error!("SessionManager: update compact context failed for {seed}: {error}");
-            return;
         }
     }
 
@@ -395,10 +393,10 @@ impl SessionManager {
     /// Load only metadata (fast, no message parsing). JSON remains primary
     /// until the DB-primary readiness gate is explicitly promoted.
     pub fn load_meta(&self, seed: &str) -> Option<SessionMeta> {
-        if let Some(dir) = self.session_dir(seed) {
-            if let Some(meta) = store::read_meta(&dir) {
-                return Some(meta);
-            }
+        if let Some(dir) = self.session_dir(seed)
+            && let Some(meta) = store::read_meta(&dir)
+        {
+            return Some(meta);
         }
         None
     }
@@ -431,12 +429,10 @@ impl SessionManager {
     /// Persist agent mode to meta.json without rewriting messages.
     /// Called when the user switches PLAN/CODE mode so it survives agent restart.
     pub fn persist_mode(&self, seed: &str, mode: u8) {
-        let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = self.session_path_dir(seed);
-        let mut meta = self.load_meta(seed).unwrap_or_default();
-        meta.mode = mode;
-        let _ = store::write_meta(&dir, &meta);
+        self.with_meta_locked(seed, false, |dir, meta| {
+            meta.mode = mode;
+            let _ = store::write_meta(dir, meta);
+        });
     }
 
     /// Persist tool mode (standard/minimal/custom) to meta.json without
@@ -452,60 +448,52 @@ impl SessionManager {
         tool_mode: &str,
         custom_tools: &[String],
     ) -> Result<(), String> {
-        let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = self.session_path_dir(seed);
-        let _ = std::fs::create_dir_all(&dir);
-        let mut meta = self.load_meta(seed).unwrap_or_default();
-        let normalized = if tool_mode.is_empty() {
-            "standard"
-        } else {
-            tool_mode
-        };
-        meta.tool_mode = normalized.to_string();
-        meta.custom_tools = custom_tools.to_vec();
-        meta.updated_at = Self::now_epoch();
-        store::write_meta(&dir, &meta)?;
-        store::upsert_index(&self.sessions_dir, &meta);
-        log::info!(
-            "[TOOL MODE] persisted {normalized} for {seed} ({} custom tools)",
-            custom_tools.len()
-        );
-        Ok(())
+        self.with_meta_locked(seed, true, |dir, meta| {
+            let normalized = if tool_mode.is_empty() {
+                "standard"
+            } else {
+                tool_mode
+            };
+            meta.tool_mode = normalized.to_string();
+            meta.custom_tools = custom_tools.to_vec();
+            meta.updated_at = Self::now_epoch();
+            store::write_meta(dir, meta)?;
+            store::upsert_index(&self.sessions_dir, meta);
+            log::info!(
+                "[TOOL MODE] persisted {normalized} for {seed} ({} custom tools)",
+                custom_tools.len()
+            );
+            Ok(())
+        })
     }
 
     pub fn persist_skills(&self, seed: &str, skills: qaqh_types::SkillSessionStateV2) {
-        let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = self.session_path_dir(seed);
-        let _ = std::fs::create_dir_all(&dir);
-        let mut meta = self.load_meta(seed).unwrap_or_default();
-        let now = Self::now_epoch();
-        meta.seed = seed.to_string();
-        if meta.created_at == 0 {
-            meta.created_at = now;
-        }
-        meta.updated_at = now;
-        meta.skills = skills;
-        let _ = store::write_meta(&dir, &meta);
-        store::upsert_index(&self.sessions_dir, &meta);
+        self.with_meta_locked(seed, true, |dir, meta| {
+            let now = Self::now_epoch();
+            meta.seed = seed.to_string();
+            if meta.created_at == 0 {
+                meta.created_at = now;
+            }
+            meta.updated_at = now;
+            meta.skills = skills;
+            let _ = store::write_meta(dir, meta);
+            store::upsert_index(&self.sessions_dir, meta);
+        });
     }
 
     /// 设置会话归档标记（标签 × 归档 / 左侧列表恢复）。
     /// 仅改 meta.json（atomic replace-write），不触碰消息文件与 registry
     /// 实例——实例启停由调用方（daemon 拦截层）负责。
     pub fn set_archived(&self, seed: &str, archived: bool) {
-        let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = self.session_path_dir(seed);
-        let mut meta = self.load_meta(seed).unwrap_or_default();
-        if meta.seed.is_empty() {
-            meta.seed = seed.to_string();
-        }
-        meta.archived = archived;
-        meta.updated_at = Self::now_epoch();
-        let _ = store::write_meta(&dir, &meta);
-        store::upsert_index(&self.sessions_dir, &meta);
+        self.with_meta_locked(seed, false, |dir, meta| {
+            if meta.seed.is_empty() {
+                meta.seed = seed.to_string();
+            }
+            meta.archived = archived;
+            meta.updated_at = Self::now_epoch();
+            let _ = store::write_meta(dir, meta);
+            store::upsert_index(&self.sessions_dir, meta);
+        });
     }
 
     /// 设置会话运行环境工作目录（`workspace.set` / 子代理继承）。
@@ -519,32 +507,27 @@ impl SessionManager {
         if cwd.trim().is_empty() {
             return;
         }
-        let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = self.session_path_dir(seed);
-        let _ = std::fs::create_dir_all(&dir);
-        let mut meta = self.load_meta(seed).unwrap_or_default();
-        if meta.seed.is_empty() {
-            meta.seed = seed.to_string();
-        }
-        meta.cwd = Some(crate::grouping::canonical_cwd(std::path::Path::new(cwd)));
-        // 非索引会话（子代理继承 workspace 等临时场景）= 临时会话：关闭时
-        // 整个目录删除（用完即走）；正规会话（index=true）恒为 false。
-        meta.ephemeral = !index;
-        meta.updated_at = Self::now_epoch();
-        let _ = store::write_meta(&dir, &meta);
-        if index {
-            store::upsert_index(&self.sessions_dir, &meta);
-        }
-        // 组织工作区自动归属（与 persist_new_session_with_cwd:404 同逻辑）：
-        // 顶部 `workspace.set` 选目录后，左侧 `session.list.workspace_id` 需
-        // 立即反映分组，否则左侧恒显未分组（两套工作区不通根因）。
-        // `index=false` 为子代理临时会话，不进组织归属。
-        if index {
-            if let Some(cwd) = meta.cwd.as_deref() {
+        self.with_meta_locked(seed, true, |dir, meta| {
+            if meta.seed.is_empty() {
+                meta.seed = seed.to_string();
+            }
+            meta.cwd = Some(crate::grouping::canonical_cwd(std::path::Path::new(cwd)));
+            // 非索引会话（子代理继承 workspace 等临时场景）= 临时会话：关闭时
+            // 整个目录删除（用完即走）；正规会话（index=true）恒为 false。
+            meta.ephemeral = !index;
+            meta.updated_at = Self::now_epoch();
+            let _ = store::write_meta(dir, meta);
+            if index {
+                store::upsert_index(&self.sessions_dir, meta);
+            }
+            // 组织工作区自动归属（与 persist_new_session_with_cwd:404 同逻辑）：
+            // 顶部 `workspace.set` 选目录后，左侧 `session.list.workspace_id` 需
+            // 立即反映分组，否则左侧恒显未分组（两套工作区不通根因）。
+            // `index=false` 为子代理临时会话，不进组织归属。
+            if index && let Some(cwd) = meta.cwd.as_deref() {
                 crate::grouping::WorkspaceStore::global().attach_by_cwd(seed, cwd);
             }
-        }
+        });
     }
 
     /// 该 seed 是否为临时会话（子代理）：meta 存在且标记 ephemeral。
@@ -558,20 +541,17 @@ impl SessionManager {
     /// （`created_at > 0`，即 persist_new_session 建立过）才同步索引——
     /// 子代理 worker 的 dashboard/compact 路径不会污染会话列表。
     pub fn set_context_stats(&self, seed: &str, stats: &serde_json::Value) {
-        let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = self.session_path_dir(seed);
-        let _ = std::fs::create_dir_all(&dir);
-        let mut meta = self.load_meta(seed).unwrap_or_default();
-        if meta.seed.is_empty() {
-            meta.seed = seed.to_string();
-        }
-        meta.context_stats = Some(stats.clone());
-        meta.updated_at = Self::now_epoch();
-        let _ = store::write_meta(&dir, &meta);
-        if meta.created_at > 0 {
-            store::upsert_index(&self.sessions_dir, &meta);
-        }
+        self.with_meta_locked(seed, true, |dir, meta| {
+            if meta.seed.is_empty() {
+                meta.seed = seed.to_string();
+            }
+            meta.context_stats = Some(stats.clone());
+            meta.updated_at = Self::now_epoch();
+            let _ = store::write_meta(dir, meta);
+            if meta.created_at > 0 {
+                store::upsert_index(&self.sessions_dir, meta);
+            }
+        });
     }
 
     /// Synchronously create a new session directory and initial meta.json
@@ -587,24 +567,21 @@ impl SessionManager {
     /// canonicalize 成功存 canonical 路径，失败存原样字符串；
     /// cwd 命中某 workspace 路径时自动 attach（D1 双轨自动侧）。
     pub fn persist_new_session_with_cwd(&self, seed: &str, cwd: Option<&str>) {
-        let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = self.session_path_dir(seed);
-        let _ = std::fs::create_dir_all(&dir);
-        let mut meta = self.load_meta(seed).unwrap_or_default();
-        let now = Self::now_epoch();
-        meta.seed = seed.to_string();
-        meta.created_at = now;
-        meta.updated_at = now;
-        meta.cwd = cwd.map(|c| crate::grouping::canonical_cwd(std::path::Path::new(c)));
-        if !dir.join("messages.jsonl").exists() {
-            let _ = store::append_messages(&dir, &[]);
-        }
-        let _ = store::write_meta(&dir, &meta);
-        store::upsert_index(&self.sessions_dir, &meta);
-        if let Some(cwd) = meta.cwd.as_deref() {
-            crate::grouping::WorkspaceStore::global().attach_by_cwd(seed, cwd);
-        }
+        self.with_meta_locked(seed, true, |dir, meta| {
+            let now = Self::now_epoch();
+            meta.seed = seed.to_string();
+            meta.created_at = now;
+            meta.updated_at = now;
+            meta.cwd = cwd.map(|c| crate::grouping::canonical_cwd(std::path::Path::new(c)));
+            if !dir.join("messages.jsonl").exists() {
+                let _ = store::append_messages(dir, &[]);
+            }
+            let _ = store::write_meta(dir, meta);
+            store::upsert_index(&self.sessions_dir, meta);
+            if let Some(cwd) = meta.cwd.as_deref() {
+                crate::grouping::WorkspaceStore::global().attach_by_cwd(seed, cwd);
+            }
+        });
     }
 
     pub fn persist_usage(
@@ -615,44 +592,38 @@ impl SessionManager {
         requests: u32,
         cache_reported_requests: u32,
     ) {
-        let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = self.session_path_dir(seed);
-        let _ = std::fs::create_dir_all(&dir);
-        let mut meta = self.load_meta(seed).unwrap_or_default();
-        meta.seed = seed.to_string();
-        meta.updated_at = Self::now_epoch();
-        meta.usage_totals = totals;
-        meta.last_usage = last_usage;
-        meta.usage_requests = requests;
-        meta.cache_reported_requests = cache_reported_requests;
-        let _ = store::write_meta(&dir, &meta);
-        store::upsert_index(&self.sessions_dir, &meta);
+        self.with_meta_locked(seed, true, |dir, meta| {
+            meta.seed = seed.to_string();
+            meta.updated_at = Self::now_epoch();
+            meta.usage_totals = totals;
+            meta.last_usage = last_usage;
+            meta.usage_requests = requests;
+            meta.cache_reported_requests = cache_reported_requests;
+            let _ = store::write_meta(dir, meta);
+            store::upsert_index(&self.sessions_dir, meta);
+        });
     }
 
     /// Append a single message to JSONL immediately (per-message persistence).
     pub fn save_one(&self, seed: &str, msg: &Message) {
-        let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = self.session_path_dir(seed);
-        let _ = std::fs::create_dir_all(&dir);
-        let mut meta = self.load_meta(seed).unwrap_or_default();
-        let now = Self::now_epoch();
-        meta.seed = seed.to_string();
-        if meta.created_at == 0 {
-            meta.created_at = now;
-        }
-        meta.updated_at = now;
-        meta.message_count = meta.message_count.saturating_add(1);
-        if let Err(e) = store::append_one(&dir, msg) {
-            log::error!("SessionManager: save_one failed: {e}");
-            return;
-        }
-        if let Err(e) = store::write_meta(&dir, &meta) {
-            log::error!("SessionManager: save_one metadata write failed: {e}");
-            return;
-        }
-        store::upsert_index(&self.sessions_dir, &meta);
+        self.with_meta_locked(seed, true, |dir, meta| {
+            let now = Self::now_epoch();
+            meta.seed = seed.to_string();
+            if meta.created_at == 0 {
+                meta.created_at = now;
+            }
+            meta.updated_at = now;
+            meta.message_count = meta.message_count.saturating_add(1);
+            if let Err(e) = store::append_one(dir, msg) {
+                log::error!("SessionManager: save_one failed: {e}");
+                return;
+            }
+            if let Err(e) = store::write_meta(dir, meta) {
+                log::error!("SessionManager: save_one metadata write failed: {e}");
+                return;
+            }
+            store::upsert_index(&self.sessions_dir, meta);
+        });
     }
 
     /// Update session metadata and index after messages have been appended.
@@ -664,42 +635,38 @@ impl SessionManager {
         compact_skip: usize,
         turn_count: usize,
     ) {
-        let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let now = Self::now_epoch();
-        let dir = self.session_path_dir(seed);
-        let mut meta = self.load_meta(seed).unwrap_or_default();
-        meta.seed = seed.to_string();
-        if meta.created_at == 0 {
-            meta.created_at = now;
-        }
-        meta.updated_at = now;
-        meta.model = model.to_string();
-        meta.effort = effort.map(String::from);
-        meta.turn_count = turn_count;
-        meta.compact_skip = compact_skip;
-        if let Err(e) = store::write_meta(&dir, &meta) {
-            log::error!("SessionManager: write_meta failed: {e}");
-            return;
-        }
-        store::upsert_index(&self.sessions_dir, &meta);
+        self.with_meta_locked(seed, false, |dir, meta| {
+            meta.seed = seed.to_string();
+            if meta.created_at == 0 {
+                meta.created_at = now;
+            }
+            meta.updated_at = now;
+            meta.model = model.to_string();
+            meta.effort = effort.map(String::from);
+            meta.turn_count = turn_count;
+            meta.compact_skip = compact_skip;
+            if let Err(e) = store::write_meta(dir, meta) {
+                log::error!("SessionManager: write_meta failed: {e}");
+                return;
+            }
+            store::upsert_index(&self.sessions_dir, meta);
+        });
     }
 
     /// 更新会话标题（冻结语义：调用方负责只在首轮后调用一次；幂等覆盖）。
     /// 写 meta + index（daemon 的 `list()` 每次读盘，无需跨进程通知即可见）。
     pub fn update_title(&self, seed: &str, title: &str) {
-        let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = self.session_path_dir(seed);
-        let mut meta = self.load_meta(seed).unwrap_or_default();
-        meta.seed = seed.to_string();
-        meta.title = Some(title.to_string());
-        meta.updated_at = Self::now_epoch();
-        if let Err(e) = store::write_meta(&dir, &meta) {
-            log::error!("SessionManager: update_title write_meta failed: {e}");
-            return;
-        }
-        store::upsert_index(&self.sessions_dir, &meta);
+        self.with_meta_locked(seed, false, |dir, meta| {
+            meta.seed = seed.to_string();
+            meta.title = Some(title.to_string());
+            meta.updated_at = Self::now_epoch();
+            if let Err(e) = store::write_meta(dir, meta) {
+                log::error!("SessionManager: update_title write_meta failed: {e}");
+                return;
+            }
+            store::upsert_index(&self.sessions_dir, meta);
+        });
     }
 
     /// Save session: write meta + rewrite all messages.
@@ -769,41 +736,36 @@ impl SessionManager {
         compact_skip: usize,
         turn_count: usize,
     ) {
-        let lock = self.session_lock(seed);
-        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-        if new_messages.is_empty() {
-            return;
-        }
-
         let now = Self::now_epoch();
-        let dir = self.session_path_dir(seed);
-        let _ = std::fs::create_dir_all(&dir);
+        self.with_meta_locked(seed, true, |dir, meta| {
+            if new_messages.is_empty() {
+                return;
+            }
+            if meta.created_at == 0 {
+                meta.created_at = now;
+            }
+            let last_summary = Self::extract_summary(new_messages);
+            meta.seed = seed.to_string();
+            meta.updated_at = now;
+            meta.model = model.to_string();
+            meta.effort = effort.map(String::from);
+            meta.message_count = meta.message_count.saturating_add(new_messages.len());
+            meta.turn_count = turn_count;
+            meta.last_summary = last_summary;
+            meta.compact_skip = compact_skip;
 
-        let mut meta = self.load_meta(seed).unwrap_or_default();
-        if meta.created_at == 0 {
-            meta.created_at = now;
-        }
-        let last_summary = Self::extract_summary(new_messages);
-        meta.seed = seed.to_string();
-        meta.updated_at = now;
-        meta.model = model.to_string();
-        meta.effort = effort.map(String::from);
-        meta.message_count = meta.message_count.saturating_add(new_messages.len());
-        meta.turn_count = turn_count;
-        meta.last_summary = last_summary;
-        meta.compact_skip = compact_skip;
+            // Append messages
+            if let Err(e) = store::append_messages(dir, new_messages) {
+                log::error!("SessionManager: append_messages failed: {e}");
+                return;
+            }
 
-        // Append messages
-        if let Err(e) = store::append_messages(&dir, new_messages) {
-            log::error!("SessionManager: append_messages failed: {e}");
-            return;
-        }
-
-        if let Err(e) = store::write_meta(&dir, &meta) {
-            log::error!("SessionManager: write_meta failed: {e}");
-            return;
-        }
-        store::upsert_index(&self.sessions_dir, &meta);
+            if let Err(e) = store::write_meta(dir, meta) {
+                log::error!("SessionManager: write_meta failed: {e}");
+                return;
+            }
+            store::upsert_index(&self.sessions_dir, meta);
+        });
     }
 
     // ── Active session ──
@@ -855,6 +817,31 @@ impl SessionManager {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs()
+    }
+
+    /// Load-modify scaffolding for the meta.json critical section (Phase 3-3).
+    ///
+    /// Takes the per-seed lock, resolves the session dir (creating it when
+    /// `create_dir`), loads (or defaults) the meta, then runs `f` with the
+    /// lock **held**. Write-back (`store::write_meta`) and index sync
+    /// (`store::upsert_index`) deliberately stay per call-site: error policy
+    /// differs by path (CK-PERSIST `persist_tool_mode` returns `Result` while
+    /// fire-and-forget paths swallow I/O errors, and index sync is
+    /// conditional in `set_cwd`/`set_context_stats`).
+    fn with_meta_locked<R>(
+        &self,
+        seed: &str,
+        create_dir: bool,
+        f: impl FnOnce(&PathBuf, &mut SessionMeta) -> R,
+    ) -> R {
+        let lock = self.session_lock(seed);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = self.session_path_dir(seed);
+        if create_dir {
+            let _ = std::fs::create_dir_all(&dir);
+        }
+        let mut meta = self.load_meta(seed).unwrap_or_default();
+        f(&dir, &mut meta)
     }
 
     // ── Private ──

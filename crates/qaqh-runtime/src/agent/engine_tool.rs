@@ -59,6 +59,12 @@ pub struct ToolEngine {
     pub(crate) pending: HashMap<String, PendingApproval>,
 }
 
+impl Default for ToolEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolEngine {
     pub fn new() -> Self {
         Self {
@@ -94,6 +100,7 @@ impl ToolEngine {
             });
     }
 
+    #[allow(clippy::too_many_arguments)] // 参数面塑形另立项（PLAN D-5）
     pub fn emit_timeline_tool_result(
         ctx: &mut RingContext,
         turn_id: &str,
@@ -374,17 +381,13 @@ impl ToolEngine {
         let pending_todo_activation = None;
 
         for tool in tools {
-            // 已移除 minimal:dsh PTY（bash_v2 下线），当前恒等。
-            // 让权限准入 / prepare_req / handler 全部走内部 key，原生 bash 不参与。
-            let effective_name =
-                crate::agent::state::agent::AgentState::normalize_tool_name_for_mode(
-                    &ctx.agent.session.tool_mode,
-                    &tool.name,
-                );
+            // 权限准入 / prepare_req / handler 全部走内部注册 key（模型面名称
+            // 与内部 key 恒等，历史投影已随 minimal:dsh 下线移除）。
+            let effective_name = tool.name.as_str();
             match qaqh_workspace::authorize_call(
                 &ctx.agent.session.seed,
                 &tool.id,
-                &effective_name,
+                effective_name,
                 &tool.args,
                 ctx.agent.config.permission_level,
             ) {

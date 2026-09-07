@@ -9,6 +9,7 @@ license = "MIT"
 bytes = "1"
 qaqh-domain = { path = "../qaqh-domain" }
 qaqh-ringing = { path = "../qaqh-ringing" }
+qaqh-types = { path = "../qaqh-types" }
 futures-util = "0.3"
 log = "0.4"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "stream", "rustls", "query"] }

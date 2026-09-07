@@ -264,14 +264,10 @@ fn exec_copy_range(args: &serde_json::Value) -> ToolResult {
     let (Some(source_path), Some(source_start), Some(target_path)) =
         (get("source_path"), get("source_start"), get("target_path"))
     else {
-        return crate::ToolResult::error(
-            serde_json::json!({
-                "timeis": crate::now_utc8(),
-                "status": "error",
-                "code": "MISSING_ARGUMENT",
-                "message": "copy_range requires 'source_path', 'source_start' and 'target_path'",
-            })
-            .to_string(),
+        return crate::json_err(
+            "MISSING_ARGUMENT",
+            "copy_range requires 'source_path', 'source_start' and 'target_path'",
+            "",
         );
     };
     let source_end = get("source_end");
@@ -283,14 +279,10 @@ fn exec_copy_range(args: &serde_json::Value) -> ToolResult {
     ) {
         Some(m) => m,
         None => {
-            return crate::ToolResult::error(
-                serde_json::json!({
-                    "timeis": crate::now_utc8(),
-                    "status": "error",
-                    "code": "INVALID_MODE",
-                    "message": format!("invalid mode — use one of: {}", MODES.join(" | ")),
-                })
-                .to_string(),
+            return crate::json_err(
+                "INVALID_MODE",
+                format!("invalid mode — use one of: {}", MODES.join(" | ")),
+                "",
             );
         }
     };
@@ -559,7 +551,7 @@ mod tests {
 
     #[test]
     fn ambiguous_source_start_rejected_with_candidates() {
-        let (dir, ws) = setup(&[("src.rs", "dup\nx\ndup\ny\n"), ("dst.rs", "out\n")]);
+        let (_dir, ws) = setup(&[("src.rs", "dup\nx\ndup\ny\n"), ("dst.rs", "out\n")]);
         let err = run(&ws, "src.rs", "dup", None, "dst.rs", None, "append").unwrap_err();
         assert!(err.contains("SOURCE_START_AMBIGUOUS"), "got: {err}");
         assert!(err.contains("L1"), "candidates expected, got: {err}");
@@ -568,7 +560,7 @@ mod tests {
 
     #[test]
     fn end_anchor_missing_rejected() {
-        let (dir, ws) = setup(&[("src.rs", "start\nbody\n"), ("dst.rs", "out\n")]);
+        let (_dir, ws) = setup(&[("src.rs", "start\nbody\n"), ("dst.rs", "out\n")]);
         let err = run(
             &ws,
             "src.rs",
@@ -584,7 +576,7 @@ mod tests {
 
     #[test]
     fn same_file_insert_inside_range_rejected() {
-        let (dir, ws) = setup(&[("f.rs", "a\nb\nc\nd\n")]);
+        let (_dir, ws) = setup(&[("f.rs", "a\nb\nc\nd\n")]);
         let err = run(
             &ws,
             "f.rs",
@@ -629,7 +621,7 @@ mod tests {
 
     #[test]
     fn missing_anchor_when_mode_requires_it() {
-        let (dir, ws) = setup(&[("src.rs", "s\n"), ("dst.rs", "t\n")]);
+        let (_dir, ws) = setup(&[("src.rs", "s\n"), ("dst.rs", "t\n")]);
         let err = run(&ws, "src.rs", "s", None, "dst.rs", None, "insert_after").unwrap_err();
         assert!(err.contains("MISSING_TARGET_ANCHOR"), "got: {err}");
     }

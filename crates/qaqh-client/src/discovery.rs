@@ -1,29 +1,22 @@
 //! Daemon discovery: read `daemon.json` from the platform data directory and
-//! derive the HTTP base URL. Mirrors `electron/controlClient.ts` + `qaqh-proto`.
-
-use std::path::PathBuf;
-
-use serde::Deserialize;
+//! derive the HTTP base URL. The on-disk contract (`DaemonDiscovery` /
+//! `CONTROL_PROTOCOL_VERSION`) is single-sourced in `qaqh-types` (PR-3-1);
+//! this module owns only the client-side filesystem access and URL derivation.
 
 use crate::error::{ClientError, Result};
 
-/// Contents of `<data-dir>/daemon.json` (see `qaqh-proto::DaemonDiscovery`).
-#[derive(Debug, Clone, Deserialize)]
-pub struct DaemonDiscovery {
-    /// `http://<host>:<port>` (legacy `ws://<host>:<port>/control/v1` still accepted)
-    pub endpoint: String,
-    pub token: String,
-    pub pid: u32,
-    pub server_epoch: String,
-    pub protocol_version: u16,
-    #[serde(default)]
-    pub daemon_version: String,
-}
+pub use qaqh_types::DaemonDiscovery;
 
-impl DaemonDiscovery {
+/// Client-side discovery extensions: `DaemonDiscovery` 定义于 `qaqh-types`，
+/// 固有 impl 无法跨 crate 附加，故 `base_url` 推导落在本扩展 trait。
+pub trait DiscoveryExt {
     /// HTTP base URL derived from discovery endpoint.
     /// Supports both legacy `ws://` (→ `http://`) and new `http://`/`https://`.
-    pub fn base_url(&self) -> Result<String> {
+    fn base_url(&self) -> Result<String>;
+}
+
+impl DiscoveryExt for DaemonDiscovery {
+    fn base_url(&self) -> Result<String> {
         let (rest, scheme) = if let Some(r) = self.endpoint.strip_prefix("ws://") {
             (r, "http")
         } else if let Some(r) = self.endpoint.strip_prefix("wss://") {
@@ -46,31 +39,12 @@ impl DaemonDiscovery {
     }
 }
 
-/// Platform data directory. `QAQH_DATA_DIR` overrides when set (used by test
-/// harnesses and multi-instance shells); otherwise Windows:
-/// `%USERPROFILE%\.qaqh`; Unix: `$XDG_CONFIG_HOME/qaqh` or `~/.config/qaqh`.
-pub fn data_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("QAQH_DATA_DIR") {
-        if !dir.is_empty() {
-            return PathBuf::from(dir);
-        }
-    }
-    if cfg!(windows) {
-        if let Some(profile) = std::env::var_os("USERPROFILE") {
-            return PathBuf::from(profile).join(".qaqh");
-        }
-    } else if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-        return PathBuf::from(xdg).join("qaqh");
-    } else if let Some(home) = std::env::var_os("HOME") {
-        return PathBuf::from(home).join(".config").join("qaqh");
-    }
-    PathBuf::from(".qaqh")
-}
+/// Platform data directory — single-sourced in `qaqh_types::platform::data_dir`
+/// (daemon and client must resolve the same data root).
+pub use qaqh_types::platform::data_dir;
 
-/// Path to the discovery file.
-pub fn discovery_path() -> PathBuf {
-    data_dir().join("daemon.json")
-}
+/// Path to the discovery file — re-export of the disk-contract helper.
+pub use qaqh_types::platform::daemon_discovery_path as discovery_path;
 
 /// Read and parse the discovery file.
 pub fn read_discovery() -> Result<DaemonDiscovery> {
@@ -88,10 +62,10 @@ pub fn read_discovery() -> Result<DaemonDiscovery> {
 /// when no discovery file exists, then polls for up to `timeout`. Reuses an
 /// existing discovery when the daemon process is alive.
 pub fn ensure_daemon_running(timeout: std::time::Duration) -> Result<DaemonDiscovery> {
-    if let Ok(discovery) = read_discovery() {
-        if process_is_running(discovery.pid) {
-            return Ok(discovery);
-        }
+    if let Ok(discovery) = read_discovery()
+        && process_is_running(discovery.pid)
+    {
+        return Ok(discovery);
     }
     // 已有 daemon 实例正在启动（lock 持有者存活但 discovery 尚未发布——
     // daemon 冷启动初始化可达数十秒，discovery 延迟到 HTTP 就绪后才写）：
@@ -124,7 +98,7 @@ pub(crate) fn lock_holder_alive() -> bool {
     {
         // 非 Windows 无 pid 判活实现（`process_is_running` stub 恒 true），
         // 回退旧行为：始终允许 spawn，由 daemon 侧单实例锁兜底。
-        return false;
+        false
     }
     #[cfg(windows)]
     {
@@ -217,6 +191,11 @@ fn spawn_daemon_detached() -> Result<()> {
     }
 }
 
+/// Process liveness probe — client-side implementation, deliberately distinct
+/// from `qaqh_types::platform::process_is_running` (which shells out to
+/// `tasklist`/`kill`): this one uses the Win32 API directly (no subprocess
+/// latency) and treats non-Windows discovery presence as sufficient. Do NOT
+/// merge the two; they serve different perf/semantics envelopes.
 #[cfg(windows)]
 pub fn process_is_running(pid: u32) -> bool {
     let handle = unsafe {
@@ -227,7 +206,7 @@ pub fn process_is_running(pid: u32) -> bool {
         )
     };
     if handle.is_null() {
-        return false;
+        false
     }
     let exit_code = unsafe {
         let mut code: u32 = 0;
@@ -261,6 +240,9 @@ mod tests {
             server_epoch: String::new(),
             protocol_version: 1,
             daemon_version: String::new(),
+            build_id: String::new(),
+            channel: String::new(),
+            executable: String::new(),
         };
         assert_eq!(legacy.base_url().unwrap(), "http://127.0.0.1:9101");
 
@@ -269,5 +251,35 @@ mod tests {
             ..legacy
         };
         assert_eq!(modern.base_url().unwrap(), "http://127.0.0.1:9101");
+    }
+
+    // PR-3-1 兼容红线：旧格式 daemon.json（无 build_id/channel/executable 三字段）
+    // 必须可解析，且解析 → 序列化 → 再解析字段逐字段保全。
+    #[test]
+    fn legacy_discovery_json_roundtrip_preserves_fields() {
+        let legacy = r#"{
+            "endpoint": "http://127.0.0.1:41831",
+            "token": "tok-123",
+            "pid": 4242,
+            "server_epoch": "epoch-1",
+            "protocol_version": 1,
+            "daemon_version": "0.8.9"
+        }"#;
+        let parsed: DaemonDiscovery =
+            serde_json::from_str(legacy).expect("legacy 6-field sample must parse");
+        assert_eq!(parsed.endpoint, "http://127.0.0.1:41831");
+        assert_eq!(parsed.token, "tok-123");
+        assert_eq!(parsed.pid, 4242);
+        assert_eq!(parsed.server_epoch, "epoch-1");
+        assert_eq!(parsed.protocol_version, 1);
+        assert_eq!(parsed.daemon_version, "0.8.9");
+        // 新增字段缺省（pre-0.9 兼容语义）
+        assert_eq!(parsed.build_id, "");
+        assert_eq!(parsed.channel, "");
+        assert_eq!(parsed.executable, "");
+
+        let json = serde_json::to_string(&parsed).expect("serialize");
+        let reparsed: DaemonDiscovery = serde_json::from_str(&json).expect("reparse");
+        assert_eq!(reparsed, parsed);
     }
 }

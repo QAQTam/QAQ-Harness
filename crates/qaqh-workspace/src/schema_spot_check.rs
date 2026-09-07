@@ -1,4 +1,5 @@
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod schema_spot_check {
     use crate::registration::build_tool_manager;
 

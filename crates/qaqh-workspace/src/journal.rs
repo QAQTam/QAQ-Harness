@@ -168,6 +168,7 @@ fn append_step(mut step: Step) -> std::io::Result<Step> {
 ///
 /// This is intentionally non-fatal: if the journal cannot be written the tool
 /// result is not blocked. The return value is `None` when journaling failed.
+#[allow(clippy::too_many_arguments)] // 参数面塑形另立项（PLAN D-5）
 pub fn record_change(
     session: &str,
     tool_use_id: &str,

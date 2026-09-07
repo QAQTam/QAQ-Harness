@@ -210,10 +210,9 @@ impl WorkspaceSupervisor {
                 .get(&format!("{endpoint}/health"))
                 .header("Authorization", &format!("Bearer {token}"))
                 .call()
+                && response.status() == 200
             {
-                if response.status() == 200 {
-                    break;
-                }
+                break;
             }
             if std::time::Instant::now() >= health_deadline {
                 let _ = child.kill();
@@ -776,8 +775,7 @@ pub fn install_wsl(repo_root: Option<&str>) -> Result<serde_json::Value, String>
 
     // 2. 构建 + 安装（WSL 原生路径；target 增量保留）。构建输出较大，
     //    截断保存尾部（成功/失败都返回摘要）。
-    let build_cmd = format!(
-        "set -e; \
+    let build_cmd = "set -e; \
          cd ~/.qaqh-workspace-src && \
          cargo build --release -p qaqh-workspace 2>&1 | tail -40; \
          test -x target/release/qaqh-workspace && \
@@ -786,8 +784,7 @@ pub fn install_wsl(repo_root: Option<&str>) -> Result<serde_json::Value, String>
          if ! command -v qaqh-workspace >/dev/null 2>&1; then \
            grep -q '.local/bin' ~/.bashrc 2>/dev/null || echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc; \
          fi && \
-         echo INSTALL_OK"
-    );
+         echo INSTALL_OK".to_string();
     let (ok, out) = run_wsl(&["-e", "bash", "-lc", &build_cmd], 900)?;
     if !ok || !out.contains("INSTALL_OK") {
         return Err(format!("构建/安装失败:\n{out}"));
@@ -822,6 +819,54 @@ fn derive_repo_root() -> Option<String> {
         dir = dir.parent()?.to_path_buf();
     }
     None
+}
+
+/// 连续健康探测失败多少次后判定 serve 挂死并主动杀。
+/// 每次探测 2s 超时，三次失败 ≈ 6-8s 内检出。
+const HEALTH_FAILURE_LIMIT: u32 = 3;
+
+/// 探测 serve `/health`（2s 超时）。连接未发布（启动初期）时返回 true，
+/// 不参与失败计数，避免误杀。
+fn probe_health(connection: &RwLock<WorkspaceConnection>) -> bool {
+    let Ok(conn) = connection.read() else {
+        return false;
+    };
+    if conn.endpoint.is_empty() {
+        return true;
+    }
+    ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(2)))
+        .timeout_per_call(Some(Duration::from_secs(2)))
+        .build()
+        .new_agent()
+        .get(&format!("{}/health", conn.endpoint))
+        .header("Authorization", &format!("Bearer {}", conn.token))
+        .call()
+        .is_ok_and(|resp| resp.status() == 200)
+}
+
+/// 按运行模式杀 serve 进程树（与 stop() 同语义，供健康轮询重启路径用）。
+fn kill_serve_process(mode: WorkspaceMode, child: &mut Child) {
+    match mode {
+        WorkspaceMode::Wsl => {
+            let _ = Command::new("wsl.exe")
+                .args(["-e", "bash", "-lc", "pkill -f 'qaqh-workspace serve'"])
+                .status();
+            let _ = child.kill();
+        }
+        WorkspaceMode::Local => {
+            #[cfg(target_os = "windows")]
+            {
+                let _ = Command::new("taskkill")
+                    .args(["/pid", &child.id().to_string(), "/T", "/F"])
+                    .status();
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let _ = child.kill();
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -917,54 +962,6 @@ mod tests {
                 std::path::Path::new(&root).join("Cargo.toml").exists(),
                 "derived root must contain Cargo.toml: {root}"
             );
-        }
-    }
-}
-
-/// 连续健康探测失败多少次后判定 serve 挂死并主动杀。
-/// 每次探测 2s 超时，三次失败 ≈ 6-8s 内检出。
-const HEALTH_FAILURE_LIMIT: u32 = 3;
-
-/// 探测 serve `/health`（2s 超时）。连接未发布（启动初期）时返回 true，
-/// 不参与失败计数，避免误杀。
-fn probe_health(connection: &RwLock<WorkspaceConnection>) -> bool {
-    let Ok(conn) = connection.read() else {
-        return false;
-    };
-    if conn.endpoint.is_empty() {
-        return true;
-    }
-    ureq::Agent::config_builder()
-        .timeout_connect(Some(Duration::from_secs(2)))
-        .timeout_per_call(Some(Duration::from_secs(2)))
-        .build()
-        .new_agent()
-        .get(&format!("{}/health", conn.endpoint))
-        .header("Authorization", &format!("Bearer {}", conn.token))
-        .call()
-        .is_ok_and(|resp| resp.status() == 200)
-}
-
-/// 按运行模式杀 serve 进程树（与 stop() 同语义，供健康轮询重启路径用）。
-fn kill_serve_process(mode: WorkspaceMode, child: &mut Child) {
-    match mode {
-        WorkspaceMode::Wsl => {
-            let _ = Command::new("wsl.exe")
-                .args(["-e", "bash", "-lc", "pkill -f 'qaqh-workspace serve'"])
-                .status();
-            let _ = child.kill();
-        }
-        WorkspaceMode::Local => {
-            #[cfg(target_os = "windows")]
-            {
-                let _ = Command::new("taskkill")
-                    .args(["/pid", &child.id().to_string(), "/T", "/F"])
-                    .status();
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                let _ = child.kill();
-            }
         }
     }
 }

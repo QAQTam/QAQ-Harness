@@ -147,6 +147,7 @@ pub fn terminal_replaceable_keys(event: &RingingEvent) -> Vec<ReplaceableKey> {
 
 /// 路由器对单个事件的入队结果。
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)] // 装箱改造属结构塑形，另立项
 pub enum RouteOutcome {
     /// 已入队（reliable 或 replaceable 覆盖）。
     Routed { envelope: RingingEventEnvelope },

@@ -385,7 +385,7 @@ fn binary_file_rejected_as_not_utf8() {
         "hunks": [{"kind": "replace", "old": "x", "new": "y"}],
     }));
     assert!(!result.is_success());
-    assert_eq!(result.data["code"], "NOT_UTF8_TEXT");
+    assert_eq!(result.error.as_ref().unwrap().code, "NOT_UTF8_TEXT");
 }
 
 // 17. new_hash 续接
@@ -604,7 +604,7 @@ fn unknown_mode_rejected() {
         "hunks": [{"kind": "replace", "old": "a", "new": "b"}],
     }));
     assert!(!result.is_success());
-    assert_eq!(result.data["code"], "PARSE_ERROR");
+    assert_eq!(result.error.as_ref().unwrap().code, "PARSE_ERROR");
 }
 
 // ── 多字节（中文）回归：FileView 字节/字符索引混淆曾导致 ropey 越界
@@ -989,7 +989,7 @@ fn range_read_inverted_bounds_rejected() {
         "end_line": 2,
     }));
     assert!(!result.is_success());
-    assert_eq!(result.data["code"], "PARSE_ERROR");
+    assert_eq!(result.error.as_ref().unwrap().code, "PARSE_ERROR");
 }
 
 // R9. 行号从 1 开始
@@ -1003,7 +1003,7 @@ fn range_read_zero_line_rejected() {
         "start_line": 0,
     }));
     assert!(!result.is_success());
-    assert_eq!(result.data["code"], "PARSE_ERROR");
+    assert_eq!(result.error.as_ref().unwrap().code, "PARSE_ERROR");
 }
 
 // R10. 行数超上限 → RANGE_TOO_LARGE

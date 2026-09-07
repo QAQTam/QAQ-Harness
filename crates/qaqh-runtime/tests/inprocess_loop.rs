@@ -99,16 +99,15 @@ fn inprocess_channels_run_the_same_session_lifecycle_as_pipes() {
 
         // Interrupt frames still set the shared cancel token before the command
         // enters the queue; SessionShutdown is the loop's normal exit signal.
-        assert!(matches!(
+        assert!(
             qaqh_runtime::agent::loop_core::ringing_command_is_interrupt(
                 &RingingWorkerCommandEnvelope::new(
                     &seed,
                     "inproc-shutdown",
                     RingingCommand::Control(ControlCommand::SessionShutdown)
                 )
-            ),
-            true
-        ));
+            )
+        );
         send_cmd(
             &cmd_tx,
             &seed,

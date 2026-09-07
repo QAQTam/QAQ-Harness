@@ -13,8 +13,6 @@ use std::sync::OnceLock;
 struct CacheEntry {
     path: String,
     hash: String,
-    #[allow(dead_code)]
-    json: String,
     line_count: usize,
 }
 
@@ -88,7 +86,6 @@ pub fn store(path: &str, content: &str, line_count: usize) {
     cache.push(CacheEntry {
         path: path.to_string(),
         hash,
-        json: String::new(),
         line_count,
     });
     log::info!(

@@ -51,62 +51,6 @@ impl Default for SubagentConfig {
     }
 }
 
-/// RAG（检索增强生成）配置
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct RagConfig {
-    /// 是否启用 RAG（false 时不加载向量引擎）
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// HuggingFace 模型 ID
-    #[serde(default = "default_rag_model")]
-    pub model: String,
-    /// 嵌入向量维度（512 = bge-small, 768 = bge-base）
-    #[serde(default = "default_embed_dim")]
-    pub embed_dim: usize,
-    /// 数据存储目录（None = 自动选择 ~/.qaqh/vector/）
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub store_dir: Option<String>,
-    /// 技能语义检索 top-K
-    #[serde(default = "default_skill_top_k")]
-    pub skill_top_k: usize,
-    /// 记忆检索 top-K
-    #[serde(default = "default_memory_top_k")]
-    pub memory_top_k: usize,
-    /// 本地模型目录（设置后跳过 HF Hub 下载）
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub local_model: Option<String>,
-}
-
-fn default_true() -> bool {
-    true
-}
-fn default_rag_model() -> String {
-    "BAAI/bge-small-zh-v1.5".into()
-}
-fn default_embed_dim() -> usize {
-    512
-}
-fn default_skill_top_k() -> usize {
-    5
-}
-fn default_memory_top_k() -> usize {
-    3
-}
-
-impl Default for RagConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            model: "BAAI/bge-small-zh-v1.5".into(),
-            embed_dim: 512,
-            store_dir: None,
-            skill_top_k: 5,
-            memory_top_k: 3,
-            local_model: None,
-        }
-    }
-}
-
 /// Runtime agent configuration built from PersistentConfig + registry.
 ///
 /// This is the fully-resolved config used by the agent at runtime. It combines
@@ -128,7 +72,7 @@ pub struct Config {
     pub provider_id: String,
     /// Selected endpoint within the provider (e.g. "openai").
     pub endpoint: String,
-    /// Reasoning effort: "high", "max", or empty.
+    /// Reasoning effort: one of `low|medium|high|xhigh|max`, or empty (provider default).
     pub reasoning_effort: String,
     /// Named profiles for quick config switching.
     pub profiles: HashMap<String, qaqh_types::ProfileConfig>,
@@ -150,8 +94,6 @@ pub struct Config {
     pub compliance_extra_keywords: Vec<String>,
     /// Whitelisted patterns exempt from content filtering.
     pub compliance_allowlist: Vec<String>,
-    /// RAG 向量引擎配置（embedding / 语义搜索 / 跨会话记忆）
-    pub rag: RagConfig,
     /// Agent permission level:
     /// 1 = MaxLockdown, 2 = ReadFree, 3 = WorkspaceFree, 4 = Unrestricted.
     pub permission_level: u8,
@@ -221,7 +163,6 @@ impl Default for Config {
             compliance_enabled: true,
             compliance_extra_keywords: Vec::new(),
             compliance_allowlist: Vec::new(),
-            rag: RagConfig::default(),
             permission_level: 4, // Unrestricted — backward compat
             tokenizer_path: None,
             auto_compact_threshold: 0.75,
@@ -314,7 +255,7 @@ impl Config {
             // 预设仅作空值兜底：仅当配置文件中未保存 base_url（空文件/旧版无此字段）
             // 时才用 endpoint 预设；用户已保存的值（含自定义 URL）绝不在此覆盖，
             // 由下方 pc.base_url 权威回填。修复：改 max_tokens 后端点被强制改回预设。
-            if pc.base_url.as_deref().map_or(true, |u| u.is_empty()) {
+            if pc.base_url.as_deref().is_none_or(|u| u.is_empty()) {
                 let endpoint_base_url =
                     crate::registry::base_url_for(&cfg.provider_id, &cfg.endpoint);
                 if !endpoint_base_url.is_empty() {
@@ -487,73 +428,71 @@ impl Config {
             }
 
             // ── 工具套件运行环境 ──
-            if let Some(ref ws) = pc.workspace {
-                if let Some(ref mode) = ws.mode {
-                    cfg.workspace.mode = mode.clone();
-                }
+            if let Some(ref ws) = pc.workspace
+                && let Some(ref mode) = ws.mode
+            {
+                cfg.workspace.mode = mode.clone();
             }
 
             // 迁移写回：config.toml 中旧明文已入 secret store，把明文替换为
             // "set" 标记（重新 load 磁盘原值，只改"确为明文"的槽位——迁移
             // 失败的槽位保持明文，下次 load 重试；已标记/未配置的原样保留）。
-            if needs_rewrite {
-                if let Some(mut fresh) = store.load() {
-                    let is_plain = |k: &Option<String>| {
-                        k.as_deref()
-                            .is_some_and(|v| !v.is_empty() && v != CONFIG_MARKER)
-                    };
-                    if is_plain(&fresh.api_key) {
-                        fresh.api_key = Some(CONFIG_MARKER.to_owned());
-                    }
-                    if let Some(ref mut s) = fresh.subagent
-                        && is_plain(&s.api_key)
-                    {
-                        s.api_key = Some(CONFIG_MARKER.to_owned());
-                    }
-                    // C3 迁移：扁平值先固化进 active/default profile（已有条目
-                    // 不覆盖——profile 为权威），再剥离顶层键。fresh 无 profiles
-                    // 时就地建表；缺失的分量用合并结果 cfg 兜底，确保零丢失。
-                    if legacy_flat_fields {
-                        let active = fresh
-                            .active_profile
-                            .clone()
-                            .unwrap_or_else(|| "default".to_string());
-                        // 先在 profiles 借用前固化兜底条目，避免可变借用重叠。
-                        let fallback = qaqh_types::ProfileConfig {
-                            model: fresh.model.clone().unwrap_or_else(|| cfg.model.clone()),
-                            max_tokens: fresh.max_tokens.unwrap_or(cfg.max_tokens),
-                            effort: Some(
-                                fresh
-                                    .reasoning_effort
-                                    .clone()
-                                    .unwrap_or_else(|| cfg.reasoning_effort.clone()),
-                            ),
-                            context_limit: fresh.context_limit.unwrap_or(cfg.context_limit),
-                            base_url: fresh
-                                .base_url
-                                .clone()
-                                .unwrap_or_else(|| cfg.base_url.clone()),
-                            endpoint: Some(
-                                fresh
-                                    .endpoint
-                                    .clone()
-                                    .unwrap_or_else(|| cfg.endpoint.clone()),
-                            ),
-                        };
-                        let profiles = fresh.profiles.get_or_insert_with(HashMap::new);
-                        // 无条件以扁平值覆盖：历史读语义是"扁平胜出"，扁平即用户
-                        // 最新意图；旧条目只可能是更早一次保存的陈值。
-                        profiles.insert(active, fallback);
-                        fresh.model = None;
-                        fresh.base_url = None;
-                        fresh.max_tokens = None;
-                        fresh.context_limit = None;
-                        fresh.endpoint = None;
-                        fresh.reasoning_effort = None;
-                    }
-                    log::info!("[config] legacy flat model fields migrated into [profiles.*]");
-                    let _ = store.save(&fresh);
+            if needs_rewrite && let Some(mut fresh) = store.load() {
+                let is_plain = |k: &Option<String>| {
+                    k.as_deref()
+                        .is_some_and(|v| !v.is_empty() && v != CONFIG_MARKER)
+                };
+                if is_plain(&fresh.api_key) {
+                    fresh.api_key = Some(CONFIG_MARKER.to_owned());
                 }
+                if let Some(ref mut s) = fresh.subagent
+                    && is_plain(&s.api_key)
+                {
+                    s.api_key = Some(CONFIG_MARKER.to_owned());
+                }
+                // C3 迁移：扁平值先固化进 active/default profile（已有条目
+                // 不覆盖——profile 为权威），再剥离顶层键。fresh 无 profiles
+                // 时就地建表；缺失的分量用合并结果 cfg 兜底，确保零丢失。
+                if legacy_flat_fields {
+                    let active = fresh
+                        .active_profile
+                        .clone()
+                        .unwrap_or_else(|| "default".to_string());
+                    // 先在 profiles 借用前固化兜底条目，避免可变借用重叠。
+                    let fallback = qaqh_types::ProfileConfig {
+                        model: fresh.model.clone().unwrap_or_else(|| cfg.model.clone()),
+                        max_tokens: fresh.max_tokens.unwrap_or(cfg.max_tokens),
+                        effort: Some(
+                            fresh
+                                .reasoning_effort
+                                .clone()
+                                .unwrap_or_else(|| cfg.reasoning_effort.clone()),
+                        ),
+                        context_limit: fresh.context_limit.unwrap_or(cfg.context_limit),
+                        base_url: fresh
+                            .base_url
+                            .clone()
+                            .unwrap_or_else(|| cfg.base_url.clone()),
+                        endpoint: Some(
+                            fresh
+                                .endpoint
+                                .clone()
+                                .unwrap_or_else(|| cfg.endpoint.clone()),
+                        ),
+                    };
+                    let profiles = fresh.profiles.get_or_insert_with(HashMap::new);
+                    // 无条件以扁平值覆盖：历史读语义是"扁平胜出"，扁平即用户
+                    // 最新意图；旧条目只可能是更早一次保存的陈值。
+                    profiles.insert(active, fallback);
+                    fresh.model = None;
+                    fresh.base_url = None;
+                    fresh.max_tokens = None;
+                    fresh.context_limit = None;
+                    fresh.endpoint = None;
+                    fresh.reasoning_effort = None;
+                }
+                log::info!("[config] legacy flat model fields migrated into [profiles.*]");
+                let _ = store.save(&fresh);
             }
         }
 
@@ -752,15 +691,6 @@ impl Config {
         }
         self.profiles.remove(name).is_some()
     }
-
-    pub fn is_ready(&self) -> bool {
-        !self.api_key.is_empty()
-    }
-
-    /// Protocol derived from (provider_id, endpoint) in the registry.
-    pub fn protocol(&self) -> String {
-        crate::registry::protocol_for(&self.provider_id, &self.endpoint)
-    }
 }
 
 #[cfg(test)]
@@ -840,8 +770,10 @@ mod secret_tests {
         let config_path = dir.join("config.toml");
         let secrets_path = dir.join("secrets.toml");
 
-        let mut cfg = Config::default();
-        cfg.api_key = "sk-new-secret".to_owned();
+        let cfg = Config {
+            api_key: "sk-new-secret".to_owned(),
+            ..Default::default()
+        };
         let store = ConfigStore::new(config_path.clone());
         let secrets = SecretStore::new(secrets_path.clone());
         cfg.save_with(&store, &secrets).expect("save");

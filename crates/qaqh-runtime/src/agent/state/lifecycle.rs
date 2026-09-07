@@ -325,10 +325,9 @@ pub fn create_session_with_seed(agent: &mut AgentState) {
         .session_manager
         .as_ref()
         .and_then(|sm| sm.load_meta(&agent.session.seed))
+        && !meta.tool_mode.is_empty()
     {
-        if !meta.tool_mode.is_empty() {
-            agent.apply_tool_mode(&meta.tool_mode, &meta.custom_tools);
-        }
+        agent.apply_tool_mode(&meta.tool_mode, &meta.custom_tools);
     }
     agent.msg.push_system(qaqh_types::Message::system(
         &crate::agent::prompt::system_prompt_for_mode(&agent.session.tool_mode),

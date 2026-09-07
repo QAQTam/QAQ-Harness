@@ -304,10 +304,10 @@ impl ToolResult {
         }
         out.push_str(">\n");
         let mut body = self.model.text.trim_end().to_string();
-        if body.is_empty() {
-            if let Some(error) = &self.error {
-                body = error.message.clone();
-            }
+        if body.is_empty()
+            && let Some(error) = &self.error
+        {
+            body = error.message.clone();
         }
         let body = body.replace("</qaqh_tool_result>", "<\\/qaqh_tool_result>");
         out.push_str(&body);
@@ -350,7 +350,7 @@ fn bounded_text(text: &str, max_chars: usize) -> (String, bool) {
 }
 
 fn estimate_tokens(text: &str) -> u64 {
-    ((text.chars().count() as u64) + 3) / 4
+    (text.chars().count() as u64).div_ceil(4)
 }
 
 #[cfg(test)]

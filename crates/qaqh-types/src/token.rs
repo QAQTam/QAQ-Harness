@@ -51,13 +51,3 @@ fn count_tokens_heuristic(text: &str) -> u32 {
         .count();
     (text.len().saturating_sub(cjk) as f64 / 3.3 + cjk as f64 / 1.67) as u32
 }
-
-// ── Breakdown ──
-
-/// Token usage broken down by category.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct TokenBreakdown {
-    pub system: u32,
-    pub episodic: u32,
-    pub total: u32,
-}

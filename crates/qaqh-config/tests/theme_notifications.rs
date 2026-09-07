@@ -2,7 +2,7 @@
 //! PersistentConfig must carry theme + notifications_enabled,
 //! old config files without these fields must keep loading.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn setup(tag: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!(
@@ -17,7 +17,7 @@ fn setup(tag: &str) -> PathBuf {
     root
 }
 
-fn write_config(root: &PathBuf, toml: &str) {
+fn write_config(root: &Path, toml: &str) {
     std::fs::write(root.join("config.toml"), toml).expect("write test config");
 }
 

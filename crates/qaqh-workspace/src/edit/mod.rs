@@ -55,30 +55,12 @@ pub mod resolve;
 pub mod transaction;
 pub mod view;
 
-// 核心重导出（保持 crate::edit::* 兼容 file_edit_v2 的旧导入）
-pub(crate) use handler::handle_edit;
-pub use handler::register;
-#[allow(unused_imports)]
-pub(crate) use hunk::Hunk;
-pub(crate) use matching::{Candidate, LocateError, Located, Tier3Probe};
-pub(crate) use view::FileView;
-
-// 为了让 file_edit_v2 shim 的 `pub use crate::edit::*;` 能继续暴露 register 等
-// 也把常用函数重导出
+// 核心平面重导出（PR-4-1：旧 shim 已退役，外部直接用 crate::edit::*）
 pub use handler::exec_edit;
-pub(crate) use handler::hunk_report_json;
-pub(crate) use locate::{
-    locate_anchor, locate_hunk, locate_pure_insert, locate_replace, locate_replace_all,
-};
-pub(crate) use locate::{locate_with_hint, tier1_in_window};
-pub(crate) use read::{
-    candidate_json, read_anchored, read_path, read_range, render_read_candidates,
-};
-pub(crate) use resolve::{ResolvedOp, apply_ops, check_overlap, ranges_overlap, resolve};
-pub(crate) use transaction::{
-    FileOutcome, HunkReport, Mode, hint_for, hunk_ok_line, render_hunk_error, render_text,
-    run_edit, truncate_content,
-};
+pub use handler::register;
+pub(crate) use hunk::Hunk;
+pub(crate) use transaction::{FileOutcome, Mode, render_text, run_edit};
+pub(crate) use view::FileView;
 
 #[cfg(test)]
 mod tests;

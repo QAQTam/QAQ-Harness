@@ -1,6 +1,6 @@
 # QAQ-Harness
 
-AI 编码代理的跨平台 **Rust 后端核心**(monorepo,16 个 workspace 成员)。单个常驻 daemon 承载多会话对话循环、LLM 网关、20 个内置工具、Agent Skills 与子代理隔离执行;Windows 桌面壳(WinUI3)/ TUI / Web 壳位于独立仓库,通过统一的 **Ringing V1** HTTP/SSE 协议接入。
+AI 编码代理的跨平台 **Rust 后端核心**(monorepo,14 个 workspace 成员)。单个常驻 daemon 承载多会话对话循环、LLM 网关、19 个内置工具、Agent Skills 与子代理隔离执行;Windows 桌面壳(WinUI3)/ TUI / Web 壳位于独立仓库,通过统一的 **Ringing V1** HTTP/SSE 协议接入。
 
 - Edition 2024 · License MIT · 状态:alpha
 - HTTP 栈: `axum 0.8 + hyper 1.1 + tower 0.5 + tower-http 0.6 + tokio 1.44`，`SSE KeepAlive 15s`，release 静态 CRT 单文件 exe(`opt-level=z` + LTO + strip)
@@ -37,15 +37,14 @@ AI 编码代理的跨平台 **Rust 后端核心**(monorepo,16 个 workspace 成�
 
 | 分层 | Crate | 职责 |
 |---|---|---|
-| 领域/线协议 | `qaqh-domain` | 中立 DomainCommand/DomainEvent(不依赖 wire 类型) |
+| 领域/线协议 | `qaqh-domain` | 中立 DomainCommand/DomainEvent + 回合聚合投影等共享模型（复用 `qaqh-types` 的规范工具结果模型（ContentRef/ToolResult 经 `event.rs` 重导出）） |
 | | `qaqh-ringing` | Ringing 线协议:envelope / ack / batch / snapshot / content ref / worker frame / 能力协商 |
-| | `qaqh-proto` | DaemonDiscovery(daemon.json)+ 回合投影等共享模型 |
 | 运行时 | `qaqh-runtime` | daemon 应用运行时:`QaqhService` 方法分发、AgentRegistry、actor、RingingHub |
 | | `qaqh-msgloop` | 对话循环引擎:输入处理 → gate 快照 → 工具审批/执行 → 回合完成 → 自动压缩 |
 | | `qaqh-message` | 消息存储状态机(Turn/Step 结构、Effect 驱动、ContextFlow 摄取编排) |
 | | `qaqh-daemon` | headless 入口二进制(`run` / `server` / `status` / `stop`) |
 | 会话/配置 | `qaqh-session` | SessionManager 单例:index/meta/消息 JSONL 持久化、归档、临时会话、WorkspaceStore |
-| | `qaqh-types` | 共享类型、平台路径(data_dir/marker)、tool_mode 定义 |
+| | `qaqh-types` | 共享类型、平台路径(data_dir/marker)、tool_mode 定义、DaemonDiscovery(daemon.json 磁盘契约唯一源) |
 | | `qaqh-config` | Config 加载/保存事务、provider 注册表、system prompt、secrets |
 | | `qaqh-config-api` | 配置契约层(wire DTO):ConfigDto 读模型 / ConfigPatch 写模型,多前端共享唯一真相 |
 | LLM | `qaqh-gate` | LLM API 网关:OpenAI Chat Completions / Responses / Anthropic Messages 三协议、自研 SSE 解码器(~143MB/s)、429/5xx 指数退避重试、reasoning/tool-call 流提取 |
@@ -68,7 +67,7 @@ daemon 是唯一协议面:WinUI3 桌面壳 / Tauri / Electron / TUI / 浏览器�
 - 上下文超过 `auto_compact_threshold`(默认 context_limit × 0.75)自动摘要压缩;原始 JSONL 不可变归档,resume 走 compact-context 检查点链(fail-closed)
 
 ### 工具与权限
-20 个工具分四类权限类别(Read/Write/Exec/Net),四级权限档位:
+19 个工具分四类权限类别(Read/Write/Exec/Net),四级权限档位:
 
 | Level | 名称 | 行为 |
 |---|---|---|

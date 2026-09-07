@@ -47,6 +47,7 @@ pub(crate) struct GateRequestResult {
 
 // ── stream / block 辅助 ──
 
+#[allow(clippy::too_many_arguments)] // 参数面塑形另立项（PLAN D-5）
 pub(crate) fn maybe_emit_block_checkpoint(
     emitter: &dyn Emitter,
     turn_id: &str,
@@ -104,6 +105,7 @@ pub(crate) fn reset_stream_block_checkpoint(
     stream_block_text.clear();
 }
 
+#[allow(clippy::too_many_arguments)] // 参数面塑形另立项（PLAN D-5）
 pub(crate) fn emit_stream_block_checkpoint(
     emitter: &dyn Emitter,
     turn_id: &str,
@@ -287,6 +289,7 @@ pub(crate) fn seal_active_stream_block(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // 参数面塑形另立项（PLAN D-5）
 pub(crate) fn ensure_stream_block(
     ctx: &mut RingContext,
     turn_id: &str,
@@ -297,10 +300,10 @@ pub(crate) fn ensure_stream_block(
     checkpoint_block_id: &Option<String>,
     checkpoint_text: &str,
 ) -> String {
-    if let Some((active_kind, block_id)) = active {
-        if *active_kind == kind {
-            return block_id.clone();
-        }
+    if let Some((active_kind, block_id)) = active
+        && *active_kind == kind
+    {
+        return block_id.clone();
     }
     // kind 切换封口前，旧块先补最终 checkpoint（尾部文本权威化）。
     emit_final_block_checkpoint(
@@ -513,20 +516,20 @@ pub(crate) fn gate_request(
                 }
                 // A3：终值必发——节流窗口可能吞掉最后一条流式值，此处补发
                 // 请求权威终值（replaceable 覆盖；与 done 前的 record_usage 一致）。
-                if let Some(final_usage) = current_request_usage.clone() {
-                    if final_usage.total_tokens != last_emitted_usage_total {
-                        last_emitted_usage_total = final_usage.total_tokens;
-                        ctx.emitter
-                            .emit_domain(qaqh_domain::DomainEvent::Conversation(
-                                qaqh_domain::ConversationEvent::UsageUpdated {
-                                    turn_id: turn_id.to_string(),
-                                    round_num,
-                                    usage: final_usage.clone(),
-                                    context_limit: ctx.agent.config.context_limit,
-                                    model: ctx.agent.config.model.clone(),
-                                },
-                            ));
-                    }
+                if let Some(final_usage) = current_request_usage.clone()
+                    && final_usage.total_tokens != last_emitted_usage_total
+                {
+                    last_emitted_usage_total = final_usage.total_tokens;
+                    ctx.emitter
+                        .emit_domain(qaqh_domain::DomainEvent::Conversation(
+                            qaqh_domain::ConversationEvent::UsageUpdated {
+                                turn_id: turn_id.to_string(),
+                                round_num,
+                                usage: final_usage.clone(),
+                                context_limit: ctx.agent.config.context_limit,
+                                model: ctx.agent.config.model.clone(),
+                            },
+                        ));
                 }
                 content.clear();
                 reasoning.clear();
@@ -626,7 +629,7 @@ pub(crate) fn gate_request(
                 current_request_usage = Some(u.clone());
                 ctx.agent.session.tokens = ctx.agent.session.tokens.max(u.total_tokens as u64);
                 // A3：节流 ~1s（replaceable 覆盖显示）；终值由 Done 分支补发。
-                let due = last_usage_emit_at.map_or(true, |at| at.elapsed() >= USAGE_EMIT_INTERVAL);
+                let due = last_usage_emit_at.is_none_or(|at| at.elapsed() >= USAGE_EMIT_INTERVAL);
                 if due {
                     last_usage_emit_at = Some(Instant::now());
                     last_emitted_usage_total = u.total_tokens;

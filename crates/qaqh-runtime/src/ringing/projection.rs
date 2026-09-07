@@ -383,7 +383,7 @@ pub fn build_turns_from_messages(
     messages: &[qaqh_types::Message],
     start: Option<usize>,
     max_count: Option<usize>,
-) -> Vec<qaqh_proto::TurnData> {
+) -> Vec<qaqh_domain::TurnData> {
     project_turns_from_messages(seed, messages, start, max_count).1
 }
 
@@ -393,7 +393,7 @@ pub fn project_turns_from_messages(
     messages: &[qaqh_types::Message],
     start: Option<usize>,
     max_count: Option<usize>,
-) -> (usize, Vec<qaqh_proto::TurnData>) {
+) -> (usize, Vec<qaqh_domain::TurnData>) {
     let (store, _) = qaqh_message::MessageStore::from_messages(seed, messages, 0);
     let total = store.turns().len();
     (total, build_turns(store.turns(), start, max_count))
@@ -404,7 +404,7 @@ pub fn project_recent_turns_from_messages(
     seed: &str,
     messages: &[qaqh_types::Message],
     max_count: usize,
-) -> (usize, Vec<qaqh_proto::TurnData>) {
+) -> (usize, Vec<qaqh_domain::TurnData>) {
     let (store, _) = qaqh_message::MessageStore::from_messages(seed, messages, 0);
     let total = store.turns().len();
     let start = total.saturating_sub(max_count);
@@ -418,7 +418,7 @@ fn build_turns(
     all_turns: &[qaqh_message::Turn],
     start: Option<usize>,
     max_count: Option<usize>,
-) -> Vec<qaqh_proto::TurnData> {
+) -> Vec<qaqh_domain::TurnData> {
     use qaqh_types::ContentBlock;
     let range_start = start.unwrap_or(0).min(all_turns.len());
     let range_end = match max_count {
@@ -449,13 +449,13 @@ fn build_turns(
                     None
                 }
             });
-            let tcs: Vec<qaqh_proto::ToolCallDef> = step
+            let tcs: Vec<qaqh_domain::ToolCallDef> = step
                 .assistant
                 .content
                 .iter()
                 .filter_map(|b| {
                     if let ContentBlock::ToolUse { id, name, input } = b {
-                        Some(qaqh_proto::ToolCallDef {
+                        Some(qaqh_domain::ToolCallDef {
                             id: id.clone(),
                             name: name.clone(),
                             args_display: name.clone(),
@@ -466,24 +466,24 @@ fn build_turns(
                     }
                 })
                 .collect();
-            let blocks: Vec<qaqh_proto::RoundBlock> = step
+            let blocks: Vec<qaqh_domain::RoundBlock> = step
                 .assistant
                 .content
                 .iter()
                 .filter_map(|b| match b {
                     ContentBlock::Reasoning { reasoning } if !reasoning.is_empty() => {
-                        Some(qaqh_proto::RoundBlock::Reasoning {
+                        Some(qaqh_domain::RoundBlock::Reasoning {
                             content: reasoning.clone(),
                         })
                     }
                     ContentBlock::Text { text } if !text.is_empty() => {
-                        Some(qaqh_proto::RoundBlock::Text {
+                        Some(qaqh_domain::RoundBlock::Text {
                             content: text.clone(),
                         })
                     }
                     ContentBlock::ToolUse { id, name, input } => {
-                        Some(qaqh_proto::RoundBlock::Tool {
-                            card: qaqh_proto::ToolCallDef {
+                        Some(qaqh_domain::RoundBlock::Tool {
+                            card: qaqh_domain::ToolCallDef {
                                 id: id.clone(),
                                 name: name.clone(),
                                 args_display: name.clone(),
@@ -494,7 +494,7 @@ fn build_turns(
                     _ => None,
                 })
                 .collect();
-            let trs: Vec<qaqh_proto::ToolResultDef> = step
+            let trs: Vec<qaqh_domain::ToolResultDef> = step
                 .tool_results
                 .iter()
                 .flat_map(|msg| {
@@ -504,7 +504,7 @@ fn build_turns(
                             result,
                         } = b
                         {
-                            Some(qaqh_proto::ToolResultDef {
+                            Some(qaqh_domain::ToolResultDef {
                                 tool_call_id: tool_use_id.clone(),
                                 output: result.model.text.clone(),
                                 success: result.is_success(),
@@ -516,7 +516,7 @@ fn build_turns(
                     })
                 })
                 .collect();
-            rounds.push(qaqh_proto::RoundData {
+            rounds.push(qaqh_domain::RoundData {
                 round_num: ri as u32,
                 is_final: ri + 1 == turn.steps.len(),
                 thinking,
@@ -538,7 +538,7 @@ fn build_turns(
                 }
             })
             .unwrap_or_default();
-        turns.push(qaqh_proto::TurnData {
+        turns.push(qaqh_domain::TurnData {
             turn_id: format!("t{}", ti + 1),
             user_text,
             rounds,

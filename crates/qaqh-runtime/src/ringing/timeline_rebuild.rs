@@ -34,7 +34,7 @@ pub fn rebuild_timeline_snapshot(
 /// （messages.jsonl 不持久化 turn 终态，这是恢复时的可接受降级）。
 pub fn timeline_snapshot_from_turns(
     seed: &str,
-    turns: &[qaqh_proto::TurnData],
+    turns: &[qaqh_domain::TurnData],
 ) -> Option<(TimelineSnapshot, Vec<qaqh_domain::TimelineEntry>)> {
     if turns.is_empty() {
         return None;
@@ -64,7 +64,7 @@ pub fn timeline_snapshot_from_turns(
 
             for block in &round.blocks {
                 match block {
-                    qaqh_proto::RoundBlock::Reasoning { content } => {
+                    qaqh_domain::RoundBlock::Reasoning { content } => {
                         if content.is_empty() {
                             continue;
                         }
@@ -82,7 +82,7 @@ pub fn timeline_snapshot_from_turns(
                         )?;
                         round_has_blocks = true;
                     }
-                    qaqh_proto::RoundBlock::Text { content } => {
+                    qaqh_domain::RoundBlock::Text { content } => {
                         if content.is_empty() {
                             continue;
                         }
@@ -99,7 +99,7 @@ pub fn timeline_snapshot_from_turns(
                         )?;
                         round_has_blocks = true;
                     }
-                    qaqh_proto::RoundBlock::Tool { card } => {
+                    qaqh_domain::RoundBlock::Tool { card } => {
                         let block_id = format!("tool:{}", card.id);
                         let tool = rebuild_tool(card, &round.tool_results);
                         if let Err(error) = appender.apply_intent(
@@ -146,7 +146,7 @@ pub fn timeline_snapshot_from_turns(
                     }
                     // Responses API 的内置 web search 没有原生 timeline block；
                     // 重建为文本记录行，保证它不会破坏后续 round 的轮次序号。
-                    qaqh_proto::RoundBlock::WebSearch { action } => {
+                    qaqh_domain::RoundBlock::WebSearch { action } => {
                         let content = serde_json::to_string(action)
                             .map(|action| format!("web_search: {action}"))
                             .unwrap_or_else(|_| "web_search".to_string());
@@ -281,8 +281,8 @@ fn rebuild_text_block(
 }
 
 fn rebuild_tool(
-    card: &qaqh_proto::ToolCallDef,
-    results: &[qaqh_proto::ToolResultDef],
+    card: &qaqh_domain::ToolCallDef,
+    results: &[qaqh_domain::ToolResultDef],
 ) -> TimelineTool {
     let result = results.iter().find(|result| result.tool_call_id == card.id);
     let success = result.is_some_and(|result| result.success);
@@ -325,7 +325,7 @@ fn rebuild_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qaqh_proto::{RoundBlock, RoundData, ToolCallDef, ToolResultDef, TurnData};
+    use qaqh_domain::{RoundBlock, RoundData, ToolCallDef, ToolResultDef, TurnData};
 
     fn turn_with_blocks() -> TurnData {
         TurnData {

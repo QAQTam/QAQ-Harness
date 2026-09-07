@@ -48,7 +48,7 @@ fn exec_confirm_apply(args: &serde_json::Value) -> ToolResult {
 
     match action {
         "apply" => match p.tool_name.as_str() {
-            "edit" => crate::file_edit_v2::exec_edit(&p.args),
+            "edit" => crate::edit::exec_edit(&p.args),
             "write" => crate::file_mutate::exec_write_file(&p.args),
             "apply_patch" => crate::apply_patch::exec_apply_patch(&p.args),
             other => crate::ToolResult::error(
@@ -127,7 +127,7 @@ mod tests {
         if data.as_object().is_none_or(|o| o.is_empty()) {
             // 无结构化 data → 尝试解析错误 JSON；失败则按状态兜底。
             let raw = result.model_text();
-            let mut v = serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_default();
+            let mut v = serde_json::from_str::<serde_json::Value>(raw).unwrap_or_default();
             if v.get("code").is_none() {
                 v["status"] =
                     serde_json::json!(if matches!(result.status, crate::ToolStatus::Ok) {
@@ -144,7 +144,7 @@ mod tests {
     }
 
     fn dry_run_v2(
-        path: &str,
+        _path: &str,
         old: &str,
         new: &str,
     ) -> (tempfile::TempDir, String, serde_json::Value) {
@@ -153,7 +153,7 @@ mod tests {
         // 用绝对路径：resolve_workspace_path 对绝对路径直接返回，
         // 避免并行测试踩踏全局 CURRENT_WORKSPACE。
         let ws = dir.path().to_string_lossy().to_string();
-        let result = crate::file_edit_v2::exec_edit(&serde_json::json!({
+        let result = crate::edit::exec_edit(&serde_json::json!({
             "path": format!("{}/f.txt", ws.replace('\\', "/")),
             "dry_run": true,
             "hunks": [{"kind": "replace", "old": old, "new": new}],

@@ -10,6 +10,7 @@ use crate::ToolResult;
 /// tool call + tool result + reasoning content within a single turn.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
+#[allow(clippy::large_enum_variant)] // 装箱改造属结构塑形，另立项
 pub enum ContentBlock {
     /// Plain text content from the model or user.
     #[serde(rename = "text")]

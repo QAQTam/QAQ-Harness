@@ -13,7 +13,7 @@
 //!  ├─ I/O: cmd_rx, event_tx（typed channel，daemon registry 供 fed）
 //!  ├─ Signal: cancel, phase, pending, writer_dead
 //!  ├─ Session: SessionBundle { agent, stats, turn, tool }
-//!  ├─ Stateless engines: session, input, compact, goal, misc
+//!  ├─ Engines: session, input, misc（compact 已去壳为自由函数，见 engine_compact）
 //!  ├─ flow: ContextFlow
 //!  └─ injection_bus + paced_emitter
 //! ```
@@ -23,7 +23,7 @@
 //! | Layer     | Path        | Role                                    |
 //! |-----------|-------------|-----------------------------------------|
 //! | Entry     | `spawn.rs`  | 构造唯一入口（PR-2-3）                  |
-//! | Loop      | `loop_core.rs` | Ringing V1 固定引擎模块显式分派      |
+//! | Loop      | `loop_core.rs` + `loop_*.rs` | Ringing V1 固定引擎模块显式分派（Phase 2-5 拆分：注入/三路分派/收尾） |
 //! | Engines   | `engine_*.rs`（平铺） | session/input/compact/misc/title/tool/turn |
 //! | State     | `state/`    | AgentState, sessions, skills            |
 //! | Services  | `dashboard.rs` | Conflict detection, dashboard        |
@@ -53,6 +53,11 @@ pub mod injection;
 pub mod input_guard;
 pub mod liveness;
 pub mod loop_core;
+pub mod loop_dispatch_control;
+pub mod loop_dispatch_conversation;
+pub mod loop_dispatch_tool;
+pub mod loop_injection;
+pub mod loop_outcome;
 pub mod paced_emitter;
 pub mod prompt;
 pub(crate) mod spawn;
@@ -61,6 +66,5 @@ pub(crate) mod tool_outbox;
 pub(crate) mod turn_lap;
 pub mod types;
 pub mod util;
-pub mod wire;
 
 pub(crate) use spawn::{ActorKind, SubagentSpawnSpec, spawn_agent};

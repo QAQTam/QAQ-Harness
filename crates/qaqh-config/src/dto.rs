@@ -119,10 +119,10 @@ pub fn apply_patch(cfg: &mut Config, patch: &ConfigPatch) -> Result<(), String> 
     if let Some(v) = &patch.lang {
         cfg.lang = if v.is_empty() { None } else { Some(v.clone()) };
     }
-    if let Some(v) = &patch.font_family {
-        if v != "****" {
-            cfg.font_family = v.clone();
-        }
+    if let Some(v) = &patch.font_family
+        && v != "****"
+    {
+        cfg.font_family = v.clone();
     }
     if let Some(v) = &patch.theme {
         cfg.theme = if v.is_empty() { None } else { Some(v.clone()) };
@@ -172,8 +172,10 @@ mod tests {
     /// 穷举映射回归：改任一字段后此测试必须同步更新（K1 编译期+运行期双保险）。
     #[test]
     fn to_dto_masks_secrets_and_projects_all_sections() {
-        let mut cfg = Config::default();
-        cfg.api_key = "sk-secret".into();
+        let mut cfg = Config {
+            api_key: "sk-secret".into(),
+            ..Default::default()
+        };
         cfg.model = "m".into();
         cfg.context_limit = 1_000_000;
         cfg.auto_compact_threshold = 0.95;
@@ -204,9 +206,11 @@ mod tests {
 
     #[test]
     fn apply_patch_updates_fields_and_keeps_untouched() {
-        let mut cfg = Config::default();
-        cfg.model = "old".into();
-        cfg.auto_compact_threshold = 0.3;
+        let mut cfg = Config {
+            model: "old".into(),
+            auto_compact_threshold: 0.3,
+            ..Default::default()
+        };
         let patch = ConfigPatch {
             model: Some("new".into()),
             context_limit: Some(2_000_000),
@@ -221,8 +225,10 @@ mod tests {
 
     #[test]
     fn apply_patch_keeps_secret_and_empty_semantics() {
-        let mut cfg = Config::default();
-        cfg.api_key = "sk-keep".into();
+        let mut cfg = Config {
+            api_key: "sk-keep".into(),
+            ..Default::default()
+        };
         cfg.model = "m".into();
         cfg.lang = Some("zh".into());
         cfg.theme = Some("dark".into());
@@ -273,8 +279,10 @@ mod tests {
 
     #[test]
     fn apply_patch_rejects_invalid_before_mutating() {
-        let mut cfg = Config::default();
-        cfg.auto_compact_threshold = 0.75;
+        let mut cfg = Config {
+            auto_compact_threshold: 0.75,
+            ..Default::default()
+        };
         let bad = ConfigPatch {
             auto_compact_threshold: Some(1.5),
             ..Default::default()

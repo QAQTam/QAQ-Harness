@@ -383,9 +383,8 @@ impl SkillContextManager {
 
     fn request_now(&mut self, name: &str, source: &str) -> Result<(), String> {
         self.ensure_known(name)?;
-        match self.entries.get(name).map(|entry| &entry.state) {
-            Some(SkillRuntimeState::Active) => return Ok(()),
-            _ => {}
+        if let Some(SkillRuntimeState::Active) = self.entries.get(name).map(|entry| &entry.state) {
+            return Ok(());
         }
         self.entries.insert(
             name.to_string(),

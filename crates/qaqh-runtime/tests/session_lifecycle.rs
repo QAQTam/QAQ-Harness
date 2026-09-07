@@ -223,10 +223,10 @@ fn spawn_event_reader(oread: os_pipe::PipeReader) -> std::sync::mpsc::Receiver<R
     let (tx, rx) = std::sync::mpsc::channel::<RingingEvent>();
     thread::spawn(move || {
         for line in BufReader::new(oread).lines().map_while(Result::ok) {
-            if let Ok(env) = serde_json::from_str::<RingingWorkerEventEnvelope>(&line) {
-                if tx.send(env.event).is_err() {
-                    break;
-                }
+            if let Ok(env) = serde_json::from_str::<RingingWorkerEventEnvelope>(&line)
+                && tx.send(env.event).is_err()
+            {
+                break;
             }
         }
     });

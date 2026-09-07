@@ -11,7 +11,6 @@ use super::web;
 use super::apply_patch;
 use super::confirm_apply;
 use super::copy_range;
-use super::file_edit_v2;
 use super::file_glob;
 use super::file_mutate;
 use super::file_query;
@@ -36,7 +35,7 @@ pub fn build_tool_manager(extra_registrars: &[ToolRegistrar]) -> ToolManager {
     web::register(&mut mgr);
 
     // ── 文件操作 ──
-    file_edit_v2::register(&mut mgr);
+    crate::edit::register(&mut mgr);
     file_mutate::register(&mut mgr);
     file_query::register(&mut mgr);
     file_glob::register(&mut mgr);

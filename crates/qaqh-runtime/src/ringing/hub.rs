@@ -5,28 +5,27 @@
 //! - 三频道可靠 journal（reliable 事件 + replaceable checkpoint）；
 //! - 领域 snapshot projection（每 seed+channel）；
 //! - 每频道序号生成；
-//! - 事件幂等（journal 侧 event_id 去重）。
+//! - 事件幂等（journal 侧 event_id 去重）；
+//! - timeline transcript 投影（见 `timeline_hub.rs`）与孤儿收尾（见
+//!   `orphan_seal.rs`），同文件 `impl RingingHub` 跨文件块；
+//! - 大内容外置存储（`content_store.rs`，会话所有权 + TTL）。
 //!
-//! 由 daemon（T5）与 worker 事件入口（T6）消费。线程安全（Mutex 保护），
-//! 与 legacy `EventBus` 并行存在，互不嵌套。
+//! 由 daemon（T5）与 worker 事件入口（T6）消费。线程安全（Mutex 保护）。
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use qaqh_domain::{
-    AskResolution, CompactStatus, ControlEvent, ConversationEvent, Delivery, DomainEvent,
-    RingingChannel, TimelineBlockState, TimelineEntry, TimelineFailure, TimelineIntent,
-    TimelineSnapshot, TimelineTurnState, ToolEvent,
+    ControlEvent, ConversationEvent, Delivery, DomainEvent, RingingChannel, TimelineEntry,
 };
 use qaqh_ringing::{
     RingingChannelSnapshot, RingingEvent, RingingEventEnvelope, RingingResetRequired,
     is_safe_integer,
 };
 use qaqh_session::SessionManager;
-use qaqh_types::tool_result::ToolResult;
 use tokio::sync::broadcast;
 
 use super::content_store::{ContentEntry, ContentStore};
@@ -35,18 +34,16 @@ use super::journal_store::{JournalOp, JournalStore};
 use super::projection::SnapshotProjector;
 use super::router::{ChannelRouter, replaceable_key_for, terminal_replaceable_keys};
 use super::sequencer::Sequencer;
-use crate::timeline_store::{PersistedTimeline, TimelineJournalOp, TimelineStore};
-use crate::{
-    TimelineAppender, TimelineError, TimelineLiveEntry, materialize_timeline_from_journal,
-};
+use crate::timeline_store::TimelineStore;
+use crate::{TimelineAppender, TimelineLiveEntry};
 
 /// journal jsonl 超过该物理大小时，compact 后触发整文件重写（丢弃已折叠的
 /// RoundDelta）。append-only 日志若不重写，磁盘与装载成本永久累积。
-const JOURNAL_REWRITE_THRESHOLD_BYTES: u64 = 4 * 1024 * 1024;
+pub(super) const JOURNAL_REWRITE_THRESHOLD_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Non-terminal timeline changes are checkpointed at most once per interval.
 /// Live delivery is still immediate; only the full snapshot rewrite is paced.
-const TIMELINE_PERSIST_INTERVAL: Duration = Duration::from_secs(1);
+pub(super) const TIMELINE_PERSIST_INTERVAL: Duration = Duration::from_secs(1);
 
 /// 测试用阈值覆盖（OnceLock 一次性；仅测试模块设置）。
 static JOURNAL_REWRITE_THRESHOLD_OVERRIDE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
@@ -96,6 +93,7 @@ pub(crate) fn override_journal_rewrite_threshold_for_test(bytes: u64) {
 
 /// 事件已接受（含 envelope 与幂等状态）。
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)] // 装箱改造属结构塑形，另立项
 pub enum PublishOutcome {
     /// 已入队并可发送。
     Published { envelope: RingingEventEnvelope },
@@ -113,7 +111,7 @@ pub struct ChannelReplay {
 }
 
 #[derive(Debug)]
-struct SeedChannelState {
+pub(super) struct SeedChannelState {
     router: ChannelRouter,
     journal: ReliableJournal,
     projection: SnapshotProjector,
@@ -122,10 +120,10 @@ struct SeedChannelState {
 }
 
 #[derive(Debug)]
-struct TimelinePersistence {
-    wake: mpsc::Sender<()>,
-    pending_seeds: Arc<Mutex<HashSet<String>>>,
-    join: Option<JoinHandle<()>>,
+pub(super) struct TimelinePersistence {
+    pub(super) wake: mpsc::Sender<()>,
+    pub(super) pending_seeds: Arc<Mutex<HashSet<String>>>,
+    pub(super) join: Option<JoinHandle<()>>,
 }
 
 impl SeedChannelState {
@@ -183,40 +181,40 @@ impl SeedChannelState {
 /// Ringing daemon 运行时聚合。
 #[derive(Debug)]
 pub struct RingingHub {
-    epoch: String,
-    sequencer: Sequencer,
+    pub(super) epoch: String,
+    pub(super) sequencer: Sequencer,
     /// 磁盘持久化 seed 清单（懒加载索引；`ensure_seed_loaded` 按需重放）。
     /// 启动时 `load_persisted` 只扫描清单，不加载任何历史。
-    disk_seeds: Mutex<HashMap<RingingChannel, HashSet<String>>>,
+    pub(super) disk_seeds: Mutex<HashMap<RingingChannel, HashSet<String>>>,
     /// 磁盘 timeline seed 清单（懒加载索引；`ensure_timeline_loaded` 按需恢复）。
-    disk_timeline_seeds: Mutex<HashSet<String>>,
+    pub(super) disk_timeline_seeds: Mutex<HashSet<String>>,
     /// 懒加载串行化：防止并发首访同一 seed 时双重重放。
-    lazy_load: Mutex<()>,
+    pub(super) lazy_load: Mutex<()>,
     /// 大内容外置存储（会话所有权 + TTL）。
-    content_store: Mutex<ContentStore>,
+    pub(super) content_store: Mutex<ContentStore>,
     /// channel → (seed → state)。router/journal/projection 均 per (seed, channel)。
-    channels: Mutex<HashMap<RingingChannel, HashMap<String, SeedChannelState>>>,
+    pub(super) channels: Mutex<HashMap<RingingChannel, HashMap<String, SeedChannelState>>>,
     /// 每频道实时推送通道（SSE 消费；可靠性由 journal/cursor 保证）。
-    live: Mutex<HashMap<RingingChannel, broadcast::Sender<RingingEventEnvelope>>>,
+    pub(super) live: Mutex<HashMap<RingingChannel, broadcast::Sender<RingingEventEnvelope>>>,
     /// 当前进程生命周期内发布且未 resolved 的活交互（seed → interaction_id）。
     /// journal 重放的幽灵交互不在此表：daemon 重启后表为空，bootstrap 孤儿
     /// 收尾据此区分「等待用户响应的活交互」（保护，不 seal）与「daemon 重启
     /// 遗留的幽灵交互」（seal）。worker 死亡/重启路径用 force 无视该守卫。
-    live_interactions: Mutex<HashMap<String, String>>,
+    pub(super) live_interactions: Mutex<HashMap<String, String>>,
     /// B9/H3：当前进程内存活的 worker（registry 维护）。bootstrap 的
     /// force=false 孤儿收尾在 worker 存活时整体跳过，防止误杀活 turn。
-    live_workers: Mutex<std::collections::HashSet<String>>,
+    pub(super) live_workers: Mutex<std::collections::HashSet<String>>,
     /// 持久化 journal（None = 非持久模式；I/O 失败只记录日志，不阻塞事件路径）。
-    journal_store: Mutex<Option<JournalStore>>,
+    pub(super) journal_store: Mutex<Option<JournalStore>>,
     /// Ringing V1 timeline transcript 的唯一 writer。它与三频道 Ringing v1 完全隔离，
     /// 不依赖 legacy 事件投影。
-    timeline: Arc<Mutex<TimelineAppender>>,
-    timeline_live: broadcast::Sender<TimelineLiveEntry>,
-    timeline_store: Arc<Mutex<Option<TimelineStore>>>,
-    timeline_persistence: Mutex<Option<TimelinePersistence>>,
+    pub(super) timeline: Arc<Mutex<TimelineAppender>>,
+    pub(super) timeline_live: broadcast::Sender<TimelineLiveEntry>,
+    pub(super) timeline_store: Arc<Mutex<Option<TimelineStore>>>,
+    pub(super) timeline_persistence: Mutex<Option<TimelinePersistence>>,
     /// 会话存储句柄（PR-3-1 注入化；conversation snapshot / timeline 重建的
     /// 持久化读侧）。None = 测试或未装配（对应旧 `try_global()` 为空语义）。
-    sessions: Option<Arc<SessionManager>>,
+    pub(super) sessions: Option<Arc<SessionManager>>,
 }
 
 impl RingingHub {
@@ -280,139 +278,6 @@ impl RingingHub {
         }
     }
 
-    /// Move timeline checkpoint I/O off the producer/writer hot path.
-    ///
-    /// The live TimelineAppender remains the sole source of sequence allocation and
-    /// broadcast ordering. Persistence is a best-effort, single-writer checkpoint
-    /// queue: notifications are coalesced per seed for a fixed checkpoint window,
-    /// and the worker snapshots the latest in-memory state only when the window
-    /// expires. The on-disk record shape is unchanged, so bootstrap/replay
-    /// compatibility is preserved. Terminal intents still use synchronous
-    /// persistence as the recovery boundary.
-    fn start_timeline_persistence(&self) {
-        let enabled = self
-            .timeline_store
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_some();
-        if !enabled {
-            return;
-        }
-
-        let (wake, rx) = mpsc::channel::<()>();
-        let pending_seeds = Arc::new(Mutex::new(HashSet::<String>::new()));
-        let pending_for_worker = Arc::clone(&pending_seeds);
-        let timeline = Arc::clone(&self.timeline);
-        let timeline_store = Arc::clone(&self.timeline_store);
-        let join = match std::thread::Builder::new()
-            .name("qaqh-timeline-persist".into())
-            .spawn(move || {
-                let persist_pending = || {
-                    let seeds: Vec<String> = {
-                        let mut pending =
-                            pending_for_worker.lock().unwrap_or_else(|e| e.into_inner());
-                        pending.drain().collect()
-                    };
-                    for seed in seeds {
-                        // Serialize snapshot selection and file replacement with
-                        // terminal persistence. Taking the store lock first
-                        // prevents an older async snapshot from overwriting a
-                        // newer terminal checkpoint.
-                        let mut store = timeline_store.lock().unwrap_or_else(|e| e.into_inner());
-                        let Some(store) = store.as_mut() else {
-                            continue;
-                        };
-                        // 先追加 timeline journal 尾部（journal ≥ cache 不变量），
-                        // 再写缓存文件。journal 追加失败时跳过缓存写入（fail-closed）：
-                        // 否则崩溃重启后 journal 重放会丢失仅存在于缓存的尾部条目。
-                        if let Err(error) =
-                            append_timeline_journal_tail_locked(store, &timeline, &seed)
-                        {
-                            log::error!(
-                                "[timeline] journal append failed for {seed}: {error}; skipping cache persist (fail-closed)"
-                            );
-                            continue;
-                        }
-                        let Some((snapshot, journal)) = ({
-                            let timeline = timeline.lock().unwrap_or_else(|e| e.into_inner());
-                            timeline.snapshot(&seed).map(|snapshot| {
-                                let journal = timeline.replay_since(&seed, 0);
-                                let journal =
-                                    Self::prune_sealed_timeline_journal(&snapshot, journal);
-                                (snapshot, journal)
-                            })
-                        }) else {
-                            continue;
-                        };
-                        if let Err(error) = store.persist(&seed, &snapshot, journal) {
-                            log::warn!("[timeline] persist failed for {seed}: {error}");
-                        }
-                    }
-                };
-
-                while rx.recv().is_ok() {
-                    // Fixed window rather than a quiet-period debounce: a long,
-                    // uninterrupted model stream still receives periodic crash
-                    // checkpoints without rewriting at disk speed.
-                    let deadline = Instant::now() + TIMELINE_PERSIST_INTERVAL;
-                    let mut disconnected = false;
-                    loop {
-                        let remaining = deadline.saturating_duration_since(Instant::now());
-                        if remaining.is_zero() {
-                            break;
-                        }
-                        match rx.recv_timeout(remaining) {
-                            Ok(()) => {}
-                            Err(mpsc::RecvTimeoutError::Timeout) => break,
-                            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                                disconnected = true;
-                                break;
-                            }
-                        }
-                    }
-                    persist_pending();
-                    if disconnected {
-                        return;
-                    }
-                }
-                // Drain the final coalesced notifications before the worker exits.
-                persist_pending();
-            }) {
-            Ok(join) => join,
-            Err(error) => {
-                log::warn!("[timeline] persistence worker unavailable: {error}");
-                return;
-            }
-        };
-
-        *self
-            .timeline_persistence
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(TimelinePersistence {
-            wake,
-            pending_seeds,
-            join: Some(join),
-        });
-    }
-
-    fn request_timeline_persistence(&self, seed: &str) {
-        let persistence = self
-            .timeline_persistence
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let Some(persistence) = persistence.as_ref() else {
-            return;
-        };
-        let should_wake = persistence
-            .pending_seeds
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(seed.to_string());
-        if should_wake {
-            let _ = persistence.wake.send(());
-        }
-    }
-
     /// 启动装载（懒加载模式）：只扫描磁盘 seed 清单，不重放任何事件。
     ///
     /// 内存态（journal/router/projection/sequencer 水位）在首次访问该 seed
@@ -436,7 +301,8 @@ impl RingingHub {
     /// - 已在内存或磁盘无记录：零成本返回；
     /// - 磁盘有记录：读取该 seed 的 ops → 重放重建 state → 精确恢复序号 →
     ///   超大文件顺手压缩（P0 收敛，不依赖 RoundCompleted）→ 插入 channels。
-    /// 全程持有 `lazy_load` 串行锁，避免并发首访双重重放。
+    ///   全程持有 `lazy_load` 串行锁，避免并发首访双重重放。
+    ///
     /// - Err：磁盘加载失败（fail-closed，R3）——调用方不得以全新空状态
     ///   继续发布/回放，否则重启后序号永久冲突。
     fn ensure_seed_loaded(&self, channel: RingingChannel, seed: &str) -> Result<(), String> {
@@ -515,306 +381,6 @@ impl RingingHub {
         Ok(())
     }
 
-    /// 启动装载（懒加载模式）：只扫描磁盘 timeline seed 清单，不 restore 任何
-    /// 快照。内存态（TimelineAppender）在首次访问该 seed 时由
-    /// `ensure_timeline_loaded` 从磁盘按需恢复。
-    fn load_timeline_persisted(&self) {
-        let mut seeds = HashSet::new();
-        {
-            let guard = self
-                .timeline_store
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            match guard.as_ref() {
-                Some(store) => {
-                    // 缓存文件 + timeline journal 的并集：journal 为阶段 1 的权威
-                    // 来源，缓存缺失（被删/损坏）时仍需能从 journal 懒加载。
-                    match store.list_seeds() {
-                        Ok(cache_seeds) => seeds.extend(cache_seeds),
-                        Err(error) => log::warn!("[timeline] cache index failed: {error}"),
-                    }
-                    match store.list_journal_seeds() {
-                        Ok(journal_seeds) => seeds.extend(journal_seeds),
-                        Err(error) => log::warn!("[timeline] journal index failed: {error}"),
-                    }
-                }
-                None => return,
-            }
-        }
-        let total = seeds.len();
-        *self
-            .disk_timeline_seeds
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = seeds;
-        log::info!("[ringing] lazy timeline index ready: {total} persisted timelines on disk");
-    }
-
-    /// 懒加载：确保 seed 的 timeline 快照 + replay tail 已 restore 入内存。
-    ///
-    /// - 已在内存或磁盘无记录：零成本返回；
-    /// - 磁盘有记录：读取该 seed 的持久化快照 → restore → 收尾孤儿 running
-    ///   turn（原 `load_timeline_persisted` 语义，有变更则同步写回）。
-    fn ensure_timeline_loaded(&self, seed: &str) {
-        // 登记（幂等）：退出时 seal_all_orphans 需要覆盖全部已知 seed——
-        // 包括本次运行新建、尚未异步落盘的 seed（异步 checkpoint 落盘前
-        // 磁盘清单还没有它，但内存里已有未 seal turn）。
-        self.disk_timeline_seeds
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(seed.to_string());
-        let _serial = self.lazy_load.lock().unwrap_or_else(|e| e.into_inner());
-        if self
-            .timeline
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(seed)
-        {
-            return;
-        }
-        if !self
-            .disk_timeline_seeds
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(seed)
-        {
-            return;
-        }
-        // 阶段 1：timeline journal 为权威来源；老 `{seed}.json` 降级为缓存与
-        // 兼容回退（无 journal 的旧历史在首载时一次性迁移回填）。
-        let (journal_ops, persisted_cache) = {
-            let mut store = self
-                .timeline_store
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            match store.as_mut() {
-                Some(store) => (
-                    store.read_journal(seed).unwrap_or_default(),
-                    store.load_seed(seed),
-                ),
-                None => return,
-            }
-        };
-
-        let mut cache_missing = persisted_cache.is_none();
-        if !journal_ops.is_empty() {
-            // 快路径：缓存与 journal 对齐（watermark == journal 最大 seq，二者描述
-            // 同一状态）→ 直接 restore 缓存，免去对超大历史的全量重放。
-            let journal_last = journal_ops
-                .iter()
-                .filter_map(|op| match op {
-                    TimelineJournalOp::Snapshot { snapshot } => Some(snapshot.watermark),
-                    TimelineJournalOp::Append { entry, .. } => Some(entry.timeline_seq),
-                })
-                .max()
-                .unwrap_or(0);
-            if let Some(persisted) = &persisted_cache
-                && persisted.snapshot.watermark == journal_last
-            {
-                {
-                    let mut appender = self.timeline.lock().unwrap_or_else(|e| e.into_inner());
-                    if !appender.contains(seed) {
-                        appender.restore(
-                            persisted.seed.clone(),
-                            persisted.snapshot.clone(),
-                            persisted.journal.clone(),
-                        );
-                    }
-                }
-                log::info!("[ringing] lazily loaded timeline {seed} from cache (journal aligned)");
-            } else {
-                // journal 权威：纯重放重建（与原生写一致，前端快照形状逐字不变）。
-                match materialize_timeline_from_journal(&journal_ops) {
-                    Some((snapshot, journal)) => {
-                        {
-                            let mut appender =
-                                self.timeline.lock().unwrap_or_else(|e| e.into_inner());
-                            if !appender.contains(seed) {
-                                appender.restore(
-                                    seed.to_string(),
-                                    snapshot.clone(),
-                                    journal.clone(),
-                                );
-                            }
-                        }
-                        // 缓存缺失或滞后于 journal → 收尾后补写缓存（保前端快照路径）。
-                        cache_missing = true;
-                        log::info!("[ringing] lazily rebuilt timeline {seed} from journal");
-                    }
-                    None => {
-                        // 有 journal 记录但不可重放（防御分支）→ 回退缓存载荷。
-                        if let Some(persisted) = persisted_cache {
-                            let mut appender =
-                                self.timeline.lock().unwrap_or_else(|e| e.into_inner());
-                            appender.restore(
-                                persisted.seed.clone(),
-                                persisted.snapshot.clone(),
-                                persisted.journal.clone(),
-                            );
-                        } else {
-                            self.rebuild_timeline_from_messages(seed);
-                            return;
-                        }
-                    }
-                }
-            }
-        } else if let Some(persisted) = persisted_cache {
-            // 无 journal 的旧历史：兼容 restore + 一次性迁移（回填 journal）。
-            {
-                let mut appender = self.timeline.lock().unwrap_or_else(|e| e.into_inner());
-                if !appender.contains(seed) {
-                    appender.restore(
-                        persisted.seed.clone(),
-                        persisted.snapshot.clone(),
-                        persisted.journal.clone(),
-                    );
-                }
-            }
-            self.backfill_timeline_journal_from_persisted(&persisted);
-        } else {
-            // 两者皆无 → BUG-006：从 messages/compact 可重建投影。
-            self.rebuild_timeline_from_messages(seed);
-            return;
-        }
-
-        // 上次运行遗留的孤儿 running turn 在此收尾（见 seal_orphan_running_turns）。
-        // 有变更、或缓存缺失/滞后时同步落盘（journal 权威：先追 journal 再写缓存）。
-        if self.seal_orphan_running_turns(seed) || cache_missing {
-            self.persist_timeline_sync(seed);
-        }
-        log::info!("[ringing] lazily loaded timeline {seed}");
-    }
-
-    /// BUG-006：timeline 目录缺失/记录损坏时，它必须能从 messages.jsonl /
-    /// compact-context 重建，否则 timeline 就不是"可重建投影"，而会变成第二份
-    /// 事实源。重建结果与 conversation snapshot 同一基线（compact 优先），
-    /// 并同步写回 timeline 缓存 + timeline journal（保证下次也 journal 权威）。
-    fn rebuild_timeline_from_messages(&self, seed: &str) {
-        if let Some((snapshot, journal)) =
-            super::timeline_rebuild::rebuild_timeline_snapshot(self.sessions.as_deref(), seed)
-        {
-            {
-                let mut appender = self.timeline.lock().unwrap_or_else(|e| e.into_inner());
-                if !appender.contains(seed) {
-                    appender.restore(seed.to_string(), snapshot.clone(), journal.clone());
-                }
-            }
-            let mut store = self
-                .timeline_store
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if let Some(store) = store.as_mut() {
-                if let Err(error) = append_timeline_journal_tail_locked(store, &self.timeline, seed)
-                {
-                    log::error!(
-                        "[timeline] journal append failed for {seed}: {error}; skipping rebuild persist (fail-closed)"
-                    );
-                    return;
-                }
-                if let Err(error) = store.persist(seed, &snapshot, journal) {
-                    log::warn!("[timeline] rebuild persist failed for {seed}: {error}");
-                }
-            }
-            log::info!(
-                "[ringing] rebuilt timeline {seed} from persisted messages (BUG-006 fallback)"
-            );
-        }
-    }
-
-    /// 一次性历史迁移：把旧 `PersistedTimeline`（snapshot + replay tail）转写为
-    /// timeline journal（`Snapshot` 基点 + `Append` 尾部）。幂等：目标文件已
-    /// 存在则跳过。
-    fn backfill_timeline_journal_from_persisted(&self, persisted: &PersistedTimeline) {
-        let mut ops: Vec<TimelineJournalOp> =
-            Vec::with_capacity(persisted.journal.len().saturating_add(1));
-        ops.push(TimelineJournalOp::Snapshot {
-            snapshot: persisted.snapshot.clone(),
-        });
-        for entry in &persisted.journal {
-            // 缓存重建路径：原始落盘 ts 不在缓存内，置 None（诚实缺省）
-            ops.push(TimelineJournalOp::Append {
-                entry: entry.clone(),
-                ts: None,
-            });
-        }
-        let mut store = self
-            .timeline_store
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some(store) = store.as_mut()
-            && let Err(error) = store.backfill_journal(&persisted.seed, &ops)
-        {
-            log::warn!(
-                "[timeline] journal backfill failed for {}: {error}",
-                persisted.seed
-            );
-        }
-    }
-
-    /// 收尾孤儿 running turn。daemon 重启或 worker 重新 spawn 后，timeline 中
-    /// 任何未 seal 的 turn 都没有存活生产者（典型场景：工具调用未返回 result
-    /// 时进程被杀）。若不 seal，前端会永远把它投影为 running，stop/send 按钮
-    /// 卡死在 stop 且新消息无法发送——这是"重启 daemon/前端都无法再发送新
-    /// 消息"的根因。
-    ///
-    /// seal 顺序遵循 TimelineAppender 契约：先 seal 全部 open block，再 seal
-    /// 全部未 seal round（is_final=true，这是该 turn 的最后一轮），最后将 turn
-    /// seal 为 Cancelled。幂等：已 seal 的 turn 直接跳过。返回是否有变更。
-    pub fn seal_orphan_running_turns(&self, seed: &str) -> bool {
-        let mut appender = self.timeline.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(snapshot) = appender.snapshot(seed) else {
-            return false;
-        };
-        let mut changed = false;
-        for turn in snapshot.turns.iter().filter(|turn| !turn.sealed) {
-            for round in &turn.rounds {
-                for block in &round.blocks {
-                    if block.state == TimelineBlockState::Sealed {
-                        continue;
-                    }
-                    match appender.seal_block(seed, &turn.turn_id, round.round_num, &block.block_id)
-                    {
-                        Ok(_) => changed = true,
-                        Err(error) => log::warn!(
-                            "[timeline] orphan seal block failed for {seed} {}: {error}",
-                            block.block_id
-                        ),
-                    }
-                }
-            }
-            for round in &turn.rounds {
-                if round.sealed {
-                    continue;
-                }
-                match appender.seal_round(seed, &turn.turn_id, round.round_num, true) {
-                    Ok(_) => changed = true,
-                    Err(error) => log::warn!(
-                        "[timeline] orphan seal round failed for {seed} {}/{}: {error}",
-                        turn.turn_id,
-                        round.round_num
-                    ),
-                }
-            }
-            match appender.seal_turn_with_state(
-                seed,
-                &turn.turn_id,
-                TimelineTurnState::Cancelled,
-                Some(TimelineFailure {
-                    code: "daemon_restart_interrupted".into(),
-                    message:
-                        "Daemon restarted while this turn was running; the turn was interrupted and the session is ready for new input."
-                            .into(),
-                }),
-            ) {
-                Ok(_) => changed = true,
-                Err(error) => log::warn!(
-                    "[timeline] orphan seal turn failed for {seed} {}: {error}",
-                    turn.turn_id
-                ),
-            }
-        }
-        changed
-    }
-
     /// 收尾三频道投影中的孤儿领域状态（Ringing 版 `seal_orphan_running_turns`）。
     ///
     /// worker 的挂起/运行状态在内存中，daemon 重启或 worker 被重新拉起后，
@@ -869,341 +435,8 @@ impl RingingHub {
         }
     }
 
-    pub fn seal_orphan_channel_state(&self, seed: &str, force: bool) -> bool {
-        // B9/H3 liveness gate：force=false 的 bootstrap 路径在 worker 仍
-        // 存活时整体跳过——活 worker 的 running/pending 状态不是孤儿。
-        if !force
-            && self
-                .live_workers
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .contains(seed)
-        {
-            log::info!("[ringing] worker alive for {seed}; skipping bootstrap orphan seal");
-            return false;
-        }
-
-        let mut changed = false;
-
-        // 1) conversation：active_turn 无终态（journal 重放后仍有值）→ 取消。
-        let conv = self.snapshot(RingingChannel::Conversation, seed);
-        if let Some(turn_id) = conv
-            .state
-            .get("active_turn")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-        {
-            log::info!(
-                "[ringing] sealing orphan active turn {turn_id} for {seed} (no terminal event)"
-            );
-            let _ = self.publish_with_causation(
-                seed,
-                DomainEvent::Conversation(ConversationEvent::ConversationCancelled {
-                    turn_id: Some(turn_id.to_string()),
-                }),
-                None,
-            );
-            changed = true;
-        }
-
-        // 2) conversation compact：CompactStarted 无 CompactFinished → 失败。
-        //    压缩 worker 的网络请求与结果仅存于旧进程内存，daemon/worker
-        //    恢复后不可能继续；必须经正常终态事件收敛 journal、snapshot 和 SSE。
-        let conv = self.snapshot(RingingChannel::Conversation, seed);
-        if conv.state.get("compact_status").and_then(|v| v.as_str()) == Some("running") {
-            let compact_id = conv
-                .state
-                .get("compact_id")
-                .and_then(|v| v.as_str())
-                .filter(|value| !value.is_empty())
-                .unwrap_or("orphan-compact")
-                .to_string();
-            log::info!(
-                "[ringing] sealing orphan compact {compact_id} for {seed} (worker operation cannot resume)"
-            );
-            let _ = self.publish_with_causation(
-                seed,
-                DomainEvent::Conversation(ConversationEvent::CompactFinished {
-                    compact_id,
-                    status: CompactStatus::Failed,
-                    summary_chars: Some(0),
-                    turns_compacted: Some(0),
-                    turns_removed: Some(0),
-                }),
-                None,
-            );
-            changed = true;
-        }
-
-        // 3) tool：running 列表 + pending_permission 无 ToolFinished 终态 → 取消。
-        //    兼容旧投影的字符串数组与当前的对象数组两种格式。
-        let tool = self.snapshot(RingingChannel::Tool, seed);
-        let mut orphans: Vec<(String, String, u32)> = Vec::new();
-        if let Some(running) = tool.state.get("running").and_then(|v| v.as_array()) {
-            for entry in running {
-                match entry {
-                    serde_json::Value::String(id) => {
-                        orphans.push((id.clone(), String::new(), 0));
-                    }
-                    serde_json::Value::Object(obj) => {
-                        if let Some(id) = obj.get("tool_call_id").and_then(|v| v.as_str()) {
-                            orphans.push((
-                                id.to_string(),
-                                obj.get("turn_id")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string(),
-                                obj.get("round_num").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                            ));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        if let Some(id) = tool
-            .state
-            .get("pending_permission")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-        {
-            if !orphans
-                .iter()
-                .any(|(tool_call_id, _, _)| tool_call_id == id)
-            {
-                orphans.push((id.to_string(), String::new(), 0));
-            }
-        }
-        for (tool_call_id, turn_id, round_num) in orphans {
-            log::info!("[ringing] sealing orphan tool {tool_call_id} for {seed} (no ToolFinished)");
-            let _ = self.publish_with_causation(
-                seed,
-                DomainEvent::Tool(ToolEvent::ToolFinished {
-                    tool_call_id,
-                    turn_id,
-                    round_num,
-                    result: ToolResult::cancelled(
-                        "Agent restarted before the tool returned a result",
-                    ),
-                }),
-                None,
-            );
-            changed = true;
-        }
-
-        // 4) control：pending_interaction 无 InteractionResolved → 关闭（Dismissed）。
-        //    守卫：当前进程发布、仍在等待用户响应的活交互不 seal——bootstrap
-        //    路径（force=false）会误杀 1ms 前刚发布的 ask（「ask 弹不出」根因）；
-        //    force=true（worker 死亡/重启的 registry 收尾路径）无视守卫强制收尾。
-        let control = self.snapshot(RingingChannel::Control, seed);
-        if let Some(id) = control
-            .state
-            .get("pending_interaction")
-            .and_then(|v| v.get("id"))
-            .and_then(|v| v.as_str())
-        {
-            let is_live = self
-                .live_interactions
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(seed)
-                .is_some_and(|cur| cur == id);
-            if is_live && !force {
-                log::info!(
-                    "[ringing] keeping live interaction {id} for {seed} (awaiting user response)"
-                );
-            } else {
-                log::info!("[ringing] sealing orphan interaction {id} for {seed} (no resolution)");
-                let _ = self.publish_with_causation(
-                    seed,
-                    DomainEvent::Control(ControlEvent::InteractionResolved {
-                        interaction_id: id.to_string(),
-                        resolution: AskResolution::Dismissed,
-                    }),
-                    None,
-                );
-                // B9/H3c：条件删除——仅当活表仍指向被收尾的 id 才清除；
-                // 并发发布的新 ask 可能已注册了不同 id，不能误抹。
-                let mut live = self
-                    .live_interactions
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                if live.get(seed).is_some_and(|cur| cur == id) {
-                    live.remove(seed);
-                }
-                drop(live);
-                changed = true;
-            }
-        }
-
-        changed
-    }
-
-    /// 优雅关闭收尾：对所有已知 timeline seed 执行孤儿收尾（timeline +
-    /// 三频道投影）。正常路径下 worker 已优雅退出并自行 seal（terminal
-    /// intent 同步落盘），此处兜底 worker 超时被杀 / 未收尾的场景——
-    /// 退出时不留孤儿，安装器更新后重启不再出现 daemon_restart_interrupted。
-    ///
-    /// 只覆盖已加载 seed 的当前状态：磁盘上未加载的 seed 由下次
-    /// `ensure_timeline_loaded` 启动时收尾（懒加载路径自带孤儿 seal）。
-    pub fn seal_all_orphans(&self) {
-        let seeds: Vec<String> = self
-            .disk_timeline_seeds
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .cloned()
-            .collect();
-        for seed in &seeds {
-            if self.seal_orphan_running_turns(seed) {
-                log::info!("[timeline] sealed orphan turn(s) for {seed} at shutdown");
-            }
-            if self.seal_orphan_channel_state(seed, true) {
-                log::info!("[ringing] sealed orphan channel state for {seed} at shutdown");
-            }
-        }
-    }
-
     pub fn epoch(&self) -> &str {
         &self.epoch
-    }
-
-    /// 接收原生 Ringing V1 timeline producer intent。此路径不接受 Agent2Ui 或 RingingEvent，
-    /// 因而不会形成旧协议包装链。
-    pub fn publish_timeline(
-        &self,
-        seed: &str,
-        intent: TimelineIntent,
-    ) -> Result<TimelineEntry, TimelineError> {
-        // P1: 懒加载——publish 前确保该 seed 历史 timeline 已 restore，
-        // 否则新条目会与磁盘快照断链（replay tail 丢失历史）。
-        self.ensure_timeline_loaded(seed);
-        // Terminal intents (block/round/turn sealed) are the recovery boundary
-        // for a restarting client: persisting them synchronously shrinks the
-        // window in which a crash can lose the transcript tail from "the whole
-        // turn" to "the current open blocks". Everything else keeps the
-        // coalesced async checkpoint to stay off the streaming hot path.
-        let terminal = Self::timeline_intent_is_terminal(&intent);
-        let entry = {
-            let mut timeline = self.timeline.lock().unwrap_or_else(|e| e.into_inner());
-            timeline.apply_intent(seed, intent)?
-        };
-        if terminal {
-            self.persist_timeline_sync(seed);
-        } else {
-            self.request_timeline_persistence(seed);
-        }
-        let _ = self.timeline_live.send(TimelineLiveEntry {
-            seed: seed.to_string(),
-            entry: entry.clone(),
-        });
-        Ok(entry)
-    }
-
-    /// 同步写入一个 seed 的 timeline 快照 + replay tail（daemon 优雅关闭或
-    /// terminal intent 时调用）。从 pending 集合移除，避免异步线程重复写。
-    fn persist_timeline_sync(&self, seed: &str) {
-        // Drop the pending flag so the async worker does not rewrite the same
-        // seed again; the synchronous write below is strictly newer.
-        if let Some(persistence) = self
-            .timeline_persistence
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-        {
-            persistence
-                .pending_seeds
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(seed);
-        }
-        let mut store_guard = self
-            .timeline_store
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let Some(store) = store_guard.as_mut() else {
-            return;
-        };
-        // 先追加 timeline journal 尾部（journal ≥ cache 不变量），再写缓存。
-        // journal 追加失败时跳过缓存写入（fail-closed），避免缓存比 journal 新
-        // 导致崩溃重启后 journal 重放丢失尾部条目。
-        if let Err(error) = append_timeline_journal_tail_locked(store, &self.timeline, seed) {
-            log::error!(
-                "[timeline] journal append failed for {seed}: {error}; skipping cache persist (fail-closed)"
-            );
-            return;
-        }
-        let Some((snapshot, journal)) = (|| {
-            let timeline = self.timeline.lock().unwrap_or_else(|e| e.into_inner());
-            timeline.snapshot(seed).map(|snapshot| {
-                let journal = timeline.replay_since(seed, 0);
-                let journal = Self::prune_sealed_timeline_journal(&snapshot, journal);
-                (snapshot, journal)
-            })
-        })() else {
-            return;
-        };
-        if let Err(error) = store.persist(seed, &snapshot, journal) {
-            log::warn!("[timeline] sync persist failed for {seed}: {error}");
-        }
-    }
-
-    /// 同步落盘所有待写 seed（daemon 优雅关闭收尾；Drop 只 join 异步线程，
-    /// 而 Arc 引用可能仍在 tokio task 中存活，必须显式 flush）。
-    pub fn flush_timeline_persistence(&self) {
-        let seeds: Vec<String> = self
-            .timeline_persistence
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .map(|persistence| {
-                persistence
-                    .pending_seeds
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .drain()
-                    .collect()
-            })
-            .unwrap_or_default();
-        for seed in seeds {
-            self.persist_timeline_sync(&seed);
-        }
-    }
-
-    /// Ringing V1 bootstrap 的权威 transcript 快照。
-    pub fn timeline_snapshot(&self, seed: &str) -> Option<TimelineSnapshot> {
-        self.ensure_timeline_loaded(seed);
-        self.timeline
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .snapshot(seed)
-    }
-
-    /// Ringing V1 reconnect tail。调用方用 snapshot watermark 作为 after 参数。
-    pub fn timeline_replay_since(&self, seed: &str, watermark: u64) -> Vec<TimelineEntry> {
-        self.ensure_timeline_loaded(seed);
-        self.timeline
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .replay_since(seed, watermark)
-    }
-
-    /// Live Ringing V1 timeline transcript feed. Reliability comes from `timeline_replay_since`
-    /// and snapshot watermark; a lagged receiver must reconnect and replay.
-    pub fn subscribe_timeline(&self) -> broadcast::Receiver<TimelineLiveEntry> {
-        self.timeline_live.subscribe()
-    }
-
-    /// Terminal intents seal a block/round/turn — the client's recovery
-    /// boundary. They are persisted synchronously so a crash between the seal
-    /// and the next async checkpoint cannot drop a completed unit of work.
-    fn timeline_intent_is_terminal(intent: &TimelineIntent) -> bool {
-        matches!(
-            intent,
-            TimelineIntent::BlockSealed { .. }
-                | TimelineIntent::RoundSealed { .. }
-                | TimelineIntent::TurnSealed { .. }
-        )
     }
 
     /// 大内容外置：存入（返回 content_id）。
@@ -1243,7 +476,7 @@ impl RingingHub {
     ) -> &'a mut SeedChannelState {
         guard
             .entry(channel)
-            .or_insert_with(HashMap::new)
+            .or_default()
             .entry(seed.to_string())
             .or_insert_with(|| SeedChannelState::new(channel))
     }
@@ -1336,7 +569,7 @@ impl RingingHub {
                         }
                         // P0: 磁盘收敛检查脱离 RoundCompleted 依赖——轮次未完成
                         // 时 delta 持续 append 也必须有兜底重写（pending 门控）。
-                        self.rewrite_if_oversized(channel, seed, &st, false);
+                        self.rewrite_if_oversized(channel, seed, st, false);
                     }
                 }
                 for key in terminal_replaceable_keys(&envelope.event) {
@@ -1636,7 +869,7 @@ impl RingingHub {
     /// 拒绝已 seal block），因此持久化时丢弃这些条目不会破坏恢复：restore 的
     /// next_fragment 只从保留的活跃 turn 条目重建。这消除了每次 persist 都
     /// 全量克隆整个 journal 的写放大（曾实测 13.5MB JSON 每几秒重写一次）。
-    fn prune_sealed_timeline_journal(
+    pub(super) fn prune_sealed_timeline_journal(
         snapshot: &qaqh_domain::TimelineSnapshot,
         journal: Vec<TimelineEntry>,
     ) -> Vec<TimelineEntry> {
@@ -1695,32 +928,6 @@ impl RingingHub {
     }
 }
 
-/// 在 `timeline_store` 锁内追加该 seed 的 timeline journal 尾部（权威日志）。
-///
-/// 调用方必须已持有 `timeline_store` 锁（传入 `&mut Option<TimelineStore>`），
-/// 从而与缓存文件的读写保持同一临界区：任何"追加 journal"与"写缓存"都不会
-/// 交错，保证 journal ≥ cache 的不变量（崩溃后 journal 永不落后于缓存）。
-/// 锁顺序（store → timeline）与 `persist_timeline_sync` / checkpoint 线程一致。
-///
-/// 返回 `Err` 表示 journal 追加失败（磁盘满/权限等）：调用方必须**跳过缓存
-/// 写入**（fail-closed）——否则缓存会比 journal 新，崩溃重启后 journal 重放
-/// 会丢失仅存在于缓存的尾部条目。
-fn append_timeline_journal_tail_locked(
-    store: &mut TimelineStore,
-    timeline: &Arc<Mutex<TimelineAppender>>,
-    seed: &str,
-) -> std::io::Result<()> {
-    let watermark = store.journal_watermark(seed);
-    let entries = {
-        let timeline = timeline.lock().unwrap_or_else(|e| e.into_inner());
-        timeline.replay_since(seed, watermark)
-    };
-    if !entries.is_empty() {
-        store.append_journal(seed, &entries)?;
-    }
-    Ok(())
-}
-
 impl Drop for RingingHub {
     fn drop(&mut self) {
         let persistence = self
@@ -1749,7 +956,10 @@ fn unix_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qaqh_domain::{ConversationEvent, ToolEvent};
+    use crate::timeline_store::TimelineJournalOp;
+    use qaqh_domain::{
+        CompactStatus, ConversationEvent, TimelineIntent, TimelineSnapshot, ToolEvent,
+    };
 
     #[test]
     fn persisted_conversation_metadata_survives_projection_overlay() {

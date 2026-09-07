@@ -146,7 +146,7 @@ pub struct ProfileConfig {
     pub model: String,
     /// Max output tokens per turn.
     pub max_tokens: u32,
-    /// Reasoning effort: "high", "max", or `None` to use default.
+    /// Reasoning effort: one of `low|medium|high|xhigh|max`, or `None` to use default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
     /// Maximum context window size (input tokens).
@@ -240,22 +240,4 @@ impl ConfigStore {
         // Convert toml::Value → serde_json::Value for backward compat
         serde_json::to_value(&tv).ok()
     }
-}
-
-/// Balance/info response from the provider's balance endpoint.
-///
-/// Fields correspond to the JSON response from `GET /user/balance` or
-/// equivalent provider-specific endpoints.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct BalanceInfo {
-    /// Whether the balance endpoint returned usable data.
-    pub is_available: bool,
-    /// Currency code (e.g. "USD", "CNY").
-    pub currency: String,
-    /// Total balance available.
-    pub total_balance: String,
-    /// Granted (free-tier) balance.
-    pub granted_balance: String,
-    /// Top-up (purchased) balance.
-    pub topped_up_balance: String,
 }

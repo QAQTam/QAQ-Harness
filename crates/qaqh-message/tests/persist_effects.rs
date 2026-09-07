@@ -13,14 +13,11 @@
 //!    and continued; the result must be byte-identical to the legacy daemon
 //!    continuing to write the same conversation (msg_id counter restored).
 
-use std::path::{Path, PathBuf};
-use std::sync::Once;
+use std::path::PathBuf;
 
 use qaqh_message::{MessageStore, PersistOp};
 use qaqh_session::SessionManager;
 use qaqh_types::{ContentBlock, Message};
-
-static INIT: Once = Once::new();
 
 /// SessionManager is a process-level OnceLock singleton: the whole test
 /// binary shares one data_dir, tests isolate by seed.

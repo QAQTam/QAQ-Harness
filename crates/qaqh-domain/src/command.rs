@@ -64,6 +64,12 @@ pub enum ControlCommand {
     },
     /// 恢复已保存会话。accepted 后由三个频道分别完成 snapshot/cursor 恢复。
     SessionResume { seed: String },
+    /// 仅建立 seed 归属（client lease attach），**不触碰会话 actor**。
+    /// daemon 侧拦截：attach_seed 后立即 Accepted。与 SessionResume 的区别：
+    /// 后者会对 actor 执行 resume（prepare_session_switch + 整包重建），
+    /// 对运行中的子代理是破坏性操作；本命令供前端订阅子代理 timeline 等
+    /// 只读观测场景使用。
+    SessionAttach { seed: String },
     /// 关闭指定会话。
     SessionClose { seed: String },
     /// 归档会话（标签 ×）：daemon 侧拦截——关闭 registry 实例 + meta

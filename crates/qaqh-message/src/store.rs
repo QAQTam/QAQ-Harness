@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::effect::{Effect, PendingTool, PersistOp};
+use crate::effect::{PendingTool, PersistOp};
 use qaqh_types::{Message, ToolDef};
 
 /// Prefix of the synthetic result `from_messages` injects for an orphan
@@ -472,14 +472,14 @@ impl MessageStore {
     }
 
     /// Take the queued persistence ops for host-side execution. The queue is
-    /// this store's host-facing Effect surface (PR-1-6): drain it after each
+    /// this store's host-facing turn-completion surface (PR-1-6): drain it after each
     /// command dispatch and replay the ops in order against the injected
     /// session manager.
     pub fn take_persist_ops(&mut self) -> Vec<PersistOp> {
         std::mem::take(&mut self.pending_persist)
     }
 
-    pub fn push_system(&mut self, msg: Message) -> Effect {
+    pub fn push_system(&mut self, msg: Message) -> bool {
         debug_assert_eq!(msg.role, "system", "push_system requires role=system");
         // Guard: skip if an identical system message already exists.
         // This prevents double-injection when lifecycle paths are called
@@ -500,7 +500,7 @@ impl MessageStore {
                 })
             })
         {
-            return Effect::None;
+            return false;
         }
         let mut msg = msg;
         let id = self.save_msg(&msg);
@@ -509,7 +509,7 @@ impl MessageStore {
         }
         self.system_messages.push(msg);
         self.context_revision = self.context_revision.saturating_add(1);
-        Effect::None
+        false
     }
 
     /// Remove all system messages whose first text block starts with the
@@ -618,16 +618,15 @@ impl MessageStore {
         &self.trailing_messages
     }
 
-    pub fn push_user(&mut self, text: &str) -> Effect {
-        if !self.replaying {
-            if let Some(turn) = self.turns.last_mut() {
-                if let Some(step) = turn.steps.last_mut() {
-                    auto_complete_unfulfilled(
-                        step,
-                        "[CANCELLED] Tool was not executed (user interrupted).",
-                    );
-                }
-            }
+    pub fn push_user(&mut self, text: &str) -> bool {
+        if !self.replaying
+            && let Some(turn) = self.turns.last_mut()
+            && let Some(step) = turn.steps.last_mut()
+        {
+            auto_complete_unfulfilled(
+                step,
+                "[CANCELLED] Tool was not executed (user interrupted).",
+            );
         }
         let mut msg = Message::user(text);
         let id = self.save_msg(&msg);
@@ -638,7 +637,7 @@ impl MessageStore {
         self.context_revision = self.context_revision.saturating_add(1);
         // G3：新 turn 前旧悬空已被 auto_complete 消解，安全点回灌延后注入。
         self.flush_deferred_trailing();
-        Effect::None
+        false
     }
 
     /// Push a system-role message as a standalone turn (e.g. sub-agent result
@@ -646,16 +645,15 @@ impl MessageStore {
     /// emits a mid-stream `system` message that OpenAI/Responses both accept.
     /// Callers must keep the `[SUBAGENT ...]` tag in `text` so the model can
     /// distinguish injected data from system instructions.
-    pub fn push_system_input(&mut self, text: &str) -> Effect {
-        if !self.replaying {
-            if let Some(turn) = self.turns.last_mut() {
-                if let Some(step) = turn.steps.last_mut() {
-                    auto_complete_unfulfilled(
-                        step,
-                        "[CANCELLED] Tool was not executed (system injection arrived).",
-                    );
-                }
-            }
+    pub fn push_system_input(&mut self, text: &str) -> bool {
+        if !self.replaying
+            && let Some(turn) = self.turns.last_mut()
+            && let Some(step) = turn.steps.last_mut()
+        {
+            auto_complete_unfulfilled(
+                step,
+                "[CANCELLED] Tool was not executed (system injection arrived).",
+            );
         }
         let mut msg = Message::system(text);
         let id = self.save_msg(&msg);
@@ -664,7 +662,7 @@ impl MessageStore {
         }
         self.turns.push(Turn::new(msg));
         self.context_revision = self.context_revision.saturating_add(1);
-        Effect::None
+        false
     }
 
     /// Add an image block to the last user message (the most recent turn's user message).
@@ -692,7 +690,7 @@ impl MessageStore {
         }
     }
 
-    pub fn push_assistant(&mut self, msg: Message) -> Effect {
+    pub fn push_assistant(&mut self, msg: Message) -> bool {
         debug_assert_eq!(
             msg.role, "assistant",
             "push_assistant requires role=assistant"
@@ -702,16 +700,16 @@ impl MessageStore {
             log::error!(
                 "push_assistant: no turn exists — assistant response without user input. Dropping."
             );
-            return Effect::None;
+            return false;
         }
 
-        if !self.replaying {
-            if let Some(step) = self.turns.last_mut().and_then(|t| t.steps.last_mut()) {
-                auto_complete_unfulfilled(
-                    step,
-                    "[AUTO] Tool was not executed before next assistant response.",
-                );
-            }
+        if !self.replaying
+            && let Some(step) = self.turns.last_mut().and_then(|t| t.steps.last_mut())
+        {
+            auto_complete_unfulfilled(
+                step,
+                "[AUTO] Tool was not executed before next assistant response.",
+            );
         }
 
         let mut msg = msg;
@@ -728,53 +726,21 @@ impl MessageStore {
             .push(step);
         self.context_revision = self.context_revision.saturating_add(1);
 
-        if has_tools {
-            Effect::None
-        } else {
-            Effect::TurnComplete
-        }
+        !has_tools
     }
 
-    pub fn push_tool_result(&mut self, tool_call_id: &str, result: &str, success: bool) -> Effect {
+    pub fn push_tool_result(&mut self, tool_call_id: &str, result: &str, success: bool) -> bool {
         if self.push_tool_result_inner(tool_call_id, result, success, None, &[]) {
             self.context_revision = self.context_revision.saturating_add(1);
         }
 
-        if let Some(turn) = self.turns.last() {
-            if let Some(step) = turn.steps.last() {
-                if step.all_tools_satisfied() {
-                    return if step.pending_tools().is_empty() {
-                        Effect::TurnComplete
-                    } else {
-                        Effect::None
-                    };
-                }
-            }
+        if let Some(turn) = self.turns.last()
+            && let Some(step) = turn.steps.last()
+            && step.all_tools_satisfied()
+        {
+            return step.pending_tools().is_empty();
         }
-        Effect::None
-    }
-
-    pub fn push_tool_results_batch(&mut self, results: &[(String, String, bool)]) -> Effect {
-        let mut changed = false;
-        for (tc_id, result, success) in results {
-            changed |= self.push_tool_result_inner(tc_id, result, *success, None, &[]);
-        }
-        if changed {
-            self.context_revision = self.context_revision.saturating_add(1);
-        }
-
-        if let Some(turn) = self.turns.last() {
-            if let Some(step) = turn.steps.last() {
-                if step.all_tools_satisfied() {
-                    return if step.pending_tools().is_empty() {
-                        Effect::TurnComplete
-                    } else {
-                        Effect::None
-                    };
-                }
-            }
-        }
-        Effect::None
+        false
     }
 
     fn push_tool_result_inner(
@@ -791,12 +757,11 @@ impl MessageStore {
         let mut tool_msg = Message::tool(tool_call_id, &final_result, success);
         // 展示平面 diff 附着在结构化 ToolResult 上（project_for_model 不携带，
         // 模型上下文不受影响）；供 last_step_tool_results → timeline 消费。
-        if let Some(diff) = diff {
-            if let Some(qaqh_types::ContentBlock::ToolResult { result, .. }) =
+        if let Some(diff) = diff
+            && let Some(qaqh_types::ContentBlock::ToolResult { result, .. }) =
                 tool_msg.content.first_mut()
-            {
-                result.diff = Some(diff);
-            }
+        {
+            result.diff = Some(diff);
         }
         // 工具附着的图片（read_image）：字节外置磁盘后以 ImageRef 追加。
         // gate 投影时按需读盘，降级为紧随 tool 结果的合成 user 消息
@@ -854,38 +819,6 @@ impl MessageStore {
         );
         self.orphan_tool_results.push(tool_call_id.to_string());
         false
-    }
-
-    pub fn replace_tool_result(&mut self, tool_call_id: &str, result: &str, success: bool) {
-        // Same as push path: stored bytes are final (tool side already shaped).
-        let final_result = result.to_string();
-
-        for turn in self.turns.iter_mut().rev() {
-            if let Some(step) = turn.find_step_for_mut(tool_call_id) {
-                // 保留被替换消息的 msg_id：它是写入顺序键（trailing 合并依赖），
-                // 替换后消息必须留在原时间位置。
-                let old_id = step
-                    .tool_results
-                    .iter()
-                    .find(|tr| {
-                        tr.content.iter().any(|b| {
-                            matches!(b, qaqh_types::ContentBlock::ToolResult { tool_use_id, .. }
-                                if tool_use_id == tool_call_id)
-                        })
-                    })
-                    .and_then(|tr| tr.msg_id);
-                step.tool_results.retain(|tr| !tr.content.iter().any(|b| matches!(b, qaqh_types::ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == tool_call_id)));
-                let mut replacement = Message::tool(tool_call_id, &final_result, success);
-                replacement.msg_id = old_id;
-                step.tool_results.push(replacement);
-                self.context_revision = self.context_revision.saturating_add(1);
-                return;
-            }
-        }
-        log::error!(
-            "replace_tool_result: tool_call_id {} not found in any turn",
-            tool_call_id
-        );
     }
 
     /// Flatten turns (optionally skipping the first `skip_turns`) and trailing
@@ -1381,14 +1314,13 @@ impl MessageStore {
     }
 
     pub fn remove_last_step_if_incomplete(&mut self) -> bool {
-        if let Some(turn) = self.turns.last_mut() {
-            if let Some(step) = turn.steps.last() {
-                if !step.all_tools_satisfied() {
-                    turn.steps.pop();
-                    self.context_revision = self.context_revision.saturating_add(1);
-                    return true;
-                }
-            }
+        if let Some(turn) = self.turns.last_mut()
+            && let Some(step) = turn.steps.last()
+            && !step.all_tools_satisfied()
+        {
+            turn.steps.pop();
+            self.context_revision = self.context_revision.saturating_add(1);
+            return true;
         }
         false
     }
@@ -1508,7 +1440,7 @@ impl MessageStore {
         // 折叠压缩区 trailing 注入：文本已进摘要输入，随旧 turn 一起丢弃，
         // 不再"复活"到摘要之后/活跃 turn 之前（双重表示）。
         self.trailing_messages
-            .retain(|m| m.msg_id.map_or(true, |id| id >= first_kept_id));
+            .retain(|m| m.msg_id.is_none_or(|id| id >= first_kept_id));
 
         // Physically remove compacted turns, keep only the most recent `keep`.
         let kept = self.turns.split_off(skip);

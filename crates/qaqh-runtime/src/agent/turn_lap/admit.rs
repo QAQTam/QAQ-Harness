@@ -328,9 +328,9 @@ pub(crate) fn execute_admitted_batch(
     true
 }
 
-// ── Admit/dispatch for run_lap's Effect::None first batch ──
+// ── Admit/dispatch for run_lap's !turn_completed first batch ──
 
-/// Handle the full `Effect::None` tool cycle for one gate lap.
+/// Handle the full `!turn_completed` tool cycle for one gate lap.
 ///
 /// Covers verbatim the inline block from `run_lap` after `parse_and_ingest`:
 /// - `LoopPhase::ToolsRunning`
@@ -448,9 +448,8 @@ pub(crate) fn admit_and_dispatch(
     {
         let reason = if !admission.pending_permission_ids.is_empty() {
             YieldReason::PermissionPending
-        } else if admission.pending_todo_activation.is_some() {
-            YieldReason::PlanReview // same UI interaction, review_type distinguishes
         } else {
+            // pending_plans / pending_todo_activation 同一评审 UI，review_type 区分
             YieldReason::PlanReview
         };
         // Capture plan info before moving into TurnState
@@ -776,9 +775,8 @@ pub(crate) fn admit_and_dispatch(
     {
         let reason = if !admission.pending_permission_ids.is_empty() {
             YieldReason::PermissionPending
-        } else if admission.pending_todo_activation.is_some() {
-            YieldReason::PlanReview
-        } else if !admission.pending_plans.is_empty() {
+        } else if admission.pending_todo_activation.is_some() || !admission.pending_plans.is_empty()
+        {
             YieldReason::PlanReview
         } else {
             YieldReason::AskUser

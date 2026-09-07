@@ -94,14 +94,12 @@ fn spawn_isolated_daemon(home: &PathBuf) -> Child {
     let discovery_path = data.join("daemon.json");
     let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
-        if let Ok(raw) = std::fs::read_to_string(&discovery_path) {
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) {
-                if let Some(ep) = parsed.get("endpoint").and_then(|v| v.as_str()) {
-                    if !ep.is_empty() {
-                        return child;
-                    }
-                }
-            }
+        if let Ok(raw) = std::fs::read_to_string(&discovery_path)
+            && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw)
+            && let Some(ep) = parsed.get("endpoint").and_then(|v| v.as_str())
+            && !ep.is_empty()
+        {
+            return child;
         }
         std::thread::sleep(Duration::from_millis(200));
     }

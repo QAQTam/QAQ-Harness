@@ -13,7 +13,7 @@ use tokio::sync::{Mutex, watch};
 use qaqh_domain::ControlCommand;
 use qaqh_ringing::{RingingCommandEnvelope, RingingCommandStatus};
 
-use crate::discovery::{DaemonDiscovery, read_discovery};
+use crate::discovery::{DaemonDiscovery, DiscoveryExt, read_discovery};
 use crate::endpoint::{ActionRequest, QueryRequest};
 use crate::error::{ClientError, Result};
 use crate::session::{RingingSession, SessionState};
@@ -219,7 +219,6 @@ impl Client {
                 StreamHandlers {
                     on_batch: options.handlers.on_batch.clone(),
                     on_status: {
-                        let channel = channel;
                         let cb = options.handlers.on_status.clone();
                         std::sync::Arc::new(move |status| cb(channel, status))
                     },

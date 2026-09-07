@@ -419,11 +419,11 @@ fn handle_spawn_subagent(ctx: ToolCallCtx) -> ToolResult {
         .clamp(1, 3600);
 
     if task.trim().is_empty() {
-        return ToolResult::error(qaqh_workspace::json_err(
+        return qaqh_workspace::json_err(
             "MISSING_TASK",
             "spawn_subagent: task_description is required",
             "Provide a task description.",
-        ));
+        );
     }
     let task_text = build_subagent_task(&task, &context);
 
@@ -471,18 +471,18 @@ fn handle_spawn_subagent(ctx: ToolCallCtx) -> ToolResult {
         ) {
             Ok(seed) if !seed.is_empty() => seed,
             Ok(_) => {
-                return ToolResult::error(qaqh_workspace::json_err(
+                return qaqh_workspace::json_err(
                     "SPAWN_ERROR",
                     "spawn_subagent: host returned empty seed",
                     "Check host/daemon logs.",
-                ));
+                );
             }
             Err(e) => {
-                return ToolResult::error(qaqh_workspace::json_err(
+                return qaqh_workspace::json_err(
                     "SPAWN_ERROR",
-                    &format!("spawn_subagent: host rejected spawn: {e}"),
+                    format!("spawn_subagent: host rejected spawn: {e}"),
                     "Check that the daemon can start subagent actors.",
-                ));
+                );
             }
         };
         let batch_rx = host.subscribe(&seed);
@@ -493,11 +493,11 @@ fn handle_spawn_subagent(ctx: ToolCallCtx) -> ToolResult {
     } else {
         // PR-4-2（Q4a）：legacy daemon HTTP/SSE 回连降级路径已删除——宿主未装配
         // （非 daemon 进程 / 未 install_host）即失败，不再回连。
-        return ToolResult::error(qaqh_workspace::json_err(
+        return qaqh_workspace::json_err(
             "HOST_UNAVAILABLE",
             "spawn_subagent: no in-process subagent host installed",
             "Subagent spawning requires the daemon host (install_host).",
-        ));
+        );
     };
     log::info!("[SUBAGENT] '{name}' worker seed={seed}");
 
@@ -515,19 +515,19 @@ fn handle_spawn_subagent(ctx: ToolCallCtx) -> ToolResult {
         Ok(accepted) if accepted => true,
         Ok(_) => {
             transport.close();
-            return ToolResult::error(qaqh_workspace::json_err(
+            return qaqh_workspace::json_err(
                 "SEND_REJECTED",
                 "spawn_subagent: daemon rejected task send",
                 "Check daemon/worker logs for lease or state conflicts.",
-            ));
+            );
         }
         Err(e) => {
             transport.close();
-            return ToolResult::error(qaqh_workspace::json_err(
+            return qaqh_workspace::json_err(
                 "SEND_ERROR",
-                &format!("spawn_subagent: send task: {e}"),
+                format!("spawn_subagent: send task: {e}"),
                 "Check daemon/worker logs.",
-            ));
+            );
         }
     };
     let _ = send_accepted;
@@ -629,10 +629,10 @@ fn collect_subagent_result(
                                 if !answer.is_empty() {
                                     final_answer = answer;
                                 }
-                            } else if let Some(reference) = output_ref {
-                                if let Ok(bytes) = transport.download_content(seed, &reference) {
-                                    final_answer = String::from_utf8_lossy(&bytes).to_string();
-                                }
+                            } else if let Some(reference) = output_ref
+                                && let Ok(bytes) = transport.download_content(seed, &reference)
+                            {
+                                final_answer = String::from_utf8_lossy(&bytes).to_string();
                             }
                             if is_final && !final_answer.is_empty() {
                                 did_finish = true;

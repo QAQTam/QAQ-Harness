@@ -35,11 +35,11 @@ pub(super) fn handle_web_fetch(ctx: ToolCallCtx) -> ToolResult {
             ToolResult::ok(payload)
         }
     } else {
-        ToolResult::error(crate::json_err(
+        crate::json_err(
             "MISSING_URL",
             "web_fetch: 'url' (starting with http) is required; web search is handled by the model's built-in web_search tool",
             "Pass a URL to fetch, or rely on the model's server-side web_search.",
-        ))
+        )
     }
 }
 
@@ -47,7 +47,7 @@ fn web_fetch(args: &serde_json::Value, timeout_secs: u64) -> String {
     const MAX_WEB_BODY_BYTES: u64 = 512 * 1024;
     let url = args.s("url");
     if url.is_empty() || !url.starts_with("http") {
-        return crate::json_err("INVALID_URL", "web_fetch: url must start with http", "");
+        return crate::json_err_string("INVALID_URL", "web_fetch: url must start with http", "");
     }
     let resp = match http_agent(timeout_secs)
         .get(&url)
@@ -58,14 +58,14 @@ fn web_fetch(args: &serde_json::Value, timeout_secs: u64) -> String {
         .call()
     {
         Ok(r) => r,
-        Err(e) => return crate::json_err("FETCH_ERROR", format!("{e}"), ""),
+        Err(e) => return crate::json_err_string("FETCH_ERROR", format!("{e}"), ""),
     };
     if resp
         .body()
         .content_length()
         .is_some_and(|len| len > MAX_WEB_BODY_BYTES)
     {
-        return crate::json_err(
+        return crate::json_err_string(
             "RESPONSE_TOO_LARGE",
             format!("Response exceeds the {} byte limit", MAX_WEB_BODY_BYTES),
             "Fetch a narrower URL or use a source with a paginated API.",
@@ -85,7 +85,7 @@ fn web_fetch(args: &serde_json::Value, timeout_secs: u64) -> String {
     {
         Ok(b) => b,
         Err(_) => {
-            return crate::json_err(
+            return crate::json_err_string(
                 "READ_ERROR",
                 "Response could not be read within the body limit",
                 "Fetch a narrower URL or use a source with a paginated API.",

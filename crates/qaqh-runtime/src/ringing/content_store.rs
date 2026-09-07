@@ -9,6 +9,8 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use qaqh_types::sha256_hex;
+
 /// 超过该阈值的内容应外置（10 MiB）。
 pub const CONTENT_STORE_THRESHOLD_BYTES: usize = 10 * 1024 * 1024;
 
@@ -98,16 +100,9 @@ impl ContentStore {
     }
 }
 
-/// SHA-256 hex（简化实现：无 sha2 依赖时用确定性哈希；正式依赖接入后替换）。
-/// 注意：content_id 需跨进程稳定，此处用 `sha2` crate。
-pub fn sha256_hex(data: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    let digest = hasher.finalize();
-    digest.iter().map(|b| format!("{b:02x}")).collect()
-}
-
+// SHA-256 hex 由 `qaqh_types::sha256_hex` 单源提供（PR-4-2，审计 #6）。
+// content_id 需跨进程稳定，两处实现曾逐字节同形；现仅存 types 一份，
+// 严禁再复制构造（换实现/换 crate 必须两侧同步评估 content_id 兼容性）。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,8 +150,8 @@ mod tests {
 
     #[test]
     fn large_content_flagged_for_externalization() {
-        // 阈值判定属于调用方策略；此处验证常量
-        assert!(CONTENT_STORE_THRESHOLD_BYTES >= 10 * 1024 * 1024);
+        // 阈值判定属于调用方策略；此处验证常量（编译期守卫）
+        const _: () = assert!(CONTENT_STORE_THRESHOLD_BYTES >= 10 * 1024 * 1024);
         let mut store = ContentStore::new();
         let big = vec![0_u8; CONTENT_STORE_THRESHOLD_BYTES];
         let id = store.put("s1", "application/octet-stream", big, true);

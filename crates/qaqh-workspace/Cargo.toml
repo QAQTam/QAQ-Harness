@@ -10,7 +10,8 @@ path = "src/main.rs"
 
 [dependencies]
 qaqh-skills = { path = "../qaqh-skills" }
-qaqh-proto = { path = "../qaqh-proto" }
+# PR-3-3 新增依赖边：workspace → qaqh_domain（R-4：仅限 Dashboard* 三类型，禁止事件类型）
+qaqh-domain = { path = "../qaqh-domain" }
 qaqh-types = { path = "../qaqh-types" }
 qaqh-config = { path = "../qaqh-config" }
 similar = { version = "3.1", features = ["text"] }

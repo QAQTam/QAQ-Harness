@@ -1,11 +1,10 @@
-//! locate — split from file_edit_v2.rs
+//! locate — split from the v2 edit core
 
 use crate::edit::HINT_WINDOW;
 use crate::edit::hunk::Hunk;
 use crate::edit::matching::*;
 use crate::edit::matching::{LocateError, Located};
 use crate::edit::view::FileView;
-use serde_json::Value;
 
 pub(crate) fn located(
     view: &FileView,
@@ -133,14 +132,6 @@ pub(crate) fn locate_pure_insert(
         note,
         hint_line: None,
     })
-}
-
-/// 解析可选的宽松行号提示（hint_line，1-based；0 视为 1）。
-#[allow(dead_code)]
-pub(crate) fn parse_hint_line(v: &Value) -> Option<usize> {
-    v.get("hint_line")
-        .and_then(|x| x.as_u64())
-        .map(|x| x.max(1) as usize)
 }
 
 /// replace hunk 的定位：四层流水线。

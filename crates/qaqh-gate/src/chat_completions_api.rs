@@ -2,72 +2,27 @@
 //! Includes retry with exponential backoff for transient errors (429, 500, 503, transport).
 
 use futures::StreamExt;
-use reqwest::Client;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::atomic::AtomicBool;
 
 use qaqh_types::{CacheTokenField, ThinkingParamMode};
 use qaqh_types::{ContentBlock, Message, ToolDef, UsageInfo};
 
 use super::sse::SseDecoder;
+use super::transport::{MAX_RETRIES, SSE_POLL_INTERVAL};
+use super::transport::{
+    SseTrace, backoff_delay, block_on, filter_stateful_messages, http_error_description,
+    is_cancelled, is_retryable, normalize_skill_envelope, sleep_with_cancel,
+};
 use super::types::{
     EmptyStreamEof, ProviderConfig, StreamEvent, clamp_effort_to_allowlist,
     normalize_reasoning_effort, safe_provider_error_body,
 };
 
-/// Polling interval for SSE streaming. When no data arrives within this
-/// interval, the outer Tokio timeout lets us check the cancel flag before
-/// polling the same stream again.
-const SSE_POLL_INTERVAL: Duration = Duration::from_millis(50);
-
-/// Crate-global tokio runtime for reqwest I/O.
-/// Uses current-thread scheduler — all async I/O serialises on the
-/// calling thread via Runtime::block_on.
-static FALLBACK_RT: std::sync::LazyLock<tokio::runtime::Runtime> = std::sync::LazyLock::new(|| {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("failed to create qaqh-gate fallback tokio runtime")
-});
-
-fn block_on<F: std::future::Future>(f: F) -> F::Output {
-    FALLBACK_RT.block_on(f)
-}
-
-/// Check whether the cancel flag is set.
-fn is_cancelled(cancel: Option<&Arc<AtomicBool>>) -> bool {
-    cancel.map(|c| c.load(Ordering::SeqCst)).unwrap_or(false)
-}
-
-/// Sleep for `delay` but wake up every 100ms to check the cancel flag.
-/// Returns `true` if cancelled during the sleep.
-fn sleep_with_cancel(delay: Duration, cancel: Option<&Arc<AtomicBool>>) -> bool {
-    let start = std::time::Instant::now();
-    while start.elapsed() < delay {
-        if is_cancelled(cancel) {
-            return true;
-        }
-        let remaining = delay - start.elapsed();
-        std::thread::sleep(remaining.min(Duration::from_millis(100)));
-    }
-    false
-}
-
-// Aligned with the official client's session retry policy (opencode
-// session/retry.ts: 5 retries, 2 s initial, doubling) so transient gateway
-// 5xx bursts — e.g. the opencode "Console Go" upstream pool — are absorbed.
-const MAX_RETRIES: u32 = 5;
-const BASE_DELAY_SECS: u64 = 2;
-
-fn is_retryable(status: u16) -> bool {
-    matches!(status, 429 | 500 | 503)
-}
-
 /// Providers use several OpenAI-compatible names for the same hidden
 /// reasoning stream. Keep that data out of `content`, which is user-visible.
-fn reasoning_delta<'a>(delta: &'a serde_json::Value) -> Option<&'a str> {
+fn reasoning_delta(delta: &serde_json::Value) -> Option<&str> {
     [
         "reasoning_content",
         "reasoning",
@@ -103,33 +58,13 @@ fn split_inline_thinking(text: &str, in_thinking: &mut bool) -> Vec<(bool, Strin
     result
 }
 
-/// Reusable HTTP client shared across all chat requests.
-/// Connection pool, DNS cache, and TLS session cache are preserved.
-static GLOBAL_CLIENT: std::sync::LazyLock<Client> = std::sync::LazyLock::new(|| {
-    Client::builder()
-        // A streaming response can legitimately last longer than five minutes.
-        // Bound connection establishment separately and keep idle pooled sockets
-        // alive, while leaving enough total budget for long reasoning streams.
-        .connect_timeout(Duration::from_secs(15))
-        .tcp_keepalive(Some(Duration::from_secs(60)))
-        .pool_idle_timeout(Duration::from_secs(120))
-        .timeout(Duration::from_secs(30 * 60))
-        .user_agent(qaqh_types::QAQH_USER_AGENT)
-        .build()
-        .expect("failed to build reqwest client")
-});
-
-fn backoff_delay(attempt: u32) -> Duration {
-    let secs = BASE_DELAY_SECS * 2u64.pow(attempt.saturating_sub(1));
-    Duration::from_secs(secs.min(30))
-}
-
 /// Send a chat completion request and stream SSE events via `on_event`.
 ///
 /// `cancel` is an optional `Arc<AtomicBool>` that, when set to `true`, causes
 /// the streaming loop to abort within one `SSE_POLL_INTERVAL`. This keeps
 /// cancellation responsive while the HTTP response body is being streamed.
 #[allow(clippy::string_slice)]
+#[allow(clippy::too_many_arguments)] // 参数面塑形另立项（PLAN D-5）
 pub fn chat_stream_openai(
     provider: &ProviderConfig,
     model: &str,
@@ -192,20 +127,20 @@ pub fn chat_stream_openai(
     }
     body_map.insert("max_tokens".into(), serde_json::json!(max_tokens));
 
-    if provider.supports_reasoning_effort {
-        if let Some(ref e) = effort {
-            // QAQ-Harness always reasons: promote none/minimal/disable to the
-            // lowest thinking level instead of sending them through.
-            let e = normalize_reasoning_effort(Some(e)).unwrap_or_else(|| e.clone());
-            // Router allowlist (e.g. OpenRouter ox-alpha: max/high/low): snap
-            // off-domain values to the nearest allowed level — routers ignore
-            // or reject unknown efforts when require_parameters is unset.
-            let e = match &provider.effort_allowlist {
-                Some(list) => clamp_effort_to_allowlist(&e, list),
-                None => e,
-            };
-            body_map.insert("reasoning_effort".into(), serde_json::json!(e));
-        }
+    if provider.supports_reasoning_effort
+        && let Some(ref e) = effort
+    {
+        // QAQ-Harness always reasons: promote none/minimal/disable to the
+        // lowest thinking level instead of sending them through.
+        let e = normalize_reasoning_effort(Some(e)).unwrap_or_else(|| e.clone());
+        // Router allowlist (e.g. OpenRouter ox-alpha: max/high/low): snap
+        // off-domain values to the nearest allowed level — routers ignore
+        // or reject unknown efforts when require_parameters is unset.
+        let e = match &provider.effort_allowlist {
+            Some(list) => clamp_effort_to_allowlist(&e, list),
+            None => e,
+        };
+        body_map.insert("reasoning_effort".into(), serde_json::json!(e));
     }
     if let Some(sample) = provider.do_sample {
         body_map.insert("do_sample".into(), serde_json::json!(sample));
@@ -219,10 +154,10 @@ pub fn chat_stream_openai(
             );
         }
     }
-    if let Some(ref uid) = user_id {
-        if provider.user_id_mode.is_some() {
-            body_map.insert("user_id".into(), serde_json::json!(uid));
-        }
+    if let Some(ref uid) = user_id
+        && provider.user_id_mode.is_some()
+    {
+        body_map.insert("user_id".into(), serde_json::json!(uid));
     }
 
     let body = serde_json::Value::Object(body_map);
@@ -243,7 +178,7 @@ pub fn chat_stream_openai(
 
         match block_on(async {
             provider
-                .apply_opencode_headers(GLOBAL_CLIENT.post(&url))
+                .apply_opencode_headers(crate::shared_http_client().post(&url))
                 .header("Authorization", format!("Bearer {}", provider.api_key))
                 .header("Content-Type", "application/json")
                 .json(&body)
@@ -252,7 +187,7 @@ pub fn chat_stream_openai(
         }) {
             Ok(resp) => {
                 let status = resp.status().as_u16();
-                if status >= 200 && status < 300 {
+                if (200..300).contains(&status) {
                     match stream_sse(resp, provider, user_id.as_deref(), cancel, on_event) {
                         Ok(()) => return Ok(()),
                         // Upstream closed the stream before [DONE] with zero
@@ -327,45 +262,6 @@ pub fn chat_stream_openai(
     }
 }
 
-/// `QAQH_SSE_TRACE=<path>`：将 gate 派生的每个流式事件按到达序追加写入文件
-/// （`<seq>\t<类型>\t<长度>`），用于核对 reasoning/content/tool 在链路的忠实
-/// 流转与先后顺序（诊断思考链/正文交错问题）。不设该变量时零开销。
-struct SseTrace {
-    file: Option<std::fs::File>,
-    seq: u64,
-}
-
-impl SseTrace {
-    fn from_env() -> Self {
-        let file = std::env::var_os("QAQH_SSE_TRACE").and_then(|path| {
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .ok()
-        });
-        Self { file, seq: 0 }
-    }
-
-    fn record(&mut self, event: &StreamEvent) {
-        let Some(file) = self.file.as_mut() else {
-            return;
-        };
-        use std::io::Write;
-        let tag = match event {
-            StreamEvent::ReasoningDelta(d) => format!("reasoning\t{}", d.chars().count()),
-            StreamEvent::ContentDelta(d) => format!("content\t{}", d.chars().count()),
-            StreamEvent::ToolCallProgress { .. } => "tool_call_progress".to_string(),
-            StreamEvent::Done { .. } => "done".to_string(),
-            StreamEvent::UsageUpdate(_) => "usage".to_string(),
-            StreamEvent::WebSearchStatus(_) => "web_search_status".to_string(),
-            _ => "other".to_string(),
-        };
-        let _ = writeln!(file, "{}\t{}", self.seq, tag);
-        self.seq += 1;
-    }
-}
-
 /// 解析单个 SSE chunk 的 `delta` 对象，按模型输出意图派生流式事件。
 ///
 /// **字段处理顺序（顺序即语义）**：
@@ -377,6 +273,7 @@ impl SseTrace {
 /// （正文开头）两个字段**——模型输出顺序是 reasoning 在前、content 在后
 /// （journal `server_ts` 同毫秒拆分的两条 `round_delta` 即证据）。若先发
 /// content 会把正文插到思考链中间，造成前端"思考链与正文错排"。
+#[allow(clippy::too_many_arguments)] // 参数面塑形另立项（PLAN D-5）
 fn emit_delta_fields(
     delta: &serde_json::Value,
     text_buf: &mut String,
@@ -410,21 +307,21 @@ fn emit_delta_fields(
                 while let Some(start) = dsml_buf[search_from..].find("<｜DSML｜invoke name=\"") {
                     let abs_start = search_from + start;
                     let after_tag = abs_start + "<｜DSML｜invoke name=\"".len();
-                    if let Some(rest) = dsml_buf.get(after_tag..) {
-                        if let Some(quote_end) = rest.find('"') {
-                            let name = rest[..quote_end].to_string();
-                            if dsml_seen.insert(name.clone()) {
-                                let idx = dsml_seen.len() - 1;
-                                traced(StreamEvent::ToolCallProgress {
-                                    index: idx,
-                                    id: format!("dsml_tc_{}", idx),
-                                    name,
-                                    args_so_far: String::new(),
-                                });
-                            }
-                            search_from = after_tag + quote_end + 1;
-                            continue;
+                    if let Some(rest) = dsml_buf.get(after_tag..)
+                        && let Some(quote_end) = rest.find('"')
+                    {
+                        let name = rest[..quote_end].to_string();
+                        if dsml_seen.insert(name.clone()) {
+                            let idx = dsml_seen.len() - 1;
+                            traced(StreamEvent::ToolCallProgress {
+                                index: idx,
+                                id: format!("dsml_tc_{}", idx),
+                                name,
+                                args_so_far: String::new(),
+                            });
                         }
+                        search_from = after_tag + quote_end + 1;
+                        continue;
                     }
                     break;
                 }
@@ -513,27 +410,28 @@ fn handle_chat_frame(
     };
 
     // Parse choices
-    if let Some(choices) = ev.get("choices").and_then(|c| c.as_array()) {
-        if let Some(choice) = choices.first() {
-            let finish = choice.get("finish_reason").and_then(|v| v.as_str());
-            if let Some(fr) = finish {
-                if !fr.is_empty() && fr != "null" {
-                    *stop_reason = Some(fr.to_string());
-                }
-            }
+    if let Some(choices) = ev.get("choices").and_then(|c| c.as_array())
+        && let Some(choice) = choices.first()
+    {
+        let finish = choice.get("finish_reason").and_then(|v| v.as_str());
+        if let Some(fr) = finish
+            && !fr.is_empty()
+            && fr != "null"
+        {
+            *stop_reason = Some(fr.to_string());
+        }
 
-            if let Some(delta) = choice.get("delta") {
-                emit_delta_fields(
-                    delta,
-                    text_buf,
-                    reasoning_buf,
-                    tool_acc,
-                    dsml_buf,
-                    dsml_seen,
-                    inline_thinking,
-                    traced,
-                );
-            }
+        if let Some(delta) = choice.get("delta") {
+            emit_delta_fields(
+                delta,
+                text_buf,
+                reasoning_buf,
+                tool_acc,
+                dsml_buf,
+                dsml_seen,
+                inline_thinking,
+                traced,
+            );
         }
     }
 
@@ -783,87 +681,6 @@ fn stream_sse(
 ///
 /// 同时返回被丢弃前缀中的图片块数量——`read_image` 的 [Image #N] 编号是
 /// 会话级累加的（与 registry 索引一致），过滤后转换时需要以此为基准续编。
-fn filter_stateful_messages(messages: Vec<Message>) -> (Vec<Message>, usize) {
-    if messages.is_empty() {
-        return (messages, 0);
-    }
-
-    let last_asst_idx = messages.iter().rposition(|m| m.role == "assistant");
-    let start = last_asst_idx.map(|i| i + 1).unwrap_or(0);
-    let is_first = start == 0;
-
-    // Debug: 打印过滤前的消息角色序列
-    #[cfg(debug_assertions)]
-    {
-        let roles: Vec<&str> = messages.iter().map(|m| m.role.as_str()).collect();
-        eprintln!(
-            "[filter] 输入: {:?} | last_asst={:?} start={}",
-            roles, last_asst_idx, start
-        );
-    }
-
-    if is_first {
-        return (messages, 0);
-    }
-
-    let dropped_images = messages[..start]
-        .iter()
-        .flat_map(|m| m.content.iter())
-        .filter(|b| {
-            matches!(
-                b,
-                ContentBlock::Image { .. } | ContentBlock::ImageRef { .. }
-            )
-        })
-        .count();
-
-    let mut out: Vec<Message> = Vec::new();
-
-    // 保留 start 之后的新消息
-    for msg in &messages[start..] {
-        out.push(msg.clone());
-    }
-
-    // 兜底：如果没有任何新消息，且最后一条是 user/tool（非 assistant），保留它
-    if out.is_empty() {
-        if let Some(last) = messages.last() {
-            if last.role != "assistant" {
-                out.push(last.clone());
-            }
-        }
-    }
-
-    let out_roles: Vec<&str> = out.iter().map(|m| m.role.as_str()).collect();
-    eprintln!("[filter] 输出: {:?} (is_first={})", out_roles, is_first);
-
-    (out, dropped_images)
-}
-
-fn normalize_skill_envelope(
-    provider: &ProviderConfig,
-    mut messages: Vec<Message>,
-) -> Result<Vec<Message>, String> {
-    let is_envelope = messages.last().is_some_and(|message| {
-        message.role == "system" && message.content.iter().any(|block| {
-            matches!(block, ContentBlock::Text { text } if text.starts_with("<skill_context_envelope"))
-        })
-    });
-    if !is_envelope || provider.supports_tail_system {
-        return Ok(messages);
-    }
-    if provider.stateful {
-        return Err("SKILL_CONTEXT_SYNC_UNSUPPORTED: stateful provider cannot accept the authoritative tail system envelope; rebuild the remote session with a compatible provider".into());
-    }
-    let envelope = messages.pop().expect("checked last message");
-    let dynamic_slot = messages
-        .iter()
-        .take_while(|message| message.role == "system")
-        .count();
-    messages.insert(dynamic_slot, envelope);
-    log::warn!("skill context moved to head dynamic system slot; prompt-prefix cache degraded");
-    Ok(messages)
-}
-
 fn convert_messages(
     provider: &ProviderConfig,
     messages: Vec<Message>,
@@ -871,10 +688,10 @@ fn convert_messages(
     image_index_base: usize,
 ) -> Vec<serde_json::Value> {
     let mut out: Vec<serde_json::Value> = Vec::new();
-    if let Some(sys) = system {
-        if !sys.is_empty() {
-            out.push(serde_json::json!({"role": "system", "content": sys}));
-        }
+    if let Some(sys) = system
+        && !sys.is_empty()
+    {
+        out.push(serde_json::json!({"role": "system", "content": sys}));
     }
 
     let mut img_idx: usize = image_index_base;
@@ -973,7 +790,7 @@ fn convert_messages(
                     }
                     obj["tool_calls"] = serde_json::json!(tool_calls);
                 }
-                if obj.as_object().map_or(false, |m| m.len() > 1) {
+                if obj.as_object().is_some_and(|m| m.len() > 1) {
                     out.push(obj);
                 }
             }
@@ -1065,7 +882,7 @@ pub fn chat_sync_openai(
 
     let resp = block_on(
         provider
-            .apply_opencode_headers(GLOBAL_CLIENT.post(&url))
+            .apply_opencode_headers(crate::shared_http_client().post(&url))
             .header("Authorization", format!("Bearer {}", provider.api_key))
             .header("Content-Type", "application/json")
             .json(&body)
@@ -1101,19 +918,6 @@ fn build_chat_url(base_url: &str, chat_path: Option<&str>) -> String {
 }
 
 // ── Error descriptions ──
-
-fn http_error_description(status: u16) -> &'static str {
-    match status {
-        400 => "Bad Request — 格式错误",
-        401 => "Unauthorized — API key 无效",
-        402 => "Payment Required — 余额不足",
-        422 => "Unprocessable — 参数错误",
-        429 => "Rate Limit — 请求速率超限",
-        500 => "Internal Error — 服务器故障",
-        503 => "Service Unavailable — 服务器繁忙",
-        _ => "Unknown",
-    }
-}
 
 #[cfg(test)]
 mod skill_envelope_tests {

@@ -316,6 +316,73 @@ pub fn admit(
     }
 }
 
+// ── Process-global trusted folders + single admission facade (PR-1-1 / B1) ──
+
+static GLOBAL_TRUSTED: std::sync::Mutex<Option<crate::permission::TrustedFolderSet>> =
+    std::sync::Mutex::new(None);
+
+fn with_global_trusted<R>(f: impl FnOnce(&mut crate::permission::TrustedFolderSet) -> R) -> R {
+    let mut guard = GLOBAL_TRUSTED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let set = guard.get_or_insert_with(|| {
+        // 语义与旧 `ToolEngine::new` 的 `TrustedFolderSet::load("")` 逐字一致
+        // （进程级共享信任文件）；惰性初始化，装配方零调用负担。
+        crate::permission::TrustedFolderSet::load("")
+    });
+    f(set)
+}
+
+/// Runtime trust write (post-approval "remember this folder"). The loop no
+/// longer owns a `TrustedFolderSet`; it calls through here.
+pub fn trust_folder(dir: &Path) {
+    with_global_trusted(|set| set.trust(dir));
+}
+
+fn trusted_snapshot() -> HashSet<PathBuf> {
+    with_global_trusted(|set| set.set().clone())
+}
+
+/// Resolve the effective workspace root the way the loop's engines did
+/// (empty/"." falls back to the process cwd).
+fn effective_workspace_root() -> PathBuf {
+    let ws = crate::CURRENT_WORKSPACE
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    if ws.is_empty() || ws == "." {
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    } else {
+        std::path::PathBuf::from(ws)
+    }
+}
+
+/// Single admission facade (PR-1-1 / B1): the loop passes (session, call,
+/// tool, args) and nothing else. Category comes from the handler registry
+/// (single source of truth, conservative `Write` fallback), the permission
+/// level and workspace root resolve inside this crate, and the trusted
+/// folder set is the process-global singleton. The loop performs zero disk
+/// reads and owns no authorization state.
+pub fn authorize_call(
+    session_id: &str,
+    call_id: &str,
+    tool_name: &str,
+    args: &serde_json::Value,
+    permission_level: u8,
+) -> Admission {
+    let invocation = ToolInvocation {
+        session_id: session_id.to_string(),
+        call_id: call_id.to_string(),
+        tool_name: tool_name.to_string(),
+        action: String::new(),
+        args: args.clone(),
+        category: crate::runtime::lookup_category(tool_name)
+            .unwrap_or(crate::permission::ToolCategory::Write),
+    };
+    let ws_root = effective_workspace_root();
+    admit(invocation, permission_level, &ws_root, &trusted_snapshot())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,7 +502,7 @@ mod tests {
             Admission::Denied(reason) => {
                 assert!(reason.contains("sandbox"), "{reason}");
             }
-            other => panic!("cross-workspace write must be denied, got non-denied"),
+            _other => panic!("cross-workspace write must be denied, got non-denied"),
         }
     }
 
@@ -483,71 +550,4 @@ mod tests {
             "non-sandbox must keep approval path"
         );
     }
-}
-
-// ── Process-global trusted folders + single admission facade (PR-1-1 / B1) ──
-
-static GLOBAL_TRUSTED: std::sync::Mutex<Option<crate::permission::TrustedFolderSet>> =
-    std::sync::Mutex::new(None);
-
-fn with_global_trusted<R>(f: impl FnOnce(&mut crate::permission::TrustedFolderSet) -> R) -> R {
-    let mut guard = GLOBAL_TRUSTED
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let set = guard.get_or_insert_with(|| {
-        // 语义与旧 `ToolEngine::new` 的 `TrustedFolderSet::load("")` 逐字一致
-        // （进程级共享信任文件）；惰性初始化，装配方零调用负担。
-        crate::permission::TrustedFolderSet::load("")
-    });
-    f(set)
-}
-
-/// Runtime trust write (post-approval "remember this folder"). The loop no
-/// longer owns a `TrustedFolderSet`; it calls through here.
-pub fn trust_folder(dir: &Path) {
-    with_global_trusted(|set| set.trust(dir));
-}
-
-fn trusted_snapshot() -> HashSet<PathBuf> {
-    with_global_trusted(|set| set.set().clone())
-}
-
-/// Resolve the effective workspace root the way the loop's engines did
-/// (empty/"." falls back to the process cwd).
-fn effective_workspace_root() -> PathBuf {
-    let ws = crate::CURRENT_WORKSPACE
-        .read()
-        .unwrap_or_else(|error| error.into_inner())
-        .clone();
-    if ws.is_empty() || ws == "." {
-        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-    } else {
-        std::path::PathBuf::from(ws)
-    }
-}
-
-/// Single admission facade (PR-1-1 / B1): the loop passes (session, call,
-/// tool, args) and nothing else. Category comes from the handler registry
-/// (single source of truth, conservative `Write` fallback), the permission
-/// level and workspace root resolve inside this crate, and the trusted
-/// folder set is the process-global singleton. The loop performs zero disk
-/// reads and owns no authorization state.
-pub fn authorize_call(
-    session_id: &str,
-    call_id: &str,
-    tool_name: &str,
-    args: &serde_json::Value,
-    permission_level: u8,
-) -> Admission {
-    let invocation = ToolInvocation {
-        session_id: session_id.to_string(),
-        call_id: call_id.to_string(),
-        tool_name: tool_name.to_string(),
-        action: String::new(),
-        args: args.clone(),
-        category: crate::runtime::lookup_category(tool_name)
-            .unwrap_or(crate::permission::ToolCategory::Write),
-    };
-    let ws_root = effective_workspace_root();
-    admit(invocation, permission_level, &ws_root, &trusted_snapshot())
 }

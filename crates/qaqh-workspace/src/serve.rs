@@ -240,9 +240,6 @@ fn handle_execute(
     // 即时 check/kill 抢占，否则 kill 请求会排队到任务结束，无法中断。
     // 不 set workspace：进程注册表与 workspace 无关，避免干扰 worker 状态。
     if parsed.name == "process" {
-        // process 工具（check/wait/kill）内联执行：进程注册表是内存状态且线程
-        // 安全，无需串行 worker——长任务执行期间必须能即时 check/kill 抢占。
-        // 不 set workspace：进程注册表与 workspace 无关，避免干扰 worker 状态。
         let ctx = crate::runtime::ToolCtx::admitted(&parsed.session_id);
         let outcome = run_tool(&parsed, &ctx);
         respond_outcome(request, outcome);

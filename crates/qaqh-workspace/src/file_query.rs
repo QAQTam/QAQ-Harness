@@ -517,7 +517,7 @@ fn end_to_end_edit_then_stale_read_is_corrected() {
     let h1 = r1.data["files"][0]["hash"].as_str().unwrap().to_string();
 
     // 真实 edit 工具：L3 的 c 后插入两行（+2 偏移）
-    let e = crate::file_edit_v2::exec_edit(&serde_json::json!({
+    let e = crate::edit::exec_edit(&serde_json::json!({
         "path": path,
         "expected_hash": h1,
         "hunks": [{"kind": "insert_after", "anchor": "c", "new": "C1\nC2\n"}],
@@ -548,7 +548,7 @@ fn partial_edit_records_shifts_for_applied_hunks_only() {
     let r1 = exec_read(&serde_json::json!({ "path": path }));
     assert!(r1.is_success());
 
-    let e = crate::file_edit_v2::exec_edit(&serde_json::json!({
+    let e = crate::edit::exec_edit(&serde_json::json!({
         "path": path,
         "mode": "partial",
         "hunks": [

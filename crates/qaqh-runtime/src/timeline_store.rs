@@ -24,6 +24,7 @@ pub struct PersistedTimeline {
 /// 有界语义隔离——timeline 日志从不物理删除行。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)] // 装箱改造属结构塑形，另立项
 pub enum TimelineJournalOp {
     /// 恢复基点：完整物化快照（一次性历史迁移/未来压缩时写）。其 watermark
     /// 表示 `snapshot.turns` 已包含的最大 timeline_seq；其后只需追加该 seq
@@ -130,10 +131,10 @@ impl TimelineStore {
             if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
                 continue;
             }
-            if let Some(seed) = path.file_stem().and_then(|s| s.to_str()) {
-                if !seed.is_empty() {
-                    seeds.push(seed.to_string());
-                }
+            if let Some(seed) = path.file_stem().and_then(|s| s.to_str())
+                && !seed.is_empty()
+            {
+                seeds.push(seed.to_string());
             }
         }
         Ok(seeds)
@@ -226,9 +227,9 @@ impl TimelineStore {
         file.flush()?;
         let max = ops
             .iter()
-            .filter_map(|op| match op {
-                TimelineJournalOp::Snapshot { snapshot } => Some(snapshot.watermark),
-                TimelineJournalOp::Append { entry, .. } => Some(entry.timeline_seq),
+            .map(|op| match op {
+                TimelineJournalOp::Snapshot { snapshot } => snapshot.watermark,
+                TimelineJournalOp::Append { entry, .. } => entry.timeline_seq,
             })
             .max()
             .unwrap_or(0);
@@ -253,10 +254,10 @@ impl TimelineStore {
             if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
                 continue;
             }
-            if let Some(seed) = path.file_stem().and_then(|s| s.to_str()) {
-                if !seed.is_empty() {
-                    seeds.push(seed.to_string());
-                }
+            if let Some(seed) = path.file_stem().and_then(|s| s.to_str())
+                && !seed.is_empty()
+            {
+                seeds.push(seed.to_string());
             }
         }
         Ok(seeds)
@@ -265,9 +266,9 @@ impl TimelineStore {
     fn journal_max_seq(&self, seed: &str) -> u64 {
         read_journal_ops(&self.journal_path_for(seed))
             .into_iter()
-            .filter_map(|op| match op {
-                TimelineJournalOp::Snapshot { snapshot } => Some(snapshot.watermark),
-                TimelineJournalOp::Append { entry, .. } => Some(entry.timeline_seq),
+            .map(|op| match op {
+                TimelineJournalOp::Snapshot { snapshot } => snapshot.watermark,
+                TimelineJournalOp::Append { entry, .. } => entry.timeline_seq,
             })
             .max()
             .unwrap_or(0)

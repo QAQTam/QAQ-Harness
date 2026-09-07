@@ -1,7 +1,7 @@
 //! Ringing 架构测试（PLAN 测试与验收 · 架构硬规则）。
 //!
 //! 验证：
-//! 1. domain crate 不依赖 legacy wire（qaqh-proto）与 wire（qaqh-ringing）——
+//! 1. domain crate 不依赖 legacy 投影 crate（已删除）与 wire（qaqh-ringing）——
 //!    通过依赖图静态检查（cargo metadata）。
 //! 2. 全仓不存在 `Agent2Ui → Ringing` / `Ui2Agent → Ringing` 转换函数——
 //!    通过源码模式检查（禁止的桥接模式）。
@@ -93,10 +93,10 @@ fn walk_rs(dir: &std::path::Path, visit: &mut impl FnMut(&std::path::Path, &str)
             if !path.file_name().is_some_and(|n| n == "tests") {
                 walk_rs(&path, visit);
             }
-        } else if path.extension().is_some_and(|e| e == "rs") {
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                visit(&path, &text);
-            }
+        } else if path.extension().is_some_and(|e| e == "rs")
+            && let Ok(text) = std::fs::read_to_string(&path)
+        {
+            visit(&path, &text);
         }
     }
 }

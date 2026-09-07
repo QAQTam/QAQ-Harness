@@ -26,7 +26,7 @@ pub fn full_system_prompt() -> String {
 /// Full system prompt with runtime environment injected from os_env.md.
 ///
 /// Placeholders in os_env.md:
-///   {{OS}}     → OS_INFO (set at startup via agent_bridge)
+///   {{OS}}     → OS_INFO (probed once at daemon startup, see detect_os_info)
 ///   {{SHELLS}} → auto-detected shells available on this machine
 ///   {{TOOLS}}  → TOOLS_INFO (toolchain versions detected at startup)
 ///
@@ -53,19 +53,10 @@ pub fn full_system_prompt_with_env(os_info: &str) -> String {
     format!("{}\n\n{}", DEFAULT_PROMPT, env_block)
 }
 
-/// 极简模式已下线（原 minimal:dsh 的 bash_v2/str_replace_editor 已移除）。
-/// 当前仅保留常量供旧测试兼容，实际不再触发最大化思考。
-pub const MINIMAL_DSH_PROMPT: &str = "You are a helpful software engineer assistant.";
-
-/// 按工具模式选择系统提示。minimal:dsh 已下线（is_minimal_dsh 恒 false），
-/// 一切模式（含已废弃名）都走完整 prompt；模式判定使用 qaqh-types 的
-/// 单一工具模式契约（BUG-013）。
-pub fn system_prompt_for_mode(tool_mode: &str) -> String {
-    if qaqh_types::is_minimal_dsh(tool_mode) {
-        MINIMAL_DSH_PROMPT.to_string()
-    } else {
-        full_system_prompt_with_env(OS_INFO.get().map(|s| s.as_str()).unwrap_or(""))
-    }
+/// 按工具模式选择系统提示。minimal:dsh 已下线，一切模式（含已废弃名）
+/// 都走完整 prompt；模式判定使用 qaqh-types 的单一工具模式契约（BUG-013）。
+pub fn system_prompt_for_mode(_tool_mode: &str) -> String {
+    full_system_prompt_with_env(OS_INFO.get().map(|s| s.as_str()).unwrap_or(""))
 }
 
 /// Detect available shells on this machine.
@@ -112,7 +103,7 @@ fn executable_in_dirs(name: &str, dirs: impl IntoIterator<Item = std::path::Path
             .collect()
     };
     #[cfg(not(windows))]
-    let candidates = vec![name.to_string()];
+    let candidates = [name.to_string()];
 
     dirs.into_iter().any(|dir| {
         candidates
@@ -128,10 +119,9 @@ fn is_executable_file(path: &std::path::Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        return path
-            .metadata()
+        path.metadata()
             .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false);
+            .unwrap_or(false)
     }
     #[cfg(not(unix))]
     true
@@ -155,8 +145,14 @@ mod tests {
             system_prompt_for_mode("standard")
         );
         // 完整 prompt 显著长于已退役的极简句（长度守卫双保险）。
-        assert!(system_prompt_for_mode("standard").len() > MINIMAL_DSH_PROMPT.len());
-        assert!(system_prompt_for_mode("").len() > MINIMAL_DSH_PROMPT.len());
+        assert!(
+            system_prompt_for_mode("standard").len()
+                > "You are a helpful software engineer assistant.".len()
+        );
+        assert!(
+            system_prompt_for_mode("").len()
+                > "You are a helpful software engineer assistant.".len()
+        );
     }
 
     #[test]

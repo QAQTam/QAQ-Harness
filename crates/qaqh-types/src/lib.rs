@@ -8,6 +8,7 @@
 
 pub mod api_types;
 pub mod config;
+pub mod discovery;
 pub mod image_store;
 pub mod message;
 pub mod provider;
@@ -29,31 +30,31 @@ pub mod token;
 
 pub use api_types::UsageInfo;
 pub use config::{
-    BalanceInfo, ConfigStore, PersistentConfig, PersistentSubagentConfig,
-    PersistentWorkspaceConfig, ProfileConfig,
+    ConfigStore, PersistentConfig, PersistentSubagentConfig, PersistentWorkspaceConfig,
+    ProfileConfig,
 };
+pub use discovery::{CONTROL_PROTOCOL_VERSION, DaemonDiscovery};
+pub use image_store::sha256_hex;
 pub use message::{ContentBlock, FunctionCall, Message, ToolCall};
 pub use provider::{CacheTokenField, EndpointSpec, ProviderSpec, ThinkingParamMode, UserSendMode};
 pub use session::{SessionMeta, SkillSessionEntry, SkillSessionEntryState, SkillSessionStateV2};
 pub use state::DebugLevel;
 pub use tool_def::{ToolDef, ToolFunction};
-pub use tool_mode::{
-    CUSTOM, KNOWN_MODES, MINIMAL, MINIMAL_B, MINIMAL_C, MINIMAL_PREFIX, MINIMAL_TOOLS,
-    MINIMAL_TOOLS_B, MINIMAL_TOOLS_C, STANDARD, internal_tool_name, is_known, is_minimal_dsh,
-    is_minimal_family, model_tool_name, preset_tools,
-};
 pub use tool_result::{
     ContentRef, TOOL_MODEL_MAX_CHARS, TOOL_SUMMARY_MAX_CHARS, ToolContinuation, ToolError,
     ToolImage, ToolModelPayload, ToolResult, ToolStatus,
 };
 
 // ── Unified arg parsers ──
-pub use arg::{
-    parse_arg, parse_arg_or, parse_cmd_arg, parse_file_arg, parse_opt, parse_opt_u64, tool_action,
-};
+pub use arg::{parse_arg, parse_arg_or, parse_opt};
 
 // ── Shared utilities ──
-pub use token::{TokenBreakdown, count_tokens, init_tokenizer};
+pub use token::{count_tokens, init_tokenizer};
+
+pub use tool_mode::{
+    CUSTOM, KNOWN_MODES, MINIMAL, MINIMAL_B, MINIMAL_C, MINIMAL_PREFIX, MINIMAL_TOOLS,
+    MINIMAL_TOOLS_B, MINIMAL_TOOLS_C, STANDARD, is_known, is_minimal_family, preset_tools,
+};
 
 // ── Product identity ──
 pub use platform::{QAQH_UA_VERSION, QAQH_USER_AGENT};

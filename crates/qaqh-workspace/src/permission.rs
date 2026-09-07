@@ -340,15 +340,9 @@ pub enum PermissionDecision {
     },
 }
 
-/// Determine whether a tool call requires user permission.
-///
-/// - `level`: current permission level
-/// - `tool_name`: registered tool name
-/// - `args`: tool arguments (JSON)
-/// - `workspace_root`: workspace root directory (used for boundary checks)
-/// - `trusted_dirs`: set of previously trusted directories
-/// - `declared_category`: capability category from the handler declaration
-///   （单一事实源；`process` 等按 action 细分的工具在内部覆盖）
+/// Whether `path` points at the agent's own persistent state (history /
+/// credentials under the platform data dir). Blocked from normal `read`
+/// access even at Level 4 to prevent exfiltration of prior turns.
 fn is_sensitive_session_path(path: &Path) -> bool {
     // Block the agent from reading its own persistent history / credentials.
     // These live under the platform data dir (e.g. ~/.config/qaqh/sessions/…/messages.jsonl,
@@ -367,6 +361,15 @@ fn is_sensitive_session_path(path: &Path) -> bool {
         || s.contains(".qaqh/sessions")
 }
 
+/// Determine whether a tool call requires user permission.
+///
+/// - `level`: current permission level
+/// - `tool_name`: registered tool name
+/// - `args`: tool arguments (JSON)
+/// - `workspace_root`: workspace root directory (used for boundary checks)
+/// - `trusted_dirs`: set of previously trusted directories
+/// - `declared_category`: capability category from the handler declaration
+///   （单一事实源；`process` 等按 action 细分的工具在内部覆盖）
 pub fn needs_permission(
     level: PermissionLevel,
     tool_name: &str,
@@ -656,7 +659,8 @@ mod tests {
             PermissionLevel::WorkspaceFree,
             PermissionLevel::Unrestricted,
         ] {
-            for tool_name in ["todo"] {
+            let tool_name = "todo";
+            {
                 let decision = needs_permission(
                     level,
                     tool_name,

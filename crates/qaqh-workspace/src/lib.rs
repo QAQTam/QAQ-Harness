@@ -19,7 +19,6 @@ mod code_delta;
 pub mod edit;
 pub mod execution;
 pub mod file_cache;
-pub mod file_edit_v2;
 pub mod file_glob;
 pub mod file_mutate;
 pub mod file_query;
@@ -100,8 +99,24 @@ pub fn json_ok(extra: serde_json::Value) -> String {
     v.to_string()
 }
 
-/// Build a JSON error response.
+/// Build a structured error [`ToolResult`] (canonical `ToolError` fields:
+/// code / message / retryable / hint). Historic name retained; the legacy
+/// JSON-envelope string form only survives in `todo.rs` (its `Err(String)`
+/// channel crosses into `qaqh-runtime::service` — see `todo_err` there).
 pub fn json_err(
+    code: impl Into<String>,
+    message: impl Into<String>,
+    hint: impl Into<String>,
+) -> ToolResult {
+    let hint = hint.into();
+    ToolResult::error_with(code, message, false, Some(hint).filter(|h| !h.is_empty()))
+}
+
+/// Legacy string-JSON error envelope — ONLY for functions whose error channel
+/// is `String` (todo.rs `Err(String)` crosses into `qaqh-runtime::service`;
+/// web.rs `web_fetch` returns `String`). Do not use in new code: prefer
+/// [`json_err`] which returns a structured [`ToolResult`].
+pub fn json_err_string(
     code: impl Into<String>,
     message: impl Into<String>,
     hint: impl Into<String>,

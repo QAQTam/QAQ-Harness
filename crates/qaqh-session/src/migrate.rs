@@ -36,6 +36,7 @@ struct LegacySessionFile {
     last_summary: Option<String>,
     #[serde(default)]
     #[allow(dead_code)]
+    // kept for format compatibility: legacy files carry it, code never reads it
     checksum: Option<String>,
 }
 

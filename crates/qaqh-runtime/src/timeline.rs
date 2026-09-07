@@ -651,13 +651,12 @@ impl TimelineAppender {
                 fragment_seq,
                 ..
             } = &entry.event
+                && let Some(round_num) = entry.round_num
             {
-                if let Some(round_num) = entry.round_num {
-                    next_fragment.insert(
-                        (entry.turn_id.clone(), round_num, block_id.clone()),
-                        fragment_seq.saturating_add(1),
-                    );
-                }
+                next_fragment.insert(
+                    (entry.turn_id.clone(), round_num, block_id.clone()),
+                    fragment_seq.saturating_add(1),
+                );
             }
         }
         self.seeds.insert(

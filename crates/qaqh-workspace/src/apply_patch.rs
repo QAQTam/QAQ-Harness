@@ -167,16 +167,7 @@ fn exec_engine_patch(ws: &str, patch: &str, dry_run: bool) -> ToolResult {
                     "Every patch path must resolve inside the workspace root; '..' escapes and absolute paths outside the workspace are rejected.",
                 ),
             };
-            crate::ToolResult::error(
-                serde_json::json!({
-                    "timeis": crate::now_utc8(),
-                    "status": "error",
-                    "code": code,
-                    "message": e.to_string(),
-                    "hint": hint,
-                })
-                .to_string(),
-            )
+            crate::json_err(code, e.to_string(), hint)
         }
     }
 }
@@ -259,15 +250,22 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner())
             .clone_from(&ws.to_string());
         let result = exec_apply_patch(&args);
+        if let Some(err) = &result.error {
+            return serde_json::json!({
+                "status": "error",
+                "code": err.code,
+                "message": err.message,
+            });
+        }
         let data = result.data.clone();
-        if data.as_object().is_none_or(|o| o.is_empty()) {
+        if data.as_object().is_some_and(|o| !o.is_empty()) {
+            data
+        } else {
             let raw = result.model_text();
-            match serde_json::from_str::<serde_json::Value>(&raw) {
+            match serde_json::from_str::<serde_json::Value>(raw) {
                 Ok(v) if v.is_object() => v,
                 _ => serde_json::json!({ "status": "error", "raw": raw }),
             }
-        } else {
-            data
         }
     }
 

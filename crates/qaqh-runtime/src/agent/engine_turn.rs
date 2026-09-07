@@ -7,7 +7,6 @@
 use std::collections::{HashMap, HashSet};
 
 use qaqh_domain::AskAnswer;
-use qaqh_message::Effect;
 use qaqh_types::UsageInfo;
 
 use super::engine_tool::ToolEngine;
@@ -113,9 +112,13 @@ pub struct TurnEngine {
     pub(crate) continuation_count: u32,
 }
 
-impl TurnEngine {
-    // ── gate stream helpers moved to turn_lap::gate (A2 step3) ──
+impl Default for TurnEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
+impl TurnEngine {
     pub fn new() -> Self {
         Self {
             suspended: None,
@@ -610,38 +613,6 @@ impl TurnEngine {
         ));
     }
 
-    /// 构造结构化领域错误（error_id = 时间戳，dedupe 可选）。
-    #[allow(dead_code)]
-    fn domain_failure(
-        code: &str,
-        message: String,
-        dedupe_key: Option<&str>,
-    ) -> qaqh_domain::DomainError {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
-        qaqh_domain::DomainError {
-            error_id: format!("err-{code}-{ts}"),
-            code: code.to_string(),
-            message,
-            retryable: false,
-            dedupe_key: dedupe_key.map(|s| s.to_string()),
-        }
-    }
-
-    /// OperationFailed 的 occurrence_id（时间戳）。
-    #[allow(dead_code)]
-    fn occurrence_id() -> String {
-        format!(
-            "occ-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0),
-        )
-    }
-
     fn emit_active_ask(ctx: &mut RingContext, state: &TurnState) {
         if let Some(ask) = state.pending_asks.front() {
             // Ringing 双发：InteractionRequested（ask 交互请求）
@@ -700,8 +671,6 @@ impl TurnEngine {
 
     // ── Internal lap execution ──
 
-    // ── terminal/stream helpers moved to turn_lap::gate ──
-
     fn emit_compact_failure(ctx: &RingContext, message: String) {
         ctx.emitter.emit_domain(qaqh_domain::DomainEvent::Control(
             qaqh_domain::ControlEvent::OperationFailed {
@@ -732,13 +701,12 @@ impl TurnEngine {
     }
 
     /// Run compact inline during a gate lap boundary.
-    /// Uses CompactEngine to build prompt, calls LLM inline (blocking),
+    /// Builds the prompt (engine_compact), calls LLM inline (blocking),
     /// applies result, and streams CompactDelta events to the frontend.
     /// After compact, the current turn continues normally.
     fn run_auto_compact(ctx: &mut RingContext) -> bool {
-        let compact_eng = super::engine_compact::CompactEngine::new();
         let (prompt, kept, head, provider, compact_id) =
-            match compact_eng.build_prompt_and_meta(ctx) {
+            match super::engine_compact::build_prompt_and_meta(ctx) {
                 Some(v) => v,
                 None => return false,
             };
@@ -880,8 +848,6 @@ impl TurnEngine {
         }
     }
 
-    // ── gate_request moved to turn_lap::gate (A2 step3) ──
-
     /// 构造本轮 gate 的传输快照并执行 auto-compact 预检（A2 step7 瘦身）。
     ///
     /// 覆盖原 `run_lap` 中“Build and measure”整段（verbatim 搬运）：
@@ -982,16 +948,15 @@ impl TurnEngine {
     /// - `ContinuePartialText`: the text itself was cut; everything stays and
     ///   an explicit completion prompt is appended.
     fn apply_continuation_view(messages: &mut Vec<qaqh_types::Message>, kind: StreamContinuation) {
-        if matches!(kind, StreamContinuation::StripTrailingReasoning) {
-            if let Some(last) = messages.last_mut() {
-                if last.role == "assistant" {
-                    while matches!(
-                        last.content.last(),
-                        Some(qaqh_types::ContentBlock::Reasoning { .. })
-                    ) {
-                        last.content.pop();
-                    }
-                }
+        if matches!(kind, StreamContinuation::StripTrailingReasoning)
+            && let Some(last) = messages.last_mut()
+            && last.role == "assistant"
+        {
+            while matches!(
+                last.content.last(),
+                Some(qaqh_types::ContentBlock::Reasoning { .. })
+            ) {
+                last.content.pop();
             }
         }
         let prompt = match kind {
@@ -1211,7 +1176,7 @@ impl TurnEngine {
             let crate::agent::turn_lap::parse::ParseOutput {
                 parsed,
                 assistant_msg,
-                effect,
+                turn_completed: effect,
             } = crate::agent::turn_lap::parse::parse_and_ingest(
                 ctx,
                 &turn_id,
@@ -1233,31 +1198,27 @@ impl TurnEngine {
             );
             let _ = (&parsed, &assistant_msg);
 
-            match effect {
-                Effect::None => {
-                    // ── Admit/dispatch 段已迁入 turn_lap::admit (knife-7 A2 step5) ──
-                    if let Some(outcome) = turn_admit::admit_and_dispatch(
-                        ctx,
-                        tool,
-                        &turn_id,
-                        round_num,
-                        last_usage.clone(),
-                        &active_stream_block,
-                        &timeline_tools_open,
-                        &mut self.suspended,
-                    ) {
-                        return outcome;
-                    }
-
-                    // All tools from this round are now resolved → backfill/skills/ContinueTurn (knife-7 A2 step6)
-                    return turn_backfill::handle_tools_done(ctx, turn_id, round_num, last_usage);
+            if !effect {
+                // ── Admit/dispatch 段已迁入 turn_lap::admit (knife-7 A2 step5) ──
+                if let Some(outcome) = turn_admit::admit_and_dispatch(
+                    ctx,
+                    tool,
+                    &turn_id,
+                    round_num,
+                    last_usage.clone(),
+                    &active_stream_block,
+                    &timeline_tools_open,
+                    &mut self.suspended,
+                ) {
+                    return outcome;
                 }
-                Effect::TurnComplete => {}
-                _ => {}
+
+                // All tools from this round are now resolved → backfill/skills/ContinueTurn (knife-7 A2 step6)
+                return turn_backfill::handle_tools_done(ctx, turn_id, round_num, last_usage);
             }
 
             // TurnComplete / fall-through → backfill/skills/ContinueTurn (knife-7 A2 step6)
-            return turn_backfill::handle_turn_complete(ctx, turn_id, round_num, last_usage);
+            turn_backfill::handle_turn_complete(ctx, turn_id, round_num, last_usage)
         }
     }
 

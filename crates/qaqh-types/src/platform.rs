@@ -25,8 +25,8 @@ pub const QAQH_UA_VERSION: &str = qaqh_ua_version!();
 /// 网页抓取（`qaqh-workspace::web`）是独立的浏览器伪装 UA，不使用本常量。
 pub const QAQH_USER_AGENT: &str = concat!("qaqharness/", qaqh_ua_version!(), "/");
 
-/// data-root marker（`<data>/.qaqh-data-root.json`）— 权威契约来自后端 `qaqh_types::platform`。
-/// 前端禁止自建 FNV 公式；统一通过 `normalized_path_text` / `data_root_id` / `DataRootMarker` 复用。
+/// data-root marker（`<data>/.qaqh-data-root.json`）— 后端权威契约。
+/// 如前端需要同值判定，应经后端接口复用，禁止自建 FNV 公式。
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DataRootMarker {
@@ -58,10 +58,10 @@ pub fn data_dir() -> PathBuf {
     // overrides when set — used by test harnesses and multi-instance shells.
     // The daemon resolves paths through this same function, so shell and
     // daemon stay on the same data root.
-    if let Ok(dir) = std::env::var("QAQH_DATA_DIR") {
-        if !dir.is_empty() {
-            return PathBuf::from(dir);
-        }
+    if let Ok(dir) = std::env::var("QAQH_DATA_DIR")
+        && !dir.is_empty()
+    {
+        return PathBuf::from(dir);
     }
     if cfg!(windows) {
         home_dir().join(".qaqh")
@@ -103,27 +103,6 @@ pub fn ensure_data_root() -> io::Result<PathBuf> {
 
     write_data_root_marker(&canonical_root, &owner_home)?;
     verify_data_root_paths(&canonical_root, &canonical_root, &owner_home)
-}
-
-/// Migrate a legacy `DeepX` data-root marker to `QAQ-Harness` when it is safe.
-///
-/// Uses the current `data_dir()` and current user home. Returns `Some(path)` if
-/// the marker was rewritten, or `None` if no migration was needed (marker absent
-/// or already `QAQ-Harness`).
-pub fn migrate_legacy_data_root_marker() -> io::Result<Option<PathBuf>> {
-    let root = data_dir();
-    if root.as_os_str().is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "QAQ-Harness data root is empty",
-        ));
-    }
-    let owner_home = canonical_home()?;
-    validate_data_root_location(&root, &owner_home)?;
-    fs::create_dir_all(&root)?;
-    reject_link(&root)?;
-    let canonical_root = fs::canonicalize(&root)?;
-    migrate_legacy_data_root_marker_at(&canonical_root, &owner_home)
 }
 
 /// Lower-level migration helper for callers that already have canonical paths.
@@ -266,12 +245,12 @@ fn verify_data_root_paths(
             ),
         ));
     }
-    reject_link(&canonical)?;
+    reject_link(canonical)?;
     let marker_path = canonical.join(DATA_ROOT_MARKER);
     reject_link(&marker_path)?;
     let marker: DataRootMarker =
         serde_json::from_slice(&fs::read(&marker_path)?).map_err(invalid_data)?;
-    let canonical_root = normalized_path_text(&canonical);
+    let canonical_root = normalized_path_text(canonical);
     let owner_home = normalized_path_text(owner_home);
     if marker.format_version != 1
         || marker.product != "QAQ-Harness"
@@ -348,6 +327,85 @@ pub fn data_root_id(canonical_root: &str, owner_home: &str) -> String {
 
 fn invalid_data(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+}
+
+/// qaqh config file path.
+pub fn config_path() -> PathBuf {
+    data_dir().join("config.toml")
+}
+
+/// qaqh daemon discovery file path.
+pub fn daemon_discovery_path() -> PathBuf {
+    data_dir().join("daemon.json")
+}
+
+pub fn daemon_lock_path() -> PathBuf {
+    data_dir().join("daemon.lock")
+}
+
+/// qaqh sessions directory.
+pub fn sessions_dir() -> PathBuf {
+    data_dir().join("sessions")
+}
+
+/// qaqh plans directory.
+pub fn plans_dir() -> PathBuf {
+    data_dir().join("plans")
+}
+
+/// Return whether a process id currently exists without mutating it.
+pub fn process_is_running(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    if cfg!(target_os = "windows") {
+        background_command("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .is_some_and(|output| {
+                String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+                    line.split(',')
+                        .nth(1)
+                        .is_some_and(|field| field.trim_matches('"').trim() == pid.to_string())
+                })
+            })
+    } else {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+}
+
+fn background_command(program: &str) -> std::process::Command {
+    // mut 仅为 Windows 分支的 creation_flags 所需；非 Windows 平台无后续可变使用。
+    #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
+    let mut command = std::process::Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
+/// Convert days since epoch 0000-01-01 to (year, month, day).
+/// Algorithm from Howard Hinnant's civil_from_days.
+pub fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
 }
 
 #[cfg(test)]
@@ -524,99 +582,4 @@ mod data_root_tests {
             std::process::id()
         ))
     }
-}
-
-/// qaqh config file path.
-pub fn config_path() -> PathBuf {
-    data_dir().join("config.toml")
-}
-
-/// qaqh daemon discovery file path.
-pub fn daemon_discovery_path() -> PathBuf {
-    data_dir().join("daemon.json")
-}
-
-pub fn daemon_lock_path() -> PathBuf {
-    data_dir().join("daemon.lock")
-}
-
-/// qaqh sessions directory.
-pub fn sessions_dir() -> PathBuf {
-    data_dir().join("sessions")
-}
-
-/// qaqh plans directory.
-pub fn plans_dir() -> PathBuf {
-    data_dir().join("plans")
-}
-
-/// Kill a process by PID (cross-platform).
-/// - Windows: `taskkill /F /PID`
-/// - Unix: `kill -9`
-pub fn kill_process(pid: u32) {
-    if cfg!(target_os = "windows") {
-        let mut command = background_command("taskkill");
-        drop(command.args(["/F", "/PID", &pid.to_string()]).output());
-    } else {
-        drop(
-            std::process::Command::new("kill")
-                .args(["-9", &pid.to_string()])
-                .output(),
-        );
-    }
-}
-
-/// Return whether a process id currently exists without mutating it.
-pub fn process_is_running(pid: u32) -> bool {
-    if pid == 0 {
-        return false;
-    }
-    if cfg!(target_os = "windows") {
-        background_command("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .is_some_and(|output| {
-                String::from_utf8_lossy(&output.stdout).lines().any(|line| {
-                    line.split(',')
-                        .nth(1)
-                        .is_some_and(|field| field.trim_matches('"').trim() == pid.to_string())
-                })
-            })
-    } else {
-        std::process::Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .status()
-            .is_ok_and(|status| status.success())
-    }
-}
-
-fn background_command(program: &str) -> std::process::Command {
-    // mut 仅为 Windows 分支的 creation_flags 所需；非 Windows 平台无后续可变使用。
-    #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
-    let mut command = std::process::Command::new(program);
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    command
-}
-
-/// Convert days since epoch 0000-01-01 to (year, month, day).
-/// Algorithm from Howard Hinnant's civil_from_days.
-pub fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u32;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
 }

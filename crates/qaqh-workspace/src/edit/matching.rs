@@ -1,4 +1,4 @@
-//! matching — split from file_edit_v2.rs
+//! matching — split from the v2 edit core
 
 use crate::edit::view::FileView;
 use crate::edit::{CANDIDATE_MAX, SNIPPET_MAX, T3_MARGIN, T3_THRESHOLD};

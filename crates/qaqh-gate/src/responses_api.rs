@@ -4,59 +4,18 @@
 //! the gate's unified `StreamEvent` enum.
 
 use futures::StreamExt;
-use reqwest::Client;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::atomic::AtomicBool;
 
 use qaqh_types::{ContentBlock, Message, ToolDef};
 
 use super::sse::SseDecoder;
+use super::transport::{MAX_RETRIES, SSE_POLL_INTERVAL};
+use super::transport::{backoff_delay, block_on, is_cancelled, sleep_with_cancel};
 use super::types::{
     EFFORT_LADDER, EmptyStreamEof, ProviderConfig, ResponsesCompat, StreamEvent,
     normalize_reasoning_effort, safe_provider_error_body,
 };
-
-const SSE_POLL_INTERVAL: Duration = Duration::from_millis(50);
-// Aligned with the official client's session retry policy (5 retries); the
-// doubling delay below already yields 2/4/8/16/32 s like opencode.
-const MAX_RETRIES: u32 = 5;
-
-static FALLBACK_RT: std::sync::LazyLock<tokio::runtime::Runtime> = std::sync::LazyLock::new(|| {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("failed to create qaqh-gate responses tokio runtime")
-});
-
-fn block_on<F: std::future::Future>(f: F) -> F::Output {
-    FALLBACK_RT.block_on(f)
-}
-
-fn is_cancelled(cancel: Option<&Arc<AtomicBool>>) -> bool {
-    cancel.map(|c| c.load(Ordering::SeqCst)).unwrap_or(false)
-}
-
-fn sleep_with_cancel(delay: Duration, cancel: Option<&Arc<AtomicBool>>) -> bool {
-    let start = std::time::Instant::now();
-    while start.elapsed() < delay {
-        if is_cancelled(cancel) {
-            return true;
-        }
-        let remaining = delay - start.elapsed();
-        std::thread::sleep(remaining.min(Duration::from_millis(100)));
-    }
-    false
-}
-
-// ── Lazy global reqwest Client ──
-static GLOBAL_CLIENT: std::sync::LazyLock<Client> = std::sync::LazyLock::new(|| {
-    Client::builder()
-        .connect_timeout(Duration::from_secs(30))
-        .user_agent(qaqh_types::QAQH_USER_AGENT)
-        .build()
-        .expect("failed to create qaqh-gate responses reqwest client")
-});
 
 // ── URL construction ──
 
@@ -168,13 +127,13 @@ fn convert_messages_to_input(
                 // Qwen / MiniMax / OpenAI accept it silently.
                 if compat.echo_reasoning_content && !has_response_type("reasoning") {
                     for block in &msg.content {
-                        if let ContentBlock::Reasoning { reasoning } = block {
-                            if !reasoning.is_empty() {
-                                items.push(serde_json::json!({
-                                    "type": "reasoning",
-                                    "content": [{"type": "reasoning_text", "text": reasoning}],
-                                }));
-                            }
+                        if let ContentBlock::Reasoning { reasoning } = block
+                            && !reasoning.is_empty()
+                        {
+                            items.push(serde_json::json!({
+                                "type": "reasoning",
+                                "content": [{"type": "reasoning_text", "text": reasoning}],
+                            }));
                         }
                     }
                 }
@@ -365,8 +324,8 @@ fn sanitize_openai_schema(value: &serde_json::Value) -> serde_json::Value {
     ];
     const COMPOSITION_KEYS: &[&str] = &["anyOf", "oneOf", "allOf"];
     match value {
-        Value::Bool(_) => return serde_json::json!({"type": "string"}),
-        Value::Array(arr) => return Value::Array(arr.iter().map(sanitize_openai_schema).collect()),
+        Value::Bool(_) => serde_json::json!({"type": "string"}),
+        Value::Array(arr) => Value::Array(arr.iter().map(sanitize_openai_schema).collect()),
         Value::Object(map) => {
             let mut result = serde_json::Map::new();
             if let Some(Value::String(s)) = map.get("$ref") {
@@ -393,20 +352,20 @@ fn sanitize_openai_schema(value: &serde_json::Value) -> serde_json::Value {
                 let filtered: Vec<Value> = req.iter().filter(|v| v.is_string()).cloned().collect();
                 result.insert("required".into(), Value::Array(filtered));
             }
-            if map.contains_key("items") {
-                if let Some(v) = map.get("items") {
-                    result.insert("items".into(), sanitize_openai_schema(v));
-                }
+            if map.contains_key("items")
+                && let Some(v) = map.get("items")
+            {
+                result.insert("items".into(), sanitize_openai_schema(v));
             }
-            if map.contains_key("additionalProperties") {
-                if let Some(v) = map.get("additionalProperties") {
-                    let sanitized = if v.is_boolean() {
-                        v.clone()
-                    } else {
-                        sanitize_openai_schema(v)
-                    };
-                    result.insert("additionalProperties".into(), sanitized);
-                }
+            if map.contains_key("additionalProperties")
+                && let Some(v) = map.get("additionalProperties")
+            {
+                let sanitized = if v.is_boolean() {
+                    v.clone()
+                } else {
+                    sanitize_openai_schema(v)
+                };
+                result.insert("additionalProperties".into(), sanitized);
             }
             for key in COMPOSITION_KEYS {
                 if let Some(Value::Array(arr)) = map.get(*key) {
@@ -433,10 +392,10 @@ fn sanitize_openai_schema(value: &serde_json::Value) -> serde_json::Value {
                     }
                     Value::Array(arr) => {
                         for v in arr {
-                            if let Value::String(s) = v {
-                                if TYPES.contains(&s.as_str()) {
-                                    schema_types.push(s.clone());
-                                }
+                            if let Value::String(s) = v
+                                && TYPES.contains(&s.as_str())
+                            {
+                                schema_types.push(s.clone());
                             }
                         }
                     }
@@ -494,9 +453,9 @@ fn sanitize_openai_schema(value: &serde_json::Value) -> serde_json::Value {
             if inferred.contains(&"array".to_string()) && !result.contains_key("items") {
                 result.insert("items".into(), serde_json::json!({"type": "string"}));
             }
-            return Value::Object(result);
+            Value::Object(result)
         }
-        _ => return value.clone(),
+        _ => value.clone(),
     }
 }
 
@@ -576,6 +535,7 @@ fn is_muse_model(model: &str) -> bool {
 
 // ── Public API ──
 
+#[allow(clippy::too_many_arguments)] // 参数面塑形另立项（PLAN D-5）
 pub fn chat_stream_responses(
     provider: &ProviderConfig,
     model: &str,
@@ -637,10 +597,10 @@ pub fn chat_stream_responses(
     if let Some(ref pk) = provider.prompt_cache_key {
         body_map.insert("prompt_cache_key".into(), serde_json::json!(pk));
     }
-    if compat.supports_user {
-        if let Some(ref uid) = user_id {
-            body_map.insert("user".into(), serde_json::json!(uid));
-        }
+    if compat.supports_user
+        && let Some(ref uid) = user_id
+    {
+        body_map.insert("user".into(), serde_json::json!(uid));
     }
 
     let body = serde_json::Value::Object(body_map);
@@ -655,7 +615,7 @@ pub fn chat_stream_responses(
 
         match block_on(async {
             provider
-                .apply_opencode_headers(GLOBAL_CLIENT.post(&url))
+                .apply_opencode_headers(crate::shared_http_client().post(&url))
                 .header("Authorization", format!("Bearer {}", provider.api_key))
                 .header("Content-Type", "application/json")
                 .body(serde_json::to_string(&body).unwrap_or_default())
@@ -672,20 +632,20 @@ pub fn chat_stream_responses(
                         // Never surface credential material in error output.
                         return Err(anyhow::anyhow!("HTTP 401 (authentication failed)"));
                     }
-                    if status == 429 || status == 500 || status == 502 || status == 503 {
-                        if attempt < MAX_RETRIES {
-                            let delay = Duration::from_secs(2u64.pow(attempt));
-                            on_event(StreamEvent::Retrying {
-                                attempt,
-                                max_retries: MAX_RETRIES,
-                                delay_secs: delay.as_secs(),
-                                error: format!("HTTP {} (retryable)", status),
-                            });
-                            if sleep_with_cancel(delay, cancel) {
-                                return Err(anyhow::anyhow!("cancelled by user"));
-                            }
-                            continue;
+                    if (status == 429 || status == 500 || status == 502 || status == 503)
+                        && attempt < MAX_RETRIES
+                    {
+                        let delay = backoff_delay(attempt);
+                        on_event(StreamEvent::Retrying {
+                            attempt,
+                            max_retries: MAX_RETRIES,
+                            delay_secs: delay.as_secs(),
+                            error: format!("HTTP {} (retryable)", status),
+                        });
+                        if sleep_with_cancel(delay, cancel) {
+                            return Err(anyhow::anyhow!("cancelled by user"));
                         }
+                        continue;
                     }
                     let msg = safe_provider_error_body(&err_body, &provider.api_key);
                     return Err(anyhow::anyhow!("HTTP {}: {}", status, msg));
@@ -700,7 +660,7 @@ pub fn chat_stream_responses(
                             on_event(StreamEvent::Error(msg.clone()));
                             return Err(anyhow::anyhow!("{}", msg));
                         }
-                        let delay = Duration::from_secs(2u64.pow(attempt));
+                        let delay = backoff_delay(attempt);
                         on_event(StreamEvent::Retrying {
                             attempt,
                             max_retries: MAX_RETRIES,
@@ -717,7 +677,7 @@ pub fn chat_stream_responses(
             }
             Err(e) => {
                 if attempt < MAX_RETRIES {
-                    let delay = Duration::from_secs(2u64.pow(attempt));
+                    let delay = backoff_delay(attempt);
                     on_event(StreamEvent::Retrying {
                         attempt,
                         max_retries: MAX_RETRIES,
@@ -792,7 +752,7 @@ pub fn chat_sync_responses(
 
     let resp = block_on(async {
         provider
-            .apply_opencode_headers(GLOBAL_CLIENT.post(&url))
+            .apply_opencode_headers(crate::shared_http_client().post(&url))
             .header("Authorization", format!("Bearer {}", provider.api_key))
             .header("Content-Type", "application/json")
             .body(serde_json::to_string(&body).unwrap_or_default())
@@ -804,7 +764,7 @@ pub fn chat_sync_responses(
     let status = resp.status().as_u16();
     let text = block_on(async { resp.text().await }).map_err(|e| format!("Read error: {}", e))?;
 
-    if status < 200 || status >= 300 {
+    if !(200..300).contains(&status) {
         if status == 401 {
             // Never surface credential material echoed by the provider.
             return Err("HTTP 401 (authentication failed)".into());
@@ -819,14 +779,14 @@ pub fn chat_sync_responses(
     let mut result = String::new();
     if let Some(output) = parsed.get("output").and_then(|o| o.as_array()) {
         for item in output {
-            if item.get("type").map_or(false, |t| t == "message") {
-                if let Some(content) = item.get("content").and_then(|c| c.as_array()) {
-                    for part in content {
-                        if part.get("type").map_or(false, |t| t == "output_text") {
-                            if let Some(t) = part.get("text").and_then(|t| t.as_str()) {
-                                result.push_str(t);
-                            }
-                        }
+            if item.get("type").is_some_and(|t| t == "message")
+                && let Some(content) = item.get("content").and_then(|c| c.as_array())
+            {
+                for part in content {
+                    if part.get("type").is_some_and(|t| t == "output_text")
+                        && let Some(t) = part.get("text").and_then(|t| t.as_str())
+                    {
+                        result.push_str(t);
                     }
                 }
             }

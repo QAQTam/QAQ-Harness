@@ -1,4 +1,4 @@
-//! handler — split from file_edit_v2.rs
+//! handler — split from the v2 edit core
 
 use crate::edit::MAX_HUNKS;
 use crate::edit::hunk::Hunk;
@@ -14,17 +14,14 @@ pub fn exec_edit(args: &serde_json::Value) -> ToolResult {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let fail = |code: &str, message: String, retryable: bool, hint: Option<&str>| {
+        // 结构化 ToolError 已携带 code/message/hint；data 字段不再重复塞
+        // 同样的信封（历史遗留，Phase 1 错误协议统一时移除）。
         ToolResult::error_data(
             code,
             message.clone(),
             retryable,
             hint.map(str::to_string),
-            json!({
-                "timeis": crate::now_utc8(),
-                "status": "error",
-                "code": code,
-                "message": message,
-            }),
+            serde_json::json!({}),
         )
     };
 

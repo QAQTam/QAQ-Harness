@@ -427,7 +427,7 @@ mod tests {
         let data = result.data.clone();
         if data.as_object().is_none_or(|o| o.is_empty()) {
             let raw = result.model_text();
-            let mut v = serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_default();
+            let mut v = serde_json::from_str::<serde_json::Value>(raw).unwrap_or_default();
             if v.get("code").is_none() {
                 v["status"] =
                     serde_json::json!(if matches!(result.status, crate::ToolStatus::Ok) {

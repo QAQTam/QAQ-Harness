@@ -550,6 +550,7 @@ fn default_provider_tool_history_is_unchanged() {
 }
 
 #[test]
+#[allow(clippy::assertions_on_constants)] // 占位验证：sync 路径需独立 JSON 端点 mock
 fn chat_sync_non_streaming() {
     let scenario = vec![
         SseChunk::text("Hello sync"),

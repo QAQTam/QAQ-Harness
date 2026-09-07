@@ -9,7 +9,9 @@ use std::sync::atomic::Ordering;
 use qaqh_runtime::agent::loop_core::{Loop, LoopChannels, ringing_command_is_interrupt};
 use qaqh_runtime::agent::state::agent::AgentState;
 use qaqh_runtime::agent::types::{WorkerCommand, WriterEvent};
-use qaqh_runtime::agent::wire::read_worker_command_frame;
+
+mod wire;
+use wire::read_worker_command_frame;
 
 /// First-class pipe transport for tests: spawns the reader (input → command
 /// channel) and writer (event channel → output) threads that `Loop::new_ipc`
@@ -30,25 +32,20 @@ pub fn spawn_pipe_loop(
     // Reader: input JSON-LP → cmd_tx (sets cancel on interrupt commands).
     std::thread::spawn(move || {
         let mut reader = std::io::BufReader::new(input);
-        loop {
-            match read_worker_command_frame(&mut reader) {
-                Ok(Some(env)) => {
-                    let causation = env.command_id.clone();
-                    if ringing_command_is_interrupt(&env) {
-                        cancel_for_reader.set();
-                        qaqh_workspace::set_cancel(true);
-                    }
-                    if cmd_tx
-                        .send(WorkerCommand {
-                            frame: env,
-                            causation: Some(causation),
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                Ok(None) | Err(_) => break,
+        while let Ok(Some(env)) = read_worker_command_frame(&mut reader) {
+            let causation = env.command_id.clone();
+            if ringing_command_is_interrupt(&env) {
+                cancel_for_reader.set();
+                qaqh_workspace::set_cancel(true);
+            }
+            if cmd_tx
+                .send(WorkerCommand {
+                    frame: env,
+                    causation: Some(causation),
+                })
+                .is_err()
+            {
+                break;
             }
         }
     });

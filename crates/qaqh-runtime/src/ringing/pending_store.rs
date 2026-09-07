@@ -149,10 +149,12 @@ impl PendingCommandStore {
     }
 
     /// 预留 receipt；相同 ID 不同 payload 是协议错误。
+    #[allow(clippy::result_unit_err)] // 空错误类型为既有信号量语义
     pub fn record_fingerprint(&mut self, command_id: &str, fingerprint: &str) -> Result<bool, ()> {
         self.record_fingerprint_owned(command_id, fingerprint, None)
     }
 
+    #[allow(clippy::result_unit_err)] // 空错误类型为既有信号量语义
     pub fn record_fingerprint_for_session(
         &mut self,
         command_id: &str,
@@ -169,15 +171,15 @@ impl PendingCommandStore {
         client_session_id: Option<&str>,
     ) -> Result<bool, ()> {
         let now = Instant::now();
-        if let Some(receipt) = self.accepted.get(command_id) {
-            if receipt.accepted_at + RECEIPT_TTL > now {
-                if receipt.fingerprint != fingerprint
-                    || receipt.client_session_id.as_deref() != client_session_id
-                {
-                    return Err(());
-                }
-                return Ok(false); // 重复：已接受且在 TTL 内
+        if let Some(receipt) = self.accepted.get(command_id)
+            && receipt.accepted_at + RECEIPT_TTL > now
+        {
+            if receipt.fingerprint != fingerprint
+                || receipt.client_session_id.as_deref() != client_session_id
+            {
+                return Err(());
             }
+            return Ok(false); // 重复：已接受且在 TTL 内
         }
         self.accepted.insert(
             command_id.to_string(),

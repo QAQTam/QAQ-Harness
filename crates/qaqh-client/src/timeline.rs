@@ -256,17 +256,9 @@ impl TimelineStream {
 
     /// 消费解码器中所有已完整的帧并分发。
     fn drain_frames(&mut self, decoder: &mut SseDecoder, server_epoch: &str) -> Result<()> {
-        while let Some(frame) = decoder.next_frame() {
-            let frame = match frame {
-                Ok(frame) => frame,
-                Err(()) => continue,
-            };
-            if frame.data.trim().is_empty() {
-                continue; // keepalive/空 data 帧
-            }
-            self.dispatch(frame, server_epoch)?;
-        }
-        Ok(())
+        crate::sse_decoder::drain_frames(decoder, server_epoch, |frame, epoch| {
+            self.dispatch(frame, epoch)
+        })
     }
 
     fn dispatch(&mut self, frame: SseFrame, server_epoch: &str) -> Result<()> {

@@ -37,6 +37,12 @@ pub struct ReliableJournal {
     capacity: usize,
 }
 
+impl Default for ReliableJournal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ReliableJournal {
     pub fn new() -> Self {
         Self::with_capacity(DEFAULT_JOURNAL_CAPACITY)

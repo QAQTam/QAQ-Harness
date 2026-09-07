@@ -49,6 +49,12 @@ pub struct CancelToken {
     pub(crate) inner: Arc<AtomicBool>,
 }
 
+impl Default for CancelToken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CancelToken {
     pub fn new() -> Self {
         Self {
@@ -217,7 +223,7 @@ pub struct PendingPlan {
 #[derive(Debug, Clone)]
 pub struct PendingTodoActivation {
     pub call_id: String,
-    pub items: Vec<qaqh_proto::TodoActivationItem>,
+    pub items: Vec<qaqh_domain::TodoItem>,
 }
 
 /// Serialized snapshot of a turn mid-execution.
@@ -317,7 +323,6 @@ pub struct WorkerCommand {
 /// - `pending` — deferred interrupt queue
 /// - `writer_dead` — set when stdout pipe breaks
 /// - `stats` — code delta accumulator
-
 ///
 /// Engines CANNOT access:
 /// - Other engines' private state
@@ -354,7 +359,13 @@ pub struct RingContext<'a> {
 /// Accumulates code delta records during a session.
 /// Flushed to `code_stats.jsonl` on TurnComplete and session save.
 pub struct StatsCollector {
-    pub code_stats: Vec<qaqh_proto::CodeDeltaRecord>,
+    pub code_stats: Vec<qaqh_domain::CodeDeltaRecord>,
+}
+
+impl Default for StatsCollector {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl StatsCollector {
@@ -363,7 +374,7 @@ impl StatsCollector {
             code_stats: Vec::new(),
         }
     }
-    pub fn push_delta(&mut self, delta: qaqh_proto::CodeDeltaRecord) {
+    pub fn push_delta(&mut self, delta: qaqh_domain::CodeDeltaRecord) {
         self.code_stats.push(delta);
     }
     /// Persist accumulated deltas to disk. Clears the in-memory buffer.

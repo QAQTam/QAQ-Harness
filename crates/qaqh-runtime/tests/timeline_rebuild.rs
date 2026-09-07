@@ -110,12 +110,10 @@ fn missing_or_corrupt_timeline_is_rebuilt_from_persisted_messages() {
         .expect("corrupt timeline rebuilt from messages.jsonl");
     assert_eq!(corrupted.turns.len(), 1);
     assert_eq!(corrupted.turns[0].user_text, "question");
-    assert_eq!(
-        std::fs::read(&corrupt_timeline)
+    assert!(
+        !std::fs::read(&corrupt_timeline)
             .expect("rebuilt file readable")
-            .len()
-            > 0,
-        true
+            .is_empty()
     );
 
     drop(hub);

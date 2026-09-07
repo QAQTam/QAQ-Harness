@@ -1,8 +1,7 @@
-use std::io::{BufRead, Read};
 use std::sync::{Arc, Mutex};
 
+use qaqh_domain::ActivityState;
 use qaqh_domain::ControlCommand;
-use qaqh_proto::SessionActivityState;
 use qaqh_ringing::{RingingCommand, RingingWorkerCommandEnvelope};
 use serde_json::{Value, json};
 
@@ -402,19 +401,19 @@ impl QaqhService {
             "git.diff" => git(
                 &self.sessions,
                 &seed()?,
-                |ws| qaqh_workspace::git::status_json(ws),
+                qaqh_workspace::git::status_json,
                 json!([]),
             ),
             "git.branch" => git(
                 &self.sessions,
                 &seed()?,
-                |ws| qaqh_workspace::git::current_branch(ws),
+                qaqh_workspace::git::current_branch,
                 Value::Null,
             ),
             "git.branches" => git(
                 &self.sessions,
                 &seed()?,
-                |ws| qaqh_workspace::git::list_branches(ws),
+                qaqh_workspace::git::list_branches,
                 json!([]),
             ),
             "git.switch_branch" => git(
@@ -609,7 +608,7 @@ impl QaqhService {
     /// 只读活动快照（/activity 观测端点，冻结事故 P0）：逐会话活动状态 +
     /// 是否有活跃工作。单次加锁保证 flag 与列表一致；僵尸会话（如
     /// 2026-09-02 的 running 冻结）可直接从外部探测，不再依赖人肉轮询。
-    pub fn activity_snapshot(&self) -> (bool, Vec<qaqh_proto::SessionActivity>) {
+    pub fn activity_snapshot(&self) -> (bool, Vec<qaqh_domain::SessionActivity>) {
         let activities = self
             .registry
             .lock()
@@ -618,9 +617,7 @@ impl QaqhService {
         let has_active_work = activities.iter().any(|activity| {
             matches!(
                 activity.state,
-                SessionActivityState::Starting
-                    | SessionActivityState::Working
-                    | SessionActivityState::WaitingUser
+                ActivityState::Starting | ActivityState::Working | ActivityState::WaitingUser
             )
         });
         (has_active_work, activities)
@@ -730,447 +727,23 @@ impl QaqhService {
     }
 }
 
-fn value2<'a>(params: &'a Value, snake: &str, camel: &str) -> Option<&'a Value> {
-    params.get(snake).or_else(|| params.get(camel))
-}
-fn pstr(params: &Value, key: &str) -> Result<String, String> {
-    params
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .ok_or_else(|| format!("missing string parameter: {key}"))
-}
-fn pstr2(params: &Value, snake: &str, camel: &str) -> Result<String, String> {
-    value2(params, snake, camel)
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .ok_or_else(|| format!("missing string parameter: {snake}"))
-}
-fn pbool(params: &Value, key: &str) -> bool {
-    params.get(key).and_then(Value::as_bool).unwrap_or(false)
-}
-fn pu64(params: &Value, key: &str) -> u64 {
-    params.get(key).and_then(Value::as_u64).unwrap_or_default()
-}
-fn pstrings(params: &Value, key: &str) -> Vec<String> {
-    params
-        .get(key)
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(str::to_string)
-        .collect()
-}
+pub(crate) mod common;
+pub(crate) mod fs_git;
+pub(crate) mod params;
+pub(crate) mod plan;
+pub(crate) mod stats;
 
-/// `fs.list`：目录条目（目录优先 + 名称排序），返回 daemon 侧绝对路径。
-///
-/// 临时跨端版本有意不做路径沙箱/权限校验，只要求绝对路径。
-fn list_remote_directory(path: &str) -> Result<Value, String> {
-    let dir = std::path::Path::new(path);
-    if !dir.is_absolute() {
-        return Err("fs.list requires an absolute path".to_string());
-    }
-    let mut entries: Vec<Value> = Vec::new();
-    for entry in std::fs::read_dir(dir).map_err(|e| format!("fs.list {path}: {e}"))? {
-        let entry = entry.map_err(|e| format!("fs.list {path}: {e}"))?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let entry_path = entry.path();
-        let meta = match entry.metadata() {
-            Ok(meta) => meta,
-            // 软链接/权限问题不阻塞整个目录，标记 unknown 继续。
-            Err(_) => {
-                entries.push(json!({
-                    "name": name,
-                    "path": entry_path.to_string_lossy(),
-                    "is_dir": false,
-                    "is_file": false,
-                    "size": 0,
-                    "modified_ms": null,
-                }));
-                continue;
-            }
-        };
-        let modified_ms = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as u64);
-        entries.push(json!({
-            "name": name,
-            "path": entry_path.to_string_lossy(),
-            "is_dir": meta.is_dir(),
-            "is_file": meta.is_file(),
-            "size": meta.len(),
-            "modified_ms": modified_ms,
-        }));
-    }
-    entries.sort_by(|a, b| {
-        let (ad, bd) = (
-            a["is_dir"].as_bool().unwrap_or(false),
-            b["is_dir"].as_bool().unwrap_or(false),
-        );
-        match bd.cmp(&ad) {
-            std::cmp::Ordering::Equal => a["name"]
-                .as_str()
-                .unwrap_or_default()
-                .to_ascii_lowercase()
-                .cmp(&b["name"].as_str().unwrap_or_default().to_ascii_lowercase()),
-            other => other,
-        }
-    });
-    Ok(Value::Array(entries))
-}
-
-/// `fs.read`：文本预览。读满 `max_bytes + 1` 以判断截断；内容按 UTF-8
-/// lossy 返回（临时版不处理二进制编码协商）。
-fn read_remote_file(path: &str, max_bytes: u64) -> Result<Value, String> {
-    let file_path = std::path::Path::new(path);
-    if !file_path.is_absolute() {
-        return Err("fs.read requires an absolute path".to_string());
-    }
-    let meta = std::fs::metadata(file_path).map_err(|e| format!("fs.read {path}: {e}"))?;
-    if !meta.is_file() {
-        return Err(format!("fs.read {path}: not a file"));
-    }
-    let cap = max_bytes.clamp(1, 8 * 1024 * 1024) as usize;
-    let file = std::fs::File::open(file_path).map_err(|e| format!("fs.read {path}: {e}"))?;
-    let mut data = Vec::new();
-    std::io::Read::take(file, (cap + 1) as u64)
-        .read_to_end(&mut data)
-        .map_err(|e| format!("fs.read {path}: {e}"))?;
-    let truncated = data.len() > cap;
-    data.truncate(cap);
-    Ok(json!({
-        "path": path,
-        "size": meta.len(),
-        "truncated": truncated,
-        "content": String::from_utf8_lossy(&data),
-    }))
-}
-
-/// 可选工具模式预置：缺省 = None（保持旧行为）；显式空串 = standard 零迁移。
-/// 供 create 路径（session.new）在 spawn 前落盘使用。
-fn optional_tool_mode(params: &Value) -> Result<Option<(String, Vec<String>)>, String> {
-    let Some(tool_mode) = params.get("tool_mode").and_then(Value::as_str) else {
-        return Ok(None);
-    };
-    // 显式空串 = 未指定（与 SessionMeta.tool_mode 的空串零迁移语义一致）。
-    if tool_mode.is_empty() {
-        return Ok(None);
-    }
-    validate_tool_mode(tool_mode)?;
-    let custom_tools = pstrings(params, "custom_tools");
-    if tool_mode == "custom" && custom_tools.is_empty() {
-        return Err("custom tool mode requires at least one tool in custom_tools".to_string());
-    }
-    Ok(Some((tool_mode.to_string(), custom_tools)))
-}
-
-/// 工具模式白名单校验（session.new 预置与 session.set_tool_mode 共用）。
-/// 白名单由 `qaqh_types::tool_mode::KNOWN_MODES` 单一契约提供（BUG-013）。
-fn validate_tool_mode(tool_mode: &str) -> Result<(), String> {
-    if qaqh_types::is_known(tool_mode) {
-        Ok(())
-    } else {
-        Err(format!(
-            "invalid tool_mode '{tool_mode}' (expected {})",
-            qaqh_types::KNOWN_MODES.join(" | ")
-        ))
-    }
-}
-fn err(error: impl std::fmt::Display) -> String {
-    error.to_string()
-}
-fn parse_json_string(value: String) -> Result<Value, String> {
-    serde_json::from_str(&value).map_err(err)
-}
-
-fn workspace(sessions: &qaqh_session::SessionManager, seed: &str) -> String {
-    if seed.is_empty() {
-        return String::new();
-    }
-    // 统一数据源：meta.cwd（workspace.txt 退役，读取侧惰性迁移）。
-    sessions.workspace_cwd(seed).unwrap_or_default()
-}
-
-fn git<F>(
-    sessions: &qaqh_session::SessionManager,
-    seed: &str,
-    operation: F,
-    empty: Value,
-) -> Result<Value, String>
-where
-    F: FnOnce(&str) -> Result<String, String>,
-{
-    let workspace = workspace(sessions, seed);
-    if workspace.is_empty() {
-        return Ok(empty);
-    }
-    let value = operation(&workspace)?;
-    serde_json::from_str(&value).or_else(|_| Ok(json!(value)))
-}
-
-fn dashboard(seed: &str) -> Result<Value, String> {
-    let dir = qaqh_types::platform::sessions_dir().join(seed);
-    let tasks: Vec<Value> = qaqh_workspace::todo::todo_status_json(seed)
-        .ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|v| {
-            v.get("items")?.as_array().map(|arr| {
-                arr.iter()
-                    .map(|item| {
-                        json!({
-                            "id": item["id"],
-                            "subject": item["title"],
-                            "description": item["description"],
-                            "status": item["status"],
-                            "evidence": item["evidence"],
-                        })
-                    })
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
-    let mut edits = std::fs::File::open(dir.join("code_stats.jsonl"))
-        .ok()
-        .into_iter()
-        .flat_map(|file| std::io::BufReader::new(file).lines().map_while(Result::ok))
-        .filter_map(|line| {
-            serde_json::from_str::<Value>(&line)
-                .ok()?
-                .get("file")?
-                .as_str()
-                .map(str::to_string)
-        })
-        .collect::<Vec<_>>();
-    edits.reverse();
-    edits.dedup();
-    edits.truncate(10);
-    Ok(json!({"tasks":tasks,"recent_edits":edits}))
-}
-
-fn activity(sessions: &qaqh_session::SessionManager, seed: &str) -> Result<Value, String> {
-    let (_, messages) = sessions
-        .load(seed)
-        .ok_or_else(|| "session not found".to_string())?;
-    let mut tools = std::collections::HashMap::new();
-    for message in &messages {
-        if message.role == "assistant" {
-            for block in &message.content {
-                if let qaqh_types::ContentBlock::ToolUse { id, name, input } = block {
-                    tools.insert(id.clone(), (name.clone(), input.to_string()));
-                }
-            }
-        }
-    }
-    let mut result = Vec::new();
-    for message in &messages {
-        if message.role == "tool" {
-            for block in &message.content {
-                if let qaqh_types::ContentBlock::ToolResult {
-                    tool_use_id,
-                    result: tool_result,
-                } = block
-                {
-                    let (name, args) = tools.get(tool_use_id).cloned().unwrap_or_default();
-                    result.push(json!({"tool_name":name,"summary":tool_result.summary,"status":serde_json::to_value(tool_result.status).unwrap_or_default(),"time":message.msg_id.map(|v|v.to_string()).unwrap_or_default(),"args":args}));
-                }
-            }
-        }
-    }
-    result.reverse();
-    Ok(Value::Array(result))
-}
-
-fn load_config() -> Result<Value, String> {
-    let cfg = qaqh_config::Config::load().map_err(err)?;
-    // P1-C2：读模型统一走 ConfigDto（camelCase wire + providers 目录内聚到
-    // qaqh-config::dto），service 层不再手拼 json。
-    serde_json::to_value(qaqh_config::dto::to_dto(&cfg)).map_err(err)
-}
-fn context_stats(sessions: &qaqh_session::SessionManager, seed: &str) -> Result<Value, String> {
-    // 统一数据源：meta.json 的 context_stats 字段（原独立文件退役）。
-    // 旧 context_stats.json 为可再生缓存，忽略不迁移。
-    if let Some(meta) = sessions.load_meta(seed) {
-        if let Some(stats) = meta.context_stats {
-            return Ok(stats);
-        }
-    }
-    Ok(
-        json!({"messages":0,"chat_text":0,"thinking":0,"tool_calls":0,"tool_results":0,"tools_schema":0,"system_prompt":0,"thinking_blocks":0,"tool_call_blocks":0}),
-    )
-}
-
-fn token_stats(days: u32) -> Result<Value, String> {
-    use std::collections::BTreeMap;
-    let days = days.max(1);
-    let cutoff = days_before_today(days);
-    let mut daily: BTreeMap<String, Value> = BTreeMap::new();
-    if let Ok(file) =
-        std::fs::File::open(qaqh_types::platform::data_dir().join("token_stats.jsonl"))
-    {
-        for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
-            let Ok(entry) = serde_json::from_str::<Value>(&line) else {
-                continue;
-            };
-            let date = entry["date"].as_str().unwrap_or_default().to_string();
-            if date < cutoff {
-                continue;
-            }
-            let day=daily.entry(date).or_insert_with(||json!({"prompt_tokens":0,"completion_tokens":0,"cache_hit":0,"cache_miss":0,"calls":0}));
-            for key in [
-                "prompt_tokens",
-                "completion_tokens",
-                "cache_hit",
-                "cache_miss",
-            ] {
-                day[key] = json!(day[key].as_u64().unwrap_or(0) + entry[key].as_u64().unwrap_or(0));
-            }
-            day["calls"] = json!(day["calls"].as_u64().unwrap_or(0) + 1);
-        }
-    }
-    let mut values = Vec::new();
-    let mut prompt = 0;
-    let mut completion = 0;
-    let mut hit = 0;
-    let mut miss = 0;
-    let mut calls = 0;
-    for offset in (0..days).rev() {
-        let date = days_before_today(offset);
-        let entry=daily.get(&date).cloned().unwrap_or_else(||json!({"prompt_tokens":0,"completion_tokens":0,"cache_hit":0,"cache_miss":0,"calls":0}));
-        prompt += entry["prompt_tokens"].as_u64().unwrap_or(0);
-        completion += entry["completion_tokens"].as_u64().unwrap_or(0);
-        hit += entry["cache_hit"].as_u64().unwrap_or(0);
-        miss += entry["cache_miss"].as_u64().unwrap_or(0);
-        calls += entry["calls"].as_u64().unwrap_or(0);
-        values.push(json!({"date":date,"prompt_tokens":entry["prompt_tokens"],"completion_tokens":entry["completion_tokens"],"cache_hit":entry["cache_hit"],"cache_miss":entry["cache_miss"],"calls":entry["calls"]}));
-    }
-    let pct = if hit + miss > 0 {
-        (hit as f64 / (hit + miss) as f64 * 1000.0).round() / 10.0
-    } else {
-        0.0
-    };
-    Ok(
-        json!({"daily":values,"totals":{"prompt_tokens":prompt,"completion_tokens":completion,"calls":calls,"cache_hit_pct":pct}}),
-    )
-}
-fn days_before_today(days: u32) -> String {
-    let seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        .saturating_sub(days as u64 * 86400);
-    let (y, m, d) = qaqh_types::platform::civil_from_days((seconds / 86400) as i64);
-    format!("{y:04}-{m:02}-{d:02}")
-}
-
-fn qaqh_dir(sessions: &qaqh_session::SessionManager, seed: &str) -> std::path::PathBuf {
-    let workspace = workspace(sessions, seed);
-    if workspace.is_empty() || workspace == "." {
-        qaqh_types::platform::data_dir().join("workspace")
-    } else {
-        std::path::Path::new(&workspace).join(".qaqh")
-    }
-}
-fn read_plan(sessions: &qaqh_session::SessionManager, seed: &str) -> Result<Value, String> {
-    let content = match std::fs::read_to_string(qaqh_dir(sessions, seed).join("PLAN.md")) {
-        Ok(value) => value,
-        Err(_) => return Ok(json!([])),
-    };
-    let items = content
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            if !line.starts_with("- [") {
-                return None;
-            }
-            let end = line.find(']')?;
-            let status = line.get(3..end)?.trim();
-            let rest = line.get(end + 1..)?.trim();
-            let (id, title) = rest.split_once(": ")?;
-            Some(json!({"id":id,"title":title,"status":status,"comment":"","actions":[]}))
-        })
-        .collect();
-    Ok(Value::Array(items))
-}
-fn plan_action(
-    sessions: &qaqh_session::SessionManager,
-    seed: &str,
-    item_id: &str,
-    action: &str,
-    comment: &str,
-) -> Result<(), String> {
-    let path = qaqh_dir(sessions, seed).join("PLAN.md");
-    let content = std::fs::read_to_string(&path).map_err(err)?;
-    let mut found = false;
-    let output = content
-        .lines()
-        .filter_map(|line| {
-            if !found && line.trim().starts_with("- [") && line.contains(&format!(" {item_id}: ")) {
-                found = true;
-                if action == "delete" {
-                    return None;
-                }
-                let end = line.find(']')?;
-                // ']' 为单字节 ASCII，end+1 必为 char boundary。
-                let rest = line.split_at(end + 1).1;
-                let base = format!("- [ ]{rest}");
-                return Some(match action {
-                    "approve" => base.replacen("- [ ]", "- [✓]", 1),
-                    "reject" => {
-                        let value = base.replacen("- [ ]", "- [-]", 1);
-                        if comment.is_empty() {
-                            value
-                        } else {
-                            format!("{value} | {comment}")
-                        }
-                    }
-                    "ask" => base.replacen("- [ ]", "- [?]", 1),
-                    _ => line.to_string(),
-                });
-            }
-            Some(line.to_string())
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    if !found {
-        return Err(format!("plan item {item_id} not found"));
-    }
-    std::fs::write(path, output).map_err(err)
-}
-
-#[allow(dead_code)]
-/// D-2：会话 bundle 释放后尽力把空闲堆归还 OS。
-///
-/// glibc ptmalloc 的 arena 会保留已释放 chunk（worker join + drop 之后 RSS
-/// 不回落——诊断结论①：retention ≠ leak）。`malloc_trim(0)` 遍历各 arena
-/// 把连续空闲空间归还内核。其余平台无等价可移植 API：Windows UCRT / macOS /
-/// musl 下为 no-op（Windows 侧若仍需 RSS 回落，备选方案是 daemon 全局换用
-/// mimalloc 并开启 decommit——影响全局行为，需单独决策后实施）。
-fn release_freed_heap_memory() {
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    {
-        // SAFETY：malloc_trim 只归还空闲堆内存，不触碰存活分配；glibc 文档
-        // 保证线程安全。返回 1 表示确实归还了内存（0 = 无可归还）。
-        let returned = unsafe { libc::malloc_trim(0) };
-        if returned == 1 {
-            log::debug!("[memory] malloc_trim(0): freed heap pages returned to OS");
-        }
-    }
-}
-
-fn command_id() -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("svc-{nanos:x}")
-}
+use self::common::{command_id, err, parse_json_string, release_freed_heap_memory};
+use self::fs_git::{git, list_remote_directory, read_remote_file, workspace};
+use self::params::{
+    optional_tool_mode, pbool, pstr, pstr2, pstrings, pu64, validate_tool_mode, value2,
+};
+use self::plan::{plan_action, read_plan, token_stats};
+use self::stats::{activity, context_stats, dashboard, load_config};
 
 #[cfg(test)]
 mod tool_mode_tests {
-    use super::{optional_tool_mode, validate_tool_mode};
+    use super::params::{optional_tool_mode, validate_tool_mode};
 
     #[test]
     fn optional_tool_mode_defaults_to_none() {

@@ -139,7 +139,7 @@ impl ProcessRegistry {
                 }
             }
             let id = r.next_id;
-            r.next_id = r.next_id.checked_add(1).unwrap_or(u32::MAX);
+            r.next_id = r.next_id.saturating_add(1);
             if r.next_id == u32::MAX {
                 log::error!("[registry] process id space exhausted");
             }

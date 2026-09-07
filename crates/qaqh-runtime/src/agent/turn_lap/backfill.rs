@@ -147,9 +147,9 @@ pub(crate) fn emit_completed_tool_round(
 
 // ── skills / ContinueTurn backfill (verbatim tail of run_lap) ──
 
-/// Tail for `Effect::None` after tool execution: backfill + skills lap + next turn.
+/// Tail for `!turn_completed` after tool execution: backfill + skills lap + next turn.
 ///
-/// Verbatim from the `Effect::None` branch of `run_lap` after
+/// Verbatim from the `!turn_completed` branch of `run_lap` after
 /// `admit_and_dispatch` returns `None` (all tools resolved).
 pub(crate) fn handle_tools_done(
     ctx: &mut RingContext,
@@ -184,7 +184,7 @@ pub(crate) fn handle_tools_done(
     }
 }
 
-/// Tail for `Effect::TurnComplete` (and fall-through ` _`): flush, skill check, seal or continue.
+/// Tail for `turn_completed` (and fall-through): flush, skill check, seal or continue.
 ///
 /// Verbatim from the post-`match effect` tail of `run_lap`.
 pub(crate) fn handle_turn_complete(

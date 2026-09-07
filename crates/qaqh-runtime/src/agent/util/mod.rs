@@ -3,7 +3,6 @@
 //! and `format.rs` (resolve_effective_name, has_xml, format_tool_args_display).
 
 use crate::agent::state::agent::AgentState;
-use qaqh_proto;
 use qaqh_types;
 
 /// Convert epoch seconds to human-readable UTC date.
@@ -218,25 +217,25 @@ pub(crate) fn emit_round_complete_via_emitter(
     for cb in &assistant_msg.content {
         match cb {
             ContentBlock::Reasoning { reasoning } if !reasoning.is_empty() => {
-                blocks.push(qaqh_proto::RoundBlock::Reasoning {
+                blocks.push(qaqh_domain::RoundBlock::Reasoning {
                     content: reasoning.clone(),
                 });
             }
             ContentBlock::Text { text } if !text.is_empty() => {
-                blocks.push(qaqh_proto::RoundBlock::Text {
+                blocks.push(qaqh_domain::RoundBlock::Text {
                     content: text.clone(),
                 });
             }
             ContentBlock::ToolUse { id, name, input } => {
                 let display = format_tool_args_display(name, input);
-                tool_calls.push(qaqh_proto::ToolCallDef {
+                tool_calls.push(qaqh_domain::ToolCallDef {
                     id: id.clone(),
                     name: name.clone(),
                     args_display: display.clone(),
                     args_json: input.to_string(),
                 });
-                blocks.push(qaqh_proto::RoundBlock::Tool {
-                    card: qaqh_proto::ToolCallDef {
+                blocks.push(qaqh_domain::RoundBlock::Tool {
+                    card: qaqh_domain::ToolCallDef {
                         id: id.clone(),
                         name: name.clone(),
                         args_display: display,
@@ -245,7 +244,7 @@ pub(crate) fn emit_round_complete_via_emitter(
                 });
             }
             ContentBlock::WebSearchCall { action, .. } => {
-                blocks.push(qaqh_proto::RoundBlock::WebSearch {
+                blocks.push(qaqh_domain::RoundBlock::WebSearch {
                     action: action.to_string(),
                 });
             }

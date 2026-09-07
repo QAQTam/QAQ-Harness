@@ -1,4 +1,4 @@
-//! hunk — split from file_edit_v2.rs
+//! hunk — split from the v2 edit core
 
 use crate::file_shared::normalize_newlines;
 use serde_json::Value;

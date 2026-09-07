@@ -1,4 +1,4 @@
-//! transaction — split from file_edit_v2.rs
+//! transaction — split from the v2 edit core
 
 use crate::edit::CONTENT_CAP;
 use crate::edit::hunk::Hunk;

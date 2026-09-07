@@ -59,6 +59,7 @@ fn main() {
         Some("server") => {
             // 临时跨端模式：headless 监听局域网地址，供远端壳直连。
             qaqh_runtime::cache_system_path();
+            qaqh_runtime::detect_os_info();
             let config = match server::ServerNetworkConfig::parse(&args[1..]) {
                 Ok(config) => config,
                 Err(error) => {
@@ -73,9 +74,11 @@ fn main() {
             }
         }
         Some("run") | None => {
-            // Preserve the complete interactive PATH for workers, but defer
-            // prompt-only OS/tool probing to each worker process.
+            // Preserve the complete interactive PATH for workers; OS/toolchain
+            // probing runs once here at daemon startup (populates prompt.rs
+            // OS_INFO/TOOLS_INFO for {{OS}}/{{TOOLS}} in the system prompt).
             qaqh_runtime::cache_system_path();
+            qaqh_runtime::detect_os_info();
             let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
             if let Err(error) = runtime.block_on(server::run()) {
                 eprintln!("qaqh-daemon: {error}");
@@ -107,7 +110,7 @@ fn status() {
     }
 }
 
-fn discovery_reachable(discovery: &qaqh_proto::DaemonDiscovery) -> bool {
+fn discovery_reachable(discovery: &qaqh_types::DaemonDiscovery) -> bool {
     if !qaqh_types::platform::process_is_running(discovery.pid) {
         return false;
     }
@@ -161,7 +164,7 @@ fn stop() {
     }
 }
 
-fn read_discovery() -> Result<qaqh_proto::DaemonDiscovery, String> {
+fn read_discovery() -> Result<qaqh_types::DaemonDiscovery, String> {
     let content = std::fs::read_to_string(qaqh_types::platform::daemon_discovery_path())
         .map_err(|e| e.to_string())?;
     serde_json::from_str(&content).map_err(|e| e.to_string())
@@ -293,7 +296,7 @@ fn todo_cli(args: &[String]) -> i32 {
 
 /// 缺省 --seed 时：session.list 只返回一个会话则自动取用（多/零会话报错，
 /// 绝不静默猜测写错会话的 todo.json）。
-fn auto_discover_seed(discovery: &qaqh_proto::DaemonDiscovery) -> Result<String, String> {
+fn auto_discover_seed(discovery: &qaqh_types::DaemonDiscovery) -> Result<String, String> {
     let (_, sessions) = http_post_json(
         discovery,
         "/ringing/v1/service/session.list",
@@ -323,7 +326,7 @@ fn auto_discover_seed(discovery: &qaqh_proto::DaemonDiscovery) -> Result<String,
 
 /// open lease（attach_seed 轻量握手）→ 调 service 方法 → 打印结果。
 fn run_service_call(
-    discovery: &qaqh_proto::DaemonDiscovery,
+    discovery: &qaqh_types::DaemonDiscovery,
     seed: &str,
     method: &str,
     params: &serde_json::Value,
@@ -383,7 +386,7 @@ fn run_service_call(
 /// `Connection: close` 让服务端回完即关流，读至 EOF 规避分块解析。
 /// 与 stop() 同一套本机直连假设（无 TLS；远端跨机模式不在此路线上）。
 fn http_post_json(
-    discovery: &qaqh_proto::DaemonDiscovery,
+    discovery: &qaqh_types::DaemonDiscovery,
     path: &str,
     body: &serde_json::Value,
     session_header: Option<&str>,
@@ -429,7 +432,7 @@ fn http_post_json(
     let text = String::from_utf8_lossy(&response);
     let (head, body_text) = text
         .split_once("\r\n\r\n")
-        .ok_or_else(|| format!("malformed HTTP response"))?;
+        .ok_or_else(|| "malformed HTTP response".to_string())?;
     let status: u16 = head
         .split_whitespace()
         .nth(1)

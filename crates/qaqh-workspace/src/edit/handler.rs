@@ -367,7 +367,8 @@ pub fn register(mgr: &mut ToolManager) {
                     },
                     "hunks": {
                         "type": "array",
-                        "description": "Hunks: replace/insert_after/insert_before/replace_inline/prepend_file/append_file (required, at least one)"
+                        "minItems": 1,
+                        "description": "Hunks: replace/insert_after/insert_before/replace_inline/prepend_file/append_file (at least one)"
                     },
                     "mode": {
                         "type": "string",

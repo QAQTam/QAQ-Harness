@@ -127,6 +127,9 @@ pub(crate) fn exec_todo_write(args: &Value) -> Result<String, String> {
         let cleared = store.items.len();
         store.items.clear();
         store.current_id = None;
+        // 清空 = 全新清单：ID 序列重置（下次 write 从 T1 起）。会话内工具的
+        // 旧 ID 引用随对话 compact 消失，混淆窗口可忽略（owner 拍板语义）。
+        store.next_id = 1;
         write_store(&store)?;
         return Ok(json_ok(serde_json::json!({
             "cleared": cleared,

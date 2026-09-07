@@ -566,7 +566,7 @@ fn split_roundtrip_via_handlers() {
 }
 
 #[test]
-fn write_empty_clears_and_id_watermark_persists() {
+fn write_empty_clears_and_restarts_id_sequence() {
     with_isolated_todo(|_seed| {
         handle_write(split_ctx(
             "todo_write",
@@ -578,7 +578,7 @@ fn write_empty_clears_and_id_watermark_persists() {
         );
         assert_eq!(cleared["cleared"], 1);
         assert!(read_store().unwrap().items.is_empty());
-        // ID 高水位不复用：清空后新条目继续单调分配
+        // 清空 = 全新清单：ID 序列重置，新条目从 T1 重新分配
         let after = parse_tool_result(
             handle_write(split_ctx(
                 "todo_write",
@@ -586,7 +586,7 @@ fn write_empty_clears_and_id_watermark_persists() {
             ))
             .model_text(),
         );
-        assert_eq!(after["created"][0]["id"], "T2");
+        assert_eq!(after["created"][0]["id"], "T1");
     });
 }
 

@@ -255,10 +255,6 @@ pub(crate) fn locate_hunk(view: &FileView, hunk: &Hunk) -> Result<Vec<Located>, 
             context_after,
             ..
         } => locate_replace(view, old, context_before, context_after).map(|l| vec![l]),
-        // 整文件区间；空文件（创建路径）自动退化为零长度区间。
-        Hunk::InsertAfter { anchor, .. } | Hunk::InsertBefore { anchor, .. } => {
-            locate_anchor(view, anchor).map(|l| vec![l])
-        }
         Hunk::PrependFile { .. } => Ok(vec![Located {
             start_char: 0,
             end_char: 0,
@@ -279,38 +275,6 @@ pub(crate) fn locate_hunk(view: &FileView, hunk: &Hunk) -> Result<Vec<Located>, 
             note: "append".to_string(),
             hint_line: None,
         }]),
-        Hunk::ReplaceInline {
-            anchor,
-            old,
-            replace_all,
-            regex,
-            ..
-        } => {
-            let loc = locate_anchor(view, anchor)?;
-            // 窗口内验证可命中：replace_inline 的 NO_MATCH 语义限定在 anchor 窗口内。
-            let win_lines = loc.win_lines.max(1);
-            let win = &view.lines[loc.start_line..loc.start_line + win_lines];
-            let hit = if *regex {
-                match regex::Regex::new(old) {
-                    Ok(re) => win.iter().any(|l| re.is_match(l)),
-                    Err(e) => return Err(LocateError::InvalidRegex(e.to_string())),
-                }
-            } else {
-                win.iter().any(|l| l.contains(old.as_str()))
-            };
-            if !hit {
-                let _ = replace_all; // 命中计数在 resolve 里标注
-                return Err(LocateError::NoMatch {
-                    candidates: Vec::new(),
-                    detail: format!(
-                        "replace_inline: 'old' not found within the anchor window (L{}-L{}); the anchor located the window but the substring/regex does not occur in it",
-                        loc.start_line + 1,
-                        loc.start_line + win_lines
-                    ),
-                });
-            }
-            Ok(vec![loc])
-        }
     }
 }
 
@@ -336,15 +300,6 @@ pub(crate) fn locate_with_hint(
             hint_line: Some(h),
             replace_all: false,
             ..
-        }
-        | Hunk::InsertAfter {
-            hint_line: Some(h), ..
-        }
-        | Hunk::InsertBefore {
-            hint_line: Some(h), ..
-        }
-        | Hunk::ReplaceInline {
-            hint_line: Some(h), ..
         } => (*h).max(1), // 0 视为 1（与 parse 层一致）
         _ => return None,
     };
@@ -381,80 +336,6 @@ pub(crate) fn locate_with_hint(
                     candidates: make_candidates(view, &cands, pat.len(), 1, 1.0, &pat),
                     detail: format!(
                         "hint_line {hint}: 'old' still matches {} locations within window L{}-L{}; add context_before/context_after or a more specific hint",
-                        cands.len(),
-                        lo + 1,
-                        hi
-                    ),
-                })),
-            }
-        }
-        Hunk::InsertAfter { anchor, .. } | Hunk::InsertBefore { anchor, .. } => {
-            let pat = pattern_lines(anchor);
-            let cands = tier1_in_window(view, &pat, lo, hi);
-            match cands.len() {
-                0 => None,
-                1 => {
-                    let mut loc = located(
-                        view,
-                        cands[0],
-                        pat.len(),
-                        4,
-                        1.0,
-                        &format!("hint_line {hint} (window, exact)"),
-                    );
-                    loc.hint_line = Some(hint);
-                    Some(Ok(loc))
-                }
-                _ => Some(Err(LocateError::Ambiguous {
-                    candidates: make_candidates(view, &cands, pat.len(), 1, 1.0, &pat),
-                    detail: format!(
-                        "hint_line {hint}: anchor still matches {} locations within window L{}-L{}; refine the anchor",
-                        cands.len(),
-                        lo + 1,
-                        hi
-                    ),
-                })),
-            }
-        }
-        Hunk::ReplaceInline {
-            anchor, old, regex, ..
-        } => {
-            let pat = pattern_lines(anchor);
-            let cands = tier1_in_window(view, &pat, lo, hi);
-            match cands.len() {
-                0 => None,
-                1 => {
-                    let mut loc = located(
-                        view,
-                        cands[0],
-                        pat.len(),
-                        4,
-                        1.0,
-                        &format!("hint_line {hint} (window, exact)"),
-                    );
-                    // 窗口内验证子串/regex 可命中（与 locate_hunk 的 ReplaceInline 一致）。
-                    let win_lines = loc.win_lines.max(1);
-                    let win = &view.lines[loc.start_line..loc.start_line + win_lines];
-                    let hit = if *regex {
-                        match regex::Regex::new(old) {
-                            Ok(re) => win.iter().any(|l| re.is_match(l)),
-                            Err(e) => {
-                                return Some(Err(LocateError::InvalidRegex(e.to_string())));
-                            }
-                        }
-                    } else {
-                        win.iter().any(|l| l.contains(old.as_str()))
-                    };
-                    if !hit {
-                        return None; // 窗口内无子串 → hint 无效，保留原错误
-                    }
-                    loc.hint_line = Some(hint);
-                    Some(Ok(loc))
-                }
-                _ => Some(Err(LocateError::Ambiguous {
-                    candidates: make_candidates(view, &cands, pat.len(), 1, 1.0, &pat),
-                    detail: format!(
-                        "hint_line {hint}: anchor still matches {} locations within window L{}-L{}",
                         cands.len(),
                         lo + 1,
                         hi

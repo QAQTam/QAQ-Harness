@@ -19,32 +19,11 @@ pub(crate) enum Hunk {
         /// 不触碰默认路径（未提供时行为与原来完全一致）。
         hint_line: Option<usize>,
     },
-    InsertAfter {
-        anchor: String,
-        new: String,
-        hint_line: Option<usize>,
-    },
-    InsertBefore {
-        anchor: String,
-        new: String,
-        hint_line: Option<usize>,
-    },
     PrependFile {
         new: String,
     },
     AppendFile {
         new: String,
-    },
-    /// 行内替换（sed `s///` 语义）：anchor 定位行窗口后，**仅在窗口内**做子串/
-    /// 正则替换——不跨行、不改行结构。`replace_all=false` 只替换第一处（按行序）；
-    /// `regex=true` 时 `old` 为正则（regex crate 语法，大小写敏感）。
-    ReplaceInline {
-        anchor: String,
-        old: String,
-        new: String,
-        replace_all: bool,
-        regex: bool,
-        hint_line: Option<usize>,
     },
 }
 
@@ -52,11 +31,8 @@ impl Hunk {
     pub(crate) fn kind_name(&self) -> &'static str {
         match self {
             Hunk::Replace { .. } => "replace",
-            Hunk::InsertAfter { .. } => "insert_after",
-            Hunk::InsertBefore { .. } => "insert_before",
             Hunk::PrependFile { .. } => "prepend_file",
             Hunk::AppendFile { .. } => "append_file",
-            Hunk::ReplaceInline { .. } => "replace_inline",
         }
     }
 
@@ -106,31 +82,6 @@ impl Hunk {
                     hint_line: parse_hint_line(v),
                 })
             }
-            "insert_after" | "insert_before" => {
-                let anchor = v
-                    .get("anchor")
-                    .and_then(|x| x.as_str())
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| format!("{kind} hunk requires non-empty 'anchor'"))?;
-                let new = v
-                    .get("new")
-                    .and_then(|x| x.as_str())
-                    .ok_or_else(|| format!("{kind} hunk requires 'new'"))?;
-                let (anchor, new) = (norm(anchor, notes), norm(new, notes));
-                if kind == "insert_after" {
-                    Ok(Hunk::InsertAfter {
-                        anchor,
-                        new,
-                        hint_line: parse_hint_line(v),
-                    })
-                } else {
-                    Ok(Hunk::InsertBefore {
-                        anchor,
-                        new,
-                        hint_line: parse_hint_line(v),
-                    })
-                }
-            }
             "prepend_file" | "append_file" => {
                 let new = v
                     .get("new")
@@ -143,43 +94,8 @@ impl Hunk {
                     Ok(Hunk::AppendFile { new })
                 }
             }
-            "replace_inline" => {
-                let anchor = v
-                    .get("anchor")
-                    .and_then(|x| x.as_str())
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| "replace_inline hunk requires non-empty 'anchor'".to_string())?;
-                let old = v
-                    .get("old")
-                    .and_then(|x| x.as_str())
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| "replace_inline hunk requires non-empty 'old'".to_string())?;
-                if old.contains('\n') {
-                    return Err(
-                        "replace_inline 'old' must be a single-line substring (use 'replace' for line-level edits)"
-                            .to_string(),
-                    );
-                }
-                let new = v
-                    .get("new")
-                    .and_then(|x| x.as_str())
-                    .ok_or_else(|| "replace_inline hunk requires 'new'".to_string())?;
-                let replace_all = v
-                    .get("replace_all")
-                    .and_then(|x| x.as_bool())
-                    .unwrap_or(false);
-                let regex = v.get("regex").and_then(|x| x.as_bool()).unwrap_or(false);
-                Ok(Hunk::ReplaceInline {
-                    anchor: norm(anchor, notes),
-                    old: norm(old, notes),
-                    new: norm(new, notes),
-                    replace_all,
-                    regex,
-                    hint_line: parse_hint_line(v),
-                })
-            }
             other => Err(format!(
-                "unknown hunk kind '{other}' (expected replace / overwrite / insert_after / insert_before / prepend_file / append_file / replace_inline)"
+                "unknown hunk kind '{other}' (expected replace / prepend_file / append_file)"
             )),
         }
     }

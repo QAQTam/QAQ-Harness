@@ -58,7 +58,7 @@ pub mod view;
 pub use handler::exec_edit;
 pub use handler::register;
 pub(crate) use hunk::Hunk;
-pub(crate) use transaction::{FileOutcome, Mode, render_text, run_edit};
+pub(crate) use transaction::{FileOutcome, render_text, run_edit};
 pub(crate) use view::FileView;
 
 #[cfg(test)]

@@ -46,11 +46,7 @@ fn rp_hint(old: &str, new: &str, hint: usize) -> Hunk {
 }
 
 fn edit(content: &str, hunks: &[Hunk]) -> FileOutcome {
-    run_edit(content, "test.rs", hunks, Vec::new(), Mode::Strict)
-}
-
-fn edit_partial(content: &str, hunks: &[Hunk]) -> FileOutcome {
-    run_edit(content, "test.rs", hunks, Vec::new(), Mode::Partial)
+    run_edit(content, "test.rs", hunks, Vec::new())
 }
 
 fn err_code(o: &FileOutcome) -> &str {
@@ -170,14 +166,7 @@ fn overlapping_hunks_rejected_atomically() {
     // replace "a\nb\nc" 区间 [0,5)，insert_before "b" 的插入点 = 行 1 行首 = char 2 ∈ (0,5) 内部 → 冲突
     let out = edit(
         content,
-        &[
-            rp("a\nb\nc", "X"),
-            Hunk::InsertBefore {
-                anchor: "b".into(),
-                new: "BB\n".into(),
-                hint_line: None,
-            },
-        ],
+        &[rp("a\nb\nc", "X"), rp("a\nb", "Y")], // 第二个区间严格内部 → 冲突
     );
     assert!(out.edited.is_none());
     assert_eq!(err_code(&out), "OVERLAPPING_HUNKS");
@@ -220,7 +209,7 @@ fn crlf_in_request_normalized_with_notes() {
         &mut notes,
     )
     .unwrap();
-    let out = run_edit("a\nb\n", "test.rs", &[hunk], notes, Mode::Strict);
+    let out = run_edit("a\nb\n", "test.rs", &[hunk], notes);
     assert_eq!(out.edited.as_deref(), Some("A\nB\n"));
     assert_eq!(out.reports[0].status, "ok");
     assert!(out.notes.iter().any(|n| n.contains("CRLF")));
@@ -235,78 +224,14 @@ fn empty_old_without_context_is_underspecified() {
 }
 
 // 纯插入：context_before 定位
-#[test]
-fn pure_insert_with_context_before() {
-    let out = edit("a\nb\nc\n", &[rp_ctx("", "X\n", "b", "")]);
-    assert_eq!(out.edited.as_deref(), Some("a\nb\nX\nc\n"));
-}
 
 // 纯插入：双 context 交界
-#[test]
-fn pure_insert_between_contexts() {
-    let out = edit("a\nb\nc\n", &[rp_ctx("", "X\n", "b", "c")]);
-    assert_eq!(out.edited.as_deref(), Some("a\nb\nX\nc\n"));
-}
 
 // 15. insert_after / insert_before 锚点
-#[test]
-fn insert_after_and_before_anchors() {
-    let out = edit(
-        "a\nb\nc\n",
-        &[Hunk::InsertAfter {
-            anchor: "b".into(),
-            new: "b2\n".into(),
-            hint_line: None,
-        }],
-    );
-    assert_eq!(out.edited.as_deref(), Some("a\nb\nb2\nc\n"));
-    let out = edit(
-        "a\nb\nc\n",
-        &[Hunk::InsertBefore {
-            anchor: "c".into(),
-            new: "c0\n".into(),
-            hint_line: None,
-        }],
-    );
-    assert_eq!(out.edited.as_deref(), Some("a\nb\nc0\nc\n"));
-}
 
 // 15a. 同一位置的两次插入 → 重叠拒绝（顺序无歧义才允许）
-#[test]
-fn two_inserts_at_same_position_rejected() {
-    let out = edit(
-        "a\nb\nc\n",
-        &[
-            Hunk::InsertAfter {
-                anchor: "b".into(),
-                new: "b2\n".into(),
-                hint_line: None,
-            },
-            Hunk::InsertBefore {
-                anchor: "c".into(),
-                new: "c0\n".into(),
-                hint_line: None,
-            },
-        ],
-    );
-    assert!(out.edited.is_none());
-    assert_eq!(err_code(&out), "OVERLAPPING_HUNKS");
-}
 
 // 15b. 锚点多处命中 → Ambiguous
-#[test]
-fn ambiguous_anchor_rejected() {
-    let out = edit(
-        "a\nx\nb\nx\n",
-        &[Hunk::InsertAfter {
-            anchor: "x".into(),
-            new: "y\n".into(),
-            hint_line: None,
-        }],
-    );
-    assert_eq!(err_code(&out), "AMBIGUOUS_MATCH");
-    assert!(out.edited.is_none());
-}
 
 // 16. CRLF 文件写回保持 CRLF（execute 层测试）
 #[test]
@@ -443,71 +368,12 @@ fn three_hunks_apply_head_mid_tail() {
 }
 
 // 插入点与替换区间边界相邻（不冲突）→ 都应用
-#[test]
-fn insert_at_replace_boundary_is_allowed() {
-    let out = edit(
-        "a\nb\nc\n",
-        &[
-            rp("a", "A"),
-            Hunk::InsertAfter {
-                anchor: "a".into(),
-                new: "a2\n".into(),
-                hint_line: None,
-            },
-        ],
-    );
-    // replace "a"（区间 [0,1)，不含尾换行）与 insert_after "a"（插入点 char 2，
-    // 在区间边界）不相交 → 都应用；倒序应用结果确定。
-    assert_eq!(out.edited.as_deref(), Some("A\na2\nb\nc\n"));
-}
 
 // 21. partial 模式：成功 hunk 应用、失败 hunk 只报告
-#[test]
-fn partial_mode_applies_successful_hunks() {
-    let out = edit_partial("a\nb\nc\n", &[rp("a", "A"), rp("zzz", "Z"), rp("c", "C")]);
-    // 成功两处已应用，失败一处报错；code 为第一个失败码
-    assert_eq!(out.edited.as_deref(), Some("A\nb\nC\n"));
-    assert_eq!(out.reports.len(), 3);
-    assert_eq!(out.reports[0].status, "ok");
-    assert_eq!(out.reports[1].status, "error");
-    assert_eq!(out.reports[2].status, "ok");
-    assert_eq!(out.code.as_deref(), Some("NO_MATCH"));
-    assert!(out.new_hash.is_some());
-    // 渲染文本含续接指引
-    let text = render_text("f.txt", &out);
-    assert!(text.contains("[PARTIAL]"), "text: {text}");
-    assert!(
-        text.contains("re-send ONLY the failed hunks"),
-        "text: {text}"
-    );
-}
 
 // 22. partial 模式：全部失败 → 零改动（不写空结果）
-#[test]
-fn partial_mode_all_failed_writes_nothing() {
-    let out = edit_partial("a\nb\nc\n", &[rp("zzz", "Z")]);
-    assert!(out.edited.is_none());
-    assert_eq!(out.code.as_deref(), Some("NO_MATCH"));
-}
 
 // 23. partial 模式：成功 hunk 之间重叠 → 仍拒绝
-#[test]
-fn partial_mode_overlap_among_successful_still_rejected() {
-    let out = edit_partial(
-        "a\nb\nc\n",
-        &[
-            rp("a\nb", "X"),
-            Hunk::InsertBefore {
-                anchor: "b".into(),
-                new: "BB\n".into(),
-                hint_line: None,
-            },
-            rp("zzz", "Z"), // 失败的 hunk 不参与重叠检测
-        ],
-    );
-    assert!(out.edited.is_none());
-    assert_eq!(out.code.as_deref(), Some("OVERLAPPING_HUNKS"));
-}
 
 // 24. NO_MATCH 诊断：候选带 -/+ 对照
 #[test]
@@ -549,63 +415,7 @@ fn no_match_detail_explains_total_mismatch() {
     );
 }
 
-// 27. partial 执行链：partial 落盘后 new_hash 续接只重发失败 hunk
-#[test]
-fn partial_then_resend_failed_hunk_via_execute() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    std::fs::write(&path, "a\nb\nc\n").unwrap();
-    let r1 = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "expected_hash": content_hash("a\nb\nc\n"),
-        "mode": "partial",
-        "hunks": [
-            {"kind": "replace", "old": "a", "new": "A"},
-            {"kind": "replace", "old": "zzz", "new": "Z"},
-            {"kind": "replace", "old": "c", "new": "C"}
-        ],
-    }));
-    assert!(r1.is_success(), "model text: {}", r1.model.text);
-    assert_eq!(r1.data["status"], "partial");
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "A\nb\nC\n");
-    let new_hash = r1.data["new_hash"].as_str().unwrap().to_string();
-    // 只重发失败的 hunk
-    let r2 = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "expected_hash": new_hash,
-        "hunks": [{"kind": "replace", "old": "zzz", "new": "Z"}],
-    }));
-    assert!(
-        !r2.is_success(),
-        "expected NO_MATCH, model text: {}",
-        r2.model.text
-    );
-    // 文件未被第二次调用改动
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "A\nb\nC\n");
-    // 修正后成功
-    let r3 = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "expected_hash": new_hash,
-        "hunks": [{"kind": "insert_after", "anchor": "b", "new": "b2\n"}],
-    }));
-    assert!(r3.is_success(), "model text: {}", r3.model.text);
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "A\nb\nb2\nC\n");
-}
-
 // 28. 未知 mode → PARSE_ERROR
-#[test]
-fn unknown_mode_rejected() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    std::fs::write(&path, "a\n").unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "mode": "magic",
-        "hunks": [{"kind": "replace", "old": "a", "new": "b"}],
-    }));
-    assert!(!result.is_success());
-    assert_eq!(result.error.as_ref().unwrap().code, "PARSE_ERROR");
-}
 
 // ── 多字节（中文）回归：FileView 字节/字符索引混淆曾导致 ropey 越界
 //    panic 与区间错位（char_indices 返回字节偏移被误当 char 索引）。
@@ -644,22 +454,6 @@ fn multibyte_multi_hunk_reverse_apply() {
 
 // 中文锚点 InsertAfter：插入位置按 char 索引定位，中文行后插入正确。
 // （语义：new 自带换行，与 ASCII 用例 15 一致。）
-#[test]
-fn multibyte_insert_after_anchor() {
-    let content = "// 头部注释\nbody();\n";
-    let out = edit(
-        content,
-        &[Hunk::InsertAfter {
-            anchor: "// 头部注释".to_string(),
-            new: "// 追加注释\n".to_string(),
-            hint_line: None,
-        }],
-    );
-    assert_eq!(
-        out.edited.as_deref(),
-        Some("// 头部注释\n// 追加注释\nbody();\n")
-    );
-}
 
 // 中文文件无尾换行 AppendFile：自动补换行（new 给纯内容，不带前导 \n）。
 #[test]
@@ -771,222 +565,18 @@ fn replace_on_missing_file_hints_creation() {
 // ── replace_inline（sed `s///` 语义）──
 
 // R19. 基本：anchor 窗口内子串替换第一处，窗口外不受影响
-#[test]
-fn replace_inline_replaces_first_occurrence_in_window() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.rs");
-    std::fs::write(
-        &path,
-        "fn main() {\n    let x = input.clone();\n    input\n}\n",
-    )
-    .unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "hunks": [{
-            "kind": "replace_inline",
-            "anchor": "let x = input.clone();",
-            "old": "input",
-            "new": "payload",
-        }],
-    }));
-    assert!(result.is_success(), "model text: {}", result.model.text);
-    assert_eq!(
-        std::fs::read_to_string(&path).unwrap(),
-        "fn main() {\n    let x = payload.clone();\n    input\n}\n"
-    );
-}
 
 // R20. replace_all：窗口内全部替换（仍不跨窗口）
-#[test]
-fn replace_inline_replace_all_in_window() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.rs");
-    std::fs::write(
-        &path,
-        "fn f() {\n    let a = alpha + alpha;\n    alpha\n}\n",
-    )
-    .unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "hunks": [{
-            "kind": "replace_inline",
-            "anchor": "let a = alpha + alpha;",
-            "old": "alpha",
-            "new": "beta",
-            "replace_all": true,
-        }],
-    }));
-    assert!(result.is_success(), "model text: {}", result.model.text);
-    assert_eq!(
-        std::fs::read_to_string(&path).unwrap(),
-        "fn f() {\n    let a = beta + beta;\n    alpha\n}\n"
-    );
-}
 
 // R21. 超长行场景（backend_prompt.md 案例）：整行锚 + 行内子串替换
-#[test]
-fn replace_inline_on_long_line() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    let long_line = format!("start {} end", "y".repeat(200));
-    std::fs::write(&path, format!("a\n{long_line}\nb\n")).unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "hunks": [{
-            "kind": "replace_inline",
-            "anchor": long_line,
-            "old": "yyy",
-            "new": "ZZZ",
-        }],
-    }));
-    assert!(result.is_success(), "model text: {}", result.model.text);
-    let content = std::fs::read_to_string(&path).unwrap();
-    assert_eq!(
-        content,
-        format!("a\nstart {} end\nb\n", "ZZZ".to_string() + &"y".repeat(197))
-    );
-}
 
 // R22. 窗口内无 old → NO_MATCH
-#[test]
-fn replace_inline_missing_in_window_reports_no_match() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.rs");
-    std::fs::write(&path, "fn foo() {\n    bar()\n}\n").unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "hunks": [{
-            "kind": "replace_inline",
-            "anchor": "fn foo() {",
-            "old": "baz",
-            "new": "qux",
-        }],
-    }));
-    assert!(!result.is_success());
-    assert_eq!(result.data["code"], "NO_MATCH");
-    // 事务：文件未被修改
-    assert_eq!(
-        std::fs::read_to_string(&path).unwrap(),
-        "fn foo() {\n    bar()\n}\n"
-    );
-}
 
 // R23. regex 替换 + 捕获组引用
-#[test]
-fn replace_inline_regex_with_captures() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.rs");
-    std::fs::write(&path, "fn f() {\n    let _a = 1;\n}\n").unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "hunks": [{
-            "kind": "replace_inline",
-            "anchor": "let _a = 1;",
-            "old": r"let (\w+) = (\d+)",
-            "new": "let $2 = $1",
-            "regex": true,
-        }],
-    }));
-    assert!(result.is_success(), "model text: {}", result.model.text);
-    assert_eq!(
-        std::fs::read_to_string(&path).unwrap(),
-        "fn f() {\n    let 1 = _a;\n}\n"
-    );
-}
 
 // R24. 非法正则 → INVALID_REGEX
-#[test]
-fn replace_inline_invalid_regex_rejected() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.rs");
-    std::fs::write(&path, "fn f() {\n    x\n}\n").unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "hunks": [{
-            "kind": "replace_inline",
-            "anchor": "x",
-            "old": "(",
-            "new": "y",
-            "regex": true,
-        }],
-    }));
-    assert!(!result.is_success());
-    assert_eq!(result.data["code"], "INVALID_REGEX");
-}
 
 // R25. 模糊锚 → AMBIGUOUS_MATCH（与 replace/insert 同款消歧）
-#[test]
-fn replace_inline_ambiguous_anchor_rejected() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    std::fs::write(&path, "dup\ndup\n").unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "hunks": [{
-            "kind": "replace_inline",
-            "anchor": "dup",
-            "old": "dup",
-            "new": "DUP",
-        }],
-    }));
-    assert!(!result.is_success());
-    assert_eq!(result.data["code"], "AMBIGUOUS_MATCH");
-}
-
-// R26. 多 hunk 混用：replace_inline + replace 同批事务，失败整体拒绝
-#[test]
-fn replace_inline_mixed_with_replace_is_transactional() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.rs");
-    std::fs::write(&path, "fn f() {\n    let a = alpha;\n    beta\n}\n").unwrap();
-    let result = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "hunks": [
-            {
-                "kind": "replace_inline",
-                "anchor": "let a = alpha;",
-                "old": "alpha",
-                "new": "gamma",
-            },
-            {"kind": "replace", "old": "zzz_nope", "new": "x"},
-        ],
-    }));
-    assert!(!result.is_success());
-    assert_eq!(result.data["code"], "NO_MATCH");
-    // 整体拒绝：零改动
-    assert_eq!(
-        std::fs::read_to_string(&path).unwrap(),
-        "fn f() {\n    let a = alpha;\n    beta\n}\n"
-    );
-}
-
-// R27. replace_inline 走 hash 链：读 → 改，返回 new_hash
-#[test]
-fn replace_inline_hash_chains() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.rs");
-    std::fs::write(&path, "fn f() {\n    let x = input;\n}\n").unwrap();
-    // read 模式已退役——hash 链改走 read 工具（file_query）
-    let read = crate::file_query::exec_read(&json!({ "path": path.to_string_lossy() }));
-    assert!(read.is_success(), "read: {}", read.model.text);
-    let h = read.data["files"][0]["hash"].as_str().unwrap().to_string();
-    let edit = exec_edit(&json!({
-        "path": path.to_string_lossy(),
-        "expected_hash": h,
-        "hunks": [{
-            "kind": "replace_inline",
-            "anchor": "let x = input;",
-            "old": "input",
-            "new": "payload",
-        }],
-    }));
-    assert!(edit.is_success(), "model text: {}", edit.model.text);
-    assert_eq!(
-        std::fs::read_to_string(&path).unwrap(),
-        "fn f() {\n    let x = payload;\n}\n"
-    );
-    assert!(edit.data.get("new_hash").is_some());
-}
 
 #[test]
 fn shifts_are_computed_for_line_level_edits() {
@@ -1055,20 +645,13 @@ fn hint_line_miss_keeps_original_error() {
 
 #[test]
 fn hint_line_disambiguates_anchor_insert() {
-    // anchor "x" 两处，hint=14 窗口只含第二个 → insert_before 落到 L14。
+    // "x" 两处，hint=14 窗口只含第二个 → replace 落到第二处。
     let content = "a\nb\nx\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nx\nm\n";
-    let out = edit(
-        content,
-        &[Hunk::InsertBefore {
-            anchor: "x".into(),
-            new: "INS\n".into(),
-            hint_line: Some(14),
-        }],
-    );
-    assert!(out.edited.is_some(), "hint should disambiguate the anchor");
+    let out = edit(content, &[rp_hint("x", "INS", 14)]);
+    assert!(out.edited.is_some(), "hint should disambiguate");
     assert_eq!(
         out.edited.as_deref(),
-        Some("a\nb\nx\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nINS\nx\nm\n")
+        Some("a\nb\nx\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nINS\nm\n")
     );
     assert_eq!(out.reports[0].used_hint, Some(14));
 }

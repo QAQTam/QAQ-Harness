@@ -89,83 +89,6 @@ pub(crate) fn reindent(new: &str, base: &str) -> String {
         .join("\n")
 }
 
-/// sed `s///` 语义：窗口内行内替换。不跨行（逐行处理）、不改行结构；
-/// `replace_all=false` 只替换第一处（按行序）。regex=true 时 old 为正则。
-/// 窗口末尾无换行时（文件尾）保持无换行。
-pub(crate) fn inline_replace(
-    window: &str,
-    old: &str,
-    new: &str,
-    replace_all: bool,
-    regex: bool,
-) -> Result<String, String> {
-    if regex {
-        let re = regex::Regex::new(old).map_err(|e| e.to_string())?;
-        let mut out = String::with_capacity(window.len() + new.len());
-        // done = 首次替换已完成（仅 replace_all=false 时置位；=true 时每行都换）。
-        let mut done = false;
-        for line in window.split_inclusive('\n') {
-            if done {
-                out.push_str(line);
-                continue;
-            }
-            // strip_suffix：等价 len-1 字节切片（'\n' 单字节），且 lint 干净。
-            let (body, nl) = match line.strip_suffix('\n') {
-                Some(b) => (b, "\n"),
-                None => (line, ""),
-            };
-            if replace_all {
-                out.push_str(&re.replace_all(body, new));
-            } else {
-                match re.find(body) {
-                    Some(_) => {
-                        // re.replace 替换第一处并展开 $1/$2 捕获组（sed s/// 语义）。
-                        out.push_str(&re.replace(body, new));
-                        done = true;
-                    }
-                    None => out.push_str(body),
-                }
-            }
-            out.push_str(nl);
-        }
-        Ok(out)
-    } else {
-        let mut out = String::with_capacity(window.len() + new.len());
-        // done = 首次替换已完成（仅 replace_all=false 时置位；=true 时每行都换）。
-        let mut done = false;
-        for line in window.split_inclusive('\n') {
-            if done {
-                out.push_str(line);
-                continue;
-            }
-            // strip_suffix：等价 len-1 字节切片（'\n' 单字节），且 lint 干净。
-            let (body, nl) = match line.strip_suffix('\n') {
-                Some(b) => (b, "\n"),
-                None => (line, ""),
-            };
-            if replace_all {
-                out.push_str(&body.replace(old, new));
-            } else {
-                match body.find(old) {
-                    Some(pos) => {
-                        // find 命中点必为 char boundary；split_at 等价原切片。
-                        let (before, matched) = body.split_at(pos);
-                        let (_, after) = matched.split_at(old.len());
-                        let mut replaced = String::with_capacity(body.len() + new.len());
-                        replaced.push_str(before);
-                        replaced.push_str(new);
-                        replaced.push_str(after);
-                        out.push_str(&replaced);
-                        done = true;
-                    }
-                    None => out.push_str(body),
-                }
-            }
-            out.push_str(nl);
-        }
-        Ok(out)
-    }
-}
 pub(crate) fn resolve(view: &FileView, hunk: &Hunk, loc: &Located) -> ResolvedOp {
     match hunk {
         Hunk::Replace { old, new, .. } => {
@@ -182,20 +105,6 @@ pub(crate) fn resolve(view: &FileView, hunk: &Hunk, loc: &Located) -> ResolvedOp
             };
             ResolvedOp::Replace { range, new }
         }
-        Hunk::InsertAfter { new, .. } => {
-            let pos = view.char_starts[loc.start_line + loc.win_lines];
-            // 锚点窗口是文件尾且无尾随换行：先补换行，避免新内容粘在最后一行上。
-            let text = if pos == view.char_len() && !view.content.ends_with('\n') {
-                format!("\n{new}")
-            } else {
-                new.clone()
-            };
-            ResolvedOp::Insert { pos, text }
-        }
-        Hunk::InsertBefore { new, .. } => ResolvedOp::Insert {
-            pos: view.char_starts[loc.start_line],
-            text: new.clone(),
-        },
         Hunk::PrependFile { new } => ResolvedOp::Insert {
             pos: 0,
             text: new.clone(),
@@ -209,27 +118,6 @@ pub(crate) fn resolve(view: &FileView, hunk: &Hunk, loc: &Located) -> ResolvedOp
             ResolvedOp::Insert {
                 pos: view.char_len(),
                 text,
-            }
-        }
-        Hunk::ReplaceInline {
-            old,
-            new,
-            replace_all,
-            regex,
-            ..
-        } => {
-            // 窗口 = anchor 命中行区间（含行间换行，不含文件尾的尾空行行号）。
-            let start = view.char_starts[loc.start_line];
-            let end = view.char_starts[loc.start_line + loc.win_lines.max(1)];
-            let window = view
-                .content
-                .get(start..end)
-                .expect("char_starts entries are char boundaries");
-            let replaced = inline_replace(window, old, new, *replace_all, *regex)
-                .expect("locate_hunk verified the window contains a match; regex already compiled");
-            ResolvedOp::Replace {
-                range: start..end,
-                new: replaced,
             }
         }
     }

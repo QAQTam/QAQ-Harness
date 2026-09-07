@@ -73,24 +73,6 @@ pub fn exec_edit(args: &serde_json::Value) -> ToolResult {
         }
     }
 
-    // ── 应用语义（参数校验先于任何 IO）──
-    let mode = match args
-        .get("mode")
-        .and_then(|v| v.as_str())
-        .unwrap_or("strict")
-    {
-        "strict" => Mode::Strict,
-        "partial" => Mode::Partial,
-        other => {
-            return fail(
-                "PARSE_ERROR",
-                format!("edit: unknown mode '{other}' (expected 'strict' or 'partial')"),
-                false,
-                None,
-            );
-        }
-    };
-
     // ── 读文件 ──
     let mut file_was_missing = false;
     let raw = match std::fs::read(&path) {
@@ -170,7 +152,7 @@ pub fn exec_edit(args: &serde_json::Value) -> ToolResult {
     }
 
     // ── 核心执行 ──
-    let outcome = run_edit(&content, raw_path, &parsed, notes, mode);
+    let outcome = run_edit(&content, raw_path, &parsed, notes);
 
     match outcome.edited {
         None => {
@@ -286,6 +268,10 @@ pub fn exec_edit(args: &serde_json::Value) -> ToolResult {
                 "total_hunks": total,
                 "notes": outcome.notes,
                 "hunks": outcome.reports.iter().map(hunk_report_json).collect::<Vec<_>>(),
+                // PR-E-1：patch 回显进模型投影——模型下一轮持内容基线
+                //（unified diff，hunk 级天然小；fold 硬顶兜底超大场景）。
+                // 修复"模型盲改"循环：上轮只回 hash 元数据，old 复述全靠记忆。
+                "patch": outcome.diff,
             });
             if let Some(code) = &outcome.code {
                 data["code"] = json!(code);
@@ -356,7 +342,7 @@ pub fn register(mgr: &mut ToolManager) {
     mgr.register_with_placement(
         ToolHandler {
             key: "edit".to_string(),
-            description: "File editor (hunk-based, content-matched, supports replace_all). Kinds: replace(old/new), insert_after/insert_before(anchor/new), replace_inline(anchor/old/new), prepend/append_file(new). Use shortest unique old/anchor; supports expected_hash, dry_run+confirm_apply, partial.",
+            description: "File editor (hunk-based, content-matched, supports replace_all). Kinds: replace(old/new), insert_after/insert_before(anchor/new), replace_inline(anchor/old/new), prepend/append_file(new). Use shortest unique old/anchor; supports expected_hash, dry_run+confirm_apply.",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -369,12 +355,6 @@ pub fn register(mgr: &mut ToolManager) {
                         "type": "array",
                         "minItems": 1,
                         "description": "Hunks: replace/insert_after/insert_before/replace_inline/prepend_file/append_file (at least one)"
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["strict", "partial"],
-                        "default": "strict",
-                        "description": "strict=all-or-nothing; partial=apply successes, report failures"
                     },
                     "dry_run": {
                         "type": "boolean",

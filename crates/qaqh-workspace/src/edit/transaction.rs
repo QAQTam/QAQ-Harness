@@ -38,23 +38,17 @@ pub(crate) struct FileOutcome {
     pub(crate) shifts: Vec<(usize, i64)>,
 }
 
-/// 应用语义：strict = 全事务（任一 hunk 失败零改动）；partial = 成功的 hunk
-/// 落盘、失败的报详情，模型用 new_hash 续接只重发失败项。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Mode {
-    Strict,
-    Partial,
-}
-
 /// 核心纯逻辑：同一份未修改快照上定位全部 hunk → 重叠检测 → 倒序应用。
 /// strict：任一 hunk 失败 → 整体拒绝（edited = None）；
 /// partial：成功 hunk 应用（edited = Some + code = 首个失败码），报告含全部详情。
+/// 核心纯逻辑：同一份未修改快照上定位全部 hunk → 重叠检测 → 倒序应用。
+/// strict 全事务：任一 hunk 失败零改动（partial 语义已移除——半改状态比
+/// 全失败更难恢复；模型用 new_hash 续接只重发失败项）。
 pub(crate) fn run_edit(
     content: &str,
     path: &str,
     hunks: &[Hunk],
     notes: Vec<String>,
-    mode: Mode,
 ) -> FileOutcome {
     let view = FileView::new(content);
     let mut reports: Vec<HunkReport> = Vec::with_capacity(hunks.len());
@@ -116,11 +110,6 @@ pub(crate) fn run_edit(
                             .to_string(),
                         None,
                     ),
-                    LocateError::InvalidRegex(e) => (
-                        "INVALID_REGEX".to_string(),
-                        format!("replace_inline: invalid regex: {e}"),
-                        None,
-                    ),
                 };
                 if first_code.is_none() {
                     first_code = Some(code.clone());
@@ -145,72 +134,21 @@ pub(crate) fn run_edit(
 
     if let Some(code) = &first_code {
         let failed = reports.iter().filter(|r| r.status == "error").count();
-        match mode {
-            Mode::Strict => {
-                let message = format!(
-                    "{failed} of {} hunk(s) failed to locate; all-or-nothing: no changes written",
-                    hunks.len()
-                );
-                return FileOutcome {
-                    edited: None,
-                    new_hash: None,
-                    diff: String::new(),
-                    reports,
-                    code: Some(code.clone()),
-                    message: Some(message),
-                    notes,
-                    shifts: Vec::new(),
-                };
-            }
-            Mode::Partial => {
-                // 只应用定位成功的 hunk（仍做重叠检测与单快照倒序应用）。
-                let mut ops: Vec<(usize, ResolvedOp)> = Vec::with_capacity(hunks.len());
-                for (i, (hunk, locs)) in hunks.iter().zip(located.iter()).enumerate() {
-                    for loc in locs {
-                        ops.push((i, resolve(&view, hunk, loc)));
-                    }
-                }
-                if ops.is_empty() {
-                    return FileOutcome {
-                        edited: None,
-                        new_hash: None,
-                        diff: String::new(),
-                        reports,
-                        code: Some(code.clone()),
-                        message: Some(format!("{failed}/{failed} hunk(s) failed; nothing applied")),
-                        notes,
-                        shifts: Vec::new(),
-                    };
-                }
-                if let Err((a, b)) = check_overlap(&ops) {
-                    return FileOutcome {
-                        edited: None,
-                        new_hash: None,
-                        diff: String::new(),
-                        reports,
-                        code: Some("OVERLAPPING_HUNKS".to_string()),
-                        message: Some(format!(
-                            "successful hunk {a} and hunk {b} resolve to overlapping ranges; no changes written"
-                        )),
-                        notes,
-                        shifts: Vec::new(),
-                    };
-                }
-                let (edited, shifts) = apply_ops(content, &ops);
-                let applied = ops.len();
-                return FileOutcome {
-                    diff: unified_diff(content, &edited, path),
-                    new_hash: Some(content_hash(&edited)),
-                    edited: Some(edited),
-                    reports,
-                    code: Some(code.clone()),
-                    message: Some(format!(
-                        "{applied} hunk(s) applied, {failed} failed — re-send ONLY the failed hunks with the returned new_hash as expected_hash"
-                    )),
-                    notes,
-                    shifts,
-                };
-            }
+        {
+            let message = format!(
+                "{failed} of {} hunk(s) failed to locate; all-or-nothing: no changes written",
+                hunks.len()
+            );
+            return FileOutcome {
+                edited: None,
+                new_hash: None,
+                diff: String::new(),
+                reports,
+                code: Some(code.clone()),
+                message: Some(message),
+                notes,
+                shifts: Vec::new(),
+            };
         }
     }
 

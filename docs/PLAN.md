@@ -139,6 +139,19 @@ tool_search / W3 缓存失效诊断。owner 拍板（同日）：第一版全载
   T34 起反直觉）；生产二进制真实链路冒烟全绿（追加/守卫/list/清空
   cleared:33/current_id 归零/聚合名优雅退役）；evidence 强制（completed→
   evidence）仍待 owner 拍板。
+- [x] **PR-E-2 edit 收敛**（2026-09-08，owner 拍板"收敛 edit"）——研究 Claude
+  Edit（4 字段极简单形态 + result 回显 originalFile/structuredPatch 基线）
+  后两步收敛：①上轮移除 overwrite+read 模式（4eb5738/5bceb7b）；②本轮
+  **kind 6→3**（删 insert_after/insert_before/replace_inline——replace 带
+  context 表达插入；regex 替换走 bash/python）、**partial→strict-only**
+  （半改状态比全失败难恢复；Model 枚举删）、**PR-E-1 patch 回显**（edit
+  成功 data["patch"]=unified diff 进模型投影——修复"模型盲改"循环，上轮
+  只回 hash 元数据）。edit 模块 4349→2571 行。tier2/3（缩进形状/模糊）
+  **保留缓一步**（tier2 对模型缩进失误有真实救场价值；PR-E-3 单独设计）。
+  tests 删 21、file_query e2e 改 replace 表达；workspace 275 绿 / runtime
+  164 绿 / clippy 0。
+- [ ] **PR-E-3**（候选）：fuzzy tier3 淘汰 + 失败提示形态设计（tier2 去留
+  以数据定）
 - [ ] **PR-DT-2**：skills 拆分（排后，先观察 todo v3 实战效果；见 spec O4）
 - [ ] **PR-DT-3**：ToolExposure 两档 + filtered_defs 过滤 + allow 即 Direct
 - [ ] **PR-DT-4**：`qaqh_tool`（线性检索 + tool_result 返回完整 ToolDef +

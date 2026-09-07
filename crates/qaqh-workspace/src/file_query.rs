@@ -516,11 +516,11 @@ fn end_to_end_edit_then_stale_read_is_corrected() {
     assert!(r1.is_success());
     let h1 = r1.data["files"][0]["hash"].as_str().unwrap().to_string();
 
-    // 真实 edit 工具：L3 的 c 后插入两行（+2 偏移）
+    // 真实 edit 工具：L3 的 c 替换为 c+C1+C2（+2 偏移，等价于 c 后插入两行）
     let e = crate::edit::exec_edit(&serde_json::json!({
         "path": path,
         "expected_hash": h1,
-        "hunks": [{"kind": "insert_after", "anchor": "c", "new": "C1\nC2\n"}],
+        "hunks": [{"kind": "replace", "old": "c", "new": "c\nC1\nC2"}],
     }));
     assert!(e.is_success(), "edit: {}", e.model_text());
 
@@ -539,8 +539,8 @@ fn end_to_end_edit_then_stale_read_is_corrected() {
 }
 
 #[test]
-fn partial_edit_records_shifts_for_applied_hunks_only() {
-    // partial 模式：成功的 hunk 偏移入账本（失败的 no-op），随后旧行号 read 修正。
+fn multi_line_edit_records_shifts_for_later_reads() {
+    // 行号偏移入账本：多行替换后，旧行号的 read 自动修正（strict 全事务）。
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("p.txt");
     std::fs::write(&p, "a\nb\nc\nd\n").unwrap();
@@ -550,14 +550,11 @@ fn partial_edit_records_shifts_for_applied_hunks_only() {
 
     let e = crate::edit::exec_edit(&serde_json::json!({
         "path": path,
-        "mode": "partial",
         "hunks": [
             {"kind": "replace", "old": "b", "new": "B1\nB2"},
-            {"kind": "replace", "old": "zzz", "new": "yyy"},
         ],
     }));
-    assert!(e.is_success(), "partial: {}", e.model_text());
-    assert_eq!(e.data["status"], "partial");
+    assert!(e.is_success(), "edit: {}", e.model_text());
 
     // 旧 L4 d → 新 L5 d（仅成功 hunk 的偏移生效）
     let r2 = exec_read(&serde_json::json!({

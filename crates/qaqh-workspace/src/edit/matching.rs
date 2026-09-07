@@ -47,8 +47,6 @@ pub(crate) enum LocateError {
         detail: String,
     },
     Underspecified,
-    /// replace_inline 的 `regex=true` 时正则编译失败。
-    InvalidRegex(String),
 }
 
 /// Tier1：逐行全等匹配。返回全部命中位置。

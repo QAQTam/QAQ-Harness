@@ -102,6 +102,13 @@ poller 检测（`file change detected; reloaded`）→ reloader diff——
 `kept=1 conn`（配置未变，连接懒恢复）。全链路（轮询→发布→diff→保连）实证通过；
 用户 daemon（194715）全程零影响。
 
+### Phase DT — 动态工具与 tool_search（2026-09-08 立项，设计稿待评审）
+
+设计文档：`docs/dynamic-tools-design.md`（owner 诉求 U1/U2/U3 + Claude Code/Codex
+实证 + Tool Manager 盘点实测）。三条工作流：W1 聚合工具拆分（todo/skills →
+单一职责，schema 打平或更省）/ W2 exposure+tool_search（MCP deferred 主战场）/
+W3 缓存失效诊断。PR-DT-1..7 分步，决策点 D1-D7 待 owner 拍板（§6）。
+
 ## 5. 质量门禁总闸（每 PR 合入前必跑，继承旧 PLAN §8）
 
 ```powershell

@@ -31,7 +31,7 @@ pub fn file_write_paths(tool_name: &str, args: &serde_json::Value) -> Vec<String
                 paths.push(p.to_string());
             }
         }
-        "todo" | "todo_create" | "todo_insert" | "todo_set" | "todo_list" => {
+        "todo_list" | "todo_update" | "todo_write" => {
             // Todo is session state rather than a workspace file, but multiple
             // model calls in one tool round still share one ordered ID stream.
             // A synthetic conflict key preserves model call order even when a
@@ -196,10 +196,10 @@ mod tests {
     #[test]
     fn todo_mutations_are_serialized_in_model_order() {
         let pending = vec![
-            tool("todo", ""),
-            tool("todo", ""),
+            tool("todo_write", ""),
+            tool("todo_update", ""),
             tool("read", ""),
-            tool("todo", ""),
+            tool("todo_write", ""),
         ];
 
         let (groups, serial_after) = resolve_write_conflicts(&pending);

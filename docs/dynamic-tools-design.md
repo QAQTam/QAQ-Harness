@@ -112,6 +112,22 @@ W3 纯观测。
 | `todo_set` | `ids[] + status`（批量同状态）或 `updates[{id, status?, evidence?, title?, description?}]` | set | ~550 |
 | `todo_list` | `status?` | list | ~180 |
 
+**owner 拍板：todo v3 混合制形态（2026-09-08，第三轮收敛）**——研究
+Claude/Codex 后发现两家独立收敛**全量重写制**（TodoWrite/update_plan：
+每次传整个列表、无 ID、无 insert、三态；清空=传空数组，无特判）；
+Claude 另有 Task* 四件套=持久 issue-tracker（taskId+可选字段 patch，
+与 QAQH 单一形态 todo_set 同构）。QAQH 取混合制：**保留 ID 分配**
+（高水位单调不复用）+ **`todo_write` 追加语义**（items 非空=追加新
+ID 条目；**空数组=显式清空**，items 缺省报错防误清空——追加制的特例
+成本，两家全量制无此特判）+ **`todo_update` 单条状态**（原 todo_set
+改名）+ **`todo_list` 保留**（plan 模式只读）。**删**：todo_insert
+（全量/追加制下显示顺序精修无工具——回填=追加）、单条 title 便利形态
+（items-only）、模型面改 title/description 路径（修改=cancel 旧条+
+write 新条）。**直接替换**（无软迁移并存——产品早期无外部依赖，新旧
+语义重复徒增 schema）；底层契约保留全量（HTTP/CLI 直访不受限）。
+**实测**：三件套 1576B（write 708/update 534/list 334）vs 原聚合
+2705B——**净省 1129B**（约 280 tokens/请求）。
+
 **owner 追加拍板（2026-09-08，PR-DT-1 复盘）**：`todo_set` 收敛为**单一
 形态** `{id, status, evidence?}`（required [id,status]，一次一条）——
 `ids[]` 批量与 `updates[]` 逐条编辑从模型面移除，批量场景循环调用

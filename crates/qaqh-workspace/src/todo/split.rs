@@ -1,12 +1,13 @@
-//! todo::split — W1 聚合工具拆分（PR-DT-1，见 docs/dynamic-tools-design.md §5.1）。
+//! todo::split — todo 工具三件套（owner 拍板的混合制形态，2026-09-08）。
 //!
-//! 单一职责四分：`todo_create` / `todo_insert` / `todo_set` / `todo_list`。
-//! 每个薄壳 handler 与聚合 dispatch 对应 action 的字段校验**同表**
-//! （`reject_fields` 复用），写路径继续复用 `exec_*`（单一事实源不变）。
+//! `todo_write`（追加条目 / 空清空）+ `todo_update`（单条状态）+ `todo_list`
+//! （只读查看）。ID 体系保留（分配式、单调永不复用）；**无 insert**（回填
+//! 漏项 = 直接追加；显示顺序精修不设工具）；修改条目文字 = cancel 旧条 +
+//! write 新条。对标：Claude TodoWrite / Codex update_plan 的简化方向 +
+//! QAQH 自有的 ID 与 evidence 语义。
 //!
-//! 迁移策略（软迁移）：旧聚合 `todo` 保留一版（description 标 deprecated）；
-//! 稳定后删除聚合，本文件成为唯一注册点。历史安全：旧会话的
-//! `tool_call(name="todo")` 只存在于历史/审计，无重放执行路径。
+//! 底层契约（`exec_todo_create(positioned)` / `todo_set_for` / `todo_list_for`）
+//! 保留全量能力：HTTP service 面与 CLI 直访不受工具形态约束。
 
 use std::time::Duration;
 
@@ -15,21 +16,40 @@ use serde_json::Value;
 use crate::permission::ToolCategory;
 use crate::{ToolCallCtx, ToolHandler, ToolResult, ToolRisk};
 
-use super::actions::{exec_todo_create, exec_todo_list, exec_todo_set};
-use super::dispatch::reject_fields;
+use super::actions::{exec_todo_set, exec_todo_write};
 
 // ═══════════════════════════════════════════════════════
-// Handlers（字段校验表与聚合 dispatch.rs 各 action 完全一致）
+// Handlers（字段校验表 = 各工具形态的白名单补集）
 // ═══════════════════════════════════════════════════════
 
-fn tool_result(result: Result<String, String>) -> ToolResult {
+pub(crate) fn tool_result(result: Result<String, String>) -> ToolResult {
     match result {
         Ok(content) => ToolResult::ok(content),
         Err(content) => ToolResult::error(content),
     }
 }
 
-pub fn handle_create(ctx: ToolCallCtx) -> ToolResult {
+/// 跨形态字段拒绝（INVALID_INPUT）。原 dispatch.rs 的守卫函数，随聚合
+/// 退役迁入本文件。
+pub(crate) fn reject_fields(args: &Value, fields: &[&str], tool: &str) -> Result<(), String> {
+    let present: Vec<&str> = fields
+        .iter()
+        .copied()
+        .filter(|field| args.get(*field).is_some())
+        .collect();
+    if present.is_empty() {
+        Ok(())
+    } else {
+        Err(crate::json_err_string(
+            "INVALID_INPUT",
+            format!("{tool} does not accept: {}", present.join(", ")),
+            "Follow the tool-specific schema.",
+        ))
+    }
+}
+
+pub fn handle_write(ctx: ToolCallCtx) -> ToolResult {
+    // items-only：其余字段（含单条 title 便利形态）一律拒绝——一个形态。
     let result = reject_fields(
         &ctx.args,
         &[
@@ -40,26 +60,18 @@ pub fn handle_create(ctx: ToolCallCtx) -> ToolResult {
             "before_id",
             "ids",
             "updates",
+            "title",
+            "description",
         ],
-        "todo_create",
+        "todo_write",
     )
-    .and_then(|_| exec_todo_create(&ctx.args, false));
+    .and_then(|_| exec_todo_write(&ctx.args));
     tool_result(result)
 }
 
-pub fn handle_insert(ctx: ToolCallCtx) -> ToolResult {
-    let result = reject_fields(
-        &ctx.args,
-        &["id", "status", "evidence", "ids", "updates"],
-        "todo_insert",
-    )
-    .and_then(|_| exec_todo_create(&ctx.args, true));
-    tool_result(result)
-}
-
-pub fn handle_set(ctx: ToolCallCtx) -> ToolResult {
-    // 单一形态（owner 拍板）：{id, status, evidence?} 一次一条；批量/updates
-    // 已移除——多任务循环调用。底层 exec_todo_set 的 ids/updates 分支保留
+pub fn handle_update(ctx: ToolCallCtx) -> ToolResult {
+    // 单一形态：{id, status, evidence?} 一次一条；批量/updates 已移除——
+    // 多任务循环调用。底层 exec_todo_set 的 ids/updates 分支保留
     // （HTTP service 面 / CLI 直访不受工具形态约束）。
     let result = reject_fields(
         &ctx.args,
@@ -72,7 +84,7 @@ pub fn handle_set(ctx: ToolCallCtx) -> ToolResult {
             "after_id",
             "before_id",
         ],
-        "todo_set",
+        "todo_update",
     )
     .and_then(|_| exec_todo_set(&ctx.args));
     tool_result(result)
@@ -94,7 +106,7 @@ pub fn handle_list(ctx: ToolCallCtx) -> ToolResult {
         ],
         "todo_list",
     )
-    .and_then(|_| exec_todo_list(&ctx.args));
+    .and_then(|_| super::actions::exec_todo_list(&ctx.args));
     tool_result(result)
 }
 
@@ -102,62 +114,31 @@ pub fn handle_list(ctx: ToolCallCtx) -> ToolResult {
 // Schemas（单一职责：无 oneOf、无参数归属说明文字）
 // ═══════════════════════════════════════════════════════
 
-/// 批量条目 schema（create/insert 共用；json! 宏按值内插）。
-fn bulk_items_schema() -> Value {
-    serde_json::json!({
-        "type": "array",
-        "maxItems": 20,
-        "description": "Bulk form (overrides title/description).",
-        "items": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string", "description": "Task title"},
-                "description": {"type": "string", "description": "Optional context"}
-            },
-            "required": ["title"],
-            "additionalProperties": false
-        }
-    })
-}
-
-fn single_task_properties() -> Value {
-    serde_json::json!({
-        "title": {"type": "string", "description": "Task title (1-100). Single-task form: omit items."},
-        "description": {"type": "string", "description": "Context/acceptance (<=200)"}
-    })
-}
-
-fn todo_create_schema() -> Value {
-    let single = single_task_properties();
-    let items = bulk_items_schema();
+fn todo_write_schema() -> Value {
     serde_json::json!({
         "type": "object",
         "properties": {
-            "title": single["title"],
-            "description": single["description"],
-            "items": items
+            "items": {
+                "type": "array",
+                "maxItems": 20,
+                "description": "Tasks to append (new IDs assigned, monotonic). An EMPTY array CLEARS the list.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "description": "Task title"},
+                        "description": {"type": "string", "description": "Optional context"}
+                    },
+                    "required": ["title"],
+                    "additionalProperties": false
+                }
+            }
         },
+        "required": ["items"],
         "additionalProperties": false
     })
 }
 
-fn todo_insert_schema() -> Value {
-    let single = single_task_properties();
-    let items = bulk_items_schema();
-    serde_json::json!({
-        "type": "object",
-        "properties": {
-            "title": single["title"],
-            "description": single["description"],
-            "items": items,
-            "after_id": {"type": ["string", "integer"], "description": "Insert after this ID (e.g. T1). Provide exactly one of after_id/before_id."},
-            "before_id": {"type": ["string", "integer"], "description": "Insert before this ID (e.g. T1). Provide exactly one of after_id/before_id."}
-        },
-        "additionalProperties": false
-    })
-}
-
-fn todo_set_schema() -> Value {
+fn todo_update_schema() -> Value {
     serde_json::json!({
         "type": "object",
         "properties": {
@@ -195,28 +176,20 @@ type SplitTool = (
 );
 
 pub fn register(mgr: &mut crate::ToolManager) {
-    let tools: [SplitTool; 4] = [
+    let tools: [SplitTool; 3] = [
         (
-            "todo_create",
-            "Create session tasks (T1.. auto-assigned, stable; plan-mode blocked). Single via title/description, bulk <=20 via items.",
-            todo_create_schema(),
-            handle_create,
+            "todo_write",
+            "Append session tasks (T-IDs auto-assigned, monotonic, never reused; plan-mode blocked). An empty items array CLEARS the list. To revise a task: cancel it via todo_update, then write the corrected one.",
+            todo_write_schema(),
+            handle_write,
             ToolRisk::Write,
             ToolCategory::Write,
         ),
         (
-            "todo_insert",
-            "Insert session tasks at a position: exactly one of after_id/before_id (existing ID); bulk via items, single via title.",
-            todo_insert_schema(),
-            handle_insert,
-            ToolRisk::Write,
-            ToolCategory::Write,
-        ),
-        (
-            "todo_set",
+            "todo_update",
             "Set one task's status: {id, status, evidence?}. One task per call — loop for batches.",
-            todo_set_schema(),
-            handle_set,
+            todo_update_schema(),
+            handle_update,
             ToolRisk::Write,
             ToolCategory::Write,
         ),

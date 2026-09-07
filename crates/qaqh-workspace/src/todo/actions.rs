@@ -108,6 +108,34 @@ pub(crate) fn parse_edit_field(
     Ok(Some(text))
 }
 
+/// todo_write：追加条目（分配新 ID）；`items: []` 显式清空（items 缺省报错，
+/// 防误清空）。追加语义（owner 拍板 2026-09-08）：多次 write 累积，不做整批
+/// 替换；修改既有条目走 todo_update（cancel 后重写）。ID 高水位单调不复用。
+pub(crate) fn exec_todo_write(args: &Value) -> Result<String, String> {
+    let items = args.get("items").and_then(Value::as_array).ok_or_else(|| {
+        json_err_string(
+            "INVALID_INPUT",
+            "todo_write requires items",
+            "Provide items: [{title, description?}]. Pass an empty array to clear the list.",
+        )
+    })?;
+    if items.is_empty() {
+        let _guard = TODO_LOCK
+            .lock()
+            .map_err(|_| "todo lock poisoned".to_string())?;
+        let mut store = read_store()?;
+        let cleared = store.items.len();
+        store.items.clear();
+        store.current_id = None;
+        write_store(&store)?;
+        return Ok(json_ok(serde_json::json!({
+            "cleared": cleared,
+            "message": format!("Todo list cleared ({cleared} items removed)."),
+        })));
+    }
+    exec_todo_create(args, false)
+}
+
 pub(crate) fn exec_todo_set(args: &Value) -> Result<String, String> {
     let seed = crate::runtime::context()
         .map(|ctx| ctx.active_session)

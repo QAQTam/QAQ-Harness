@@ -124,7 +124,17 @@ tool_search / W3 缓存失效诊断。owner 拍板（同日）：第一版全载
   [id,status]，reject 补 ids/updates；测试 +3 断言（ids/updates 拒绝、单条
   roundtrip、schema 单一形态守卫）；实测 todo_set 1264→531B，四件合计
   2603B < 聚合 2705B（净 -102B）。
-- [ ] **PR-DT-2**：skills 拆分（排后，先观察 todo 拆分实战效果；见 spec O4）
+- [x] **PR-DT-1 复盘②**（同日）：**todo v3 混合制形态**（owner 拍板）——
+  研究两家任务工具（Claude TodoWrite 全量重写 ~250B / Codex update_plan
+  ~300B；清空=传空数组无特判；Claude Task* 四件套=持久 issue-tracker 另轨）
+  → QAQH 混合制：`todo_write`（追加+空清空，ID 保留单调不复用）/ 
+  `todo_update`（单条状态）/ `todo_list`；**删 insert 与单条 title 形态**；
+  修改=cancel+重写；**直接替换**（聚合+旧四件退役，dispatch.rs 删除，
+  reject_fields 迁 split.rs）；底层契约全保留（HTTP/CLI）。新增 
+  exec_todo_write。测试重写（追加两轮 ID 连续/空清空+高水位持久/形态守卫/
+  v3 注册+旧名退役断言）；workspace 324 绿 / runtime 164 绿 / clippy 0 /
+  fmt clean。**实测三件套 1576B vs 原聚合 2705B——净省 1129B**。
+- [ ] **PR-DT-2**：skills 拆分（排后，先观察 todo v3 实战效果；见 spec O4）
 - [ ] **PR-DT-3**：ToolExposure 两档 + filtered_defs 过滤 + allow 即 Direct
 - [ ] **PR-DT-4**：`qaqh_tool`（线性检索 + tool_result 返回完整 ToolDef +
   description 列 family 名单）

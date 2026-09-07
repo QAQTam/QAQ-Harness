@@ -499,10 +499,7 @@ mod tests {
         assert!(kill_text.contains("killed"), "kill 应成功: {kill_text}");
 
         // 3) 抢占后 serve 仍健康（串行 worker 未被 kill 阻塞）
-        let probe = backend.execute(req(make_ctx(
-            "todo",
-            serde_json::json!({ "action": "list" }),
-        )));
+        let probe = backend.execute(req(make_ctx("todo_list", serde_json::json!({}))));
         assert!(
             probe.error.is_none(),
             "serve 应保持可用: {}",

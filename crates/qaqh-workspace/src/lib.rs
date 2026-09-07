@@ -373,12 +373,10 @@ pub const PLAN_BLOCKED: &[&str] = &[
     "edit",
     "exec",
     "process",
-    "todo",
-    // W1 拆分（PR-DT-1）：写类拆分工具同受 plan 阻断；todo_list 是读，
-    // plan 模式需要查看任务清单，不放名单。
-    "todo_create",
-    "todo_insert",
-    "todo_set",
+    // Todo v3：write/update 写类受 plan 阻断；todo_list 是读，plan 模式
+    // 需要查看任务清单，不放名单。
+    "todo_update",
+    "todo_write",
 ];
 
 pub fn set_workspace(path: &str) {

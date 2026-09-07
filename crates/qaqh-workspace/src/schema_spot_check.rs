@@ -36,34 +36,33 @@ mod schema_spot_check {
             "web_fetch.url not required"
         );
 
-        // todo: id 描述
-        let tid = &params("todo")["id"];
+        // Todo v3（write/update/list 混合制）：
+        // write = items-only + 空数组清空语义。
+        let tw = params("todo_write");
+        assert!(tw["items"].is_object(), "todo_write.items missing");
         assert!(
-            tid["description"]
-                .as_str()
-                .unwrap()
-                .contains("Omit for action=create"),
-            "todo.id description missing"
+            tw["items"]["maxItems"].is_number(),
+            "todo_write.items.maxItems missing"
         );
-
-        // W1 拆分（PR-DT-1）：todo_create 无 action 维、批量 items schema 在位。
-        let tc = params("todo_create");
-        assert!(tc["items"].is_object(), "todo_create.items missing");
+        // update = 单一形态（无 ids/updates，required [id, status]）。
+        let tu = params("todo_update");
         assert!(
-            tc.get("action").is_none(),
-            "todo_create 不应再有 action 维（拆分语义守卫）"
-        );
-        let ts = params("todo_set");
-        assert!(
-            ts.get("ids").is_none() && ts.get("updates").is_none(),
-            "todo_set 应为单一形态（批量/updates 已移除）"
+            tu.get("ids").is_none() && tu.get("updates").is_none(),
+            "todo_update 应为单一形态（批量/updates 已移除）"
         );
         assert!(
-            by_name("todo_set").function.parameters["required"]
+            by_name("todo_update").function.parameters["required"]
                 .as_array()
                 .unwrap()
                 .contains(&serde_json::json!("status")),
-            "todo_set required 应含 status"
+            "todo_update required 应含 status"
+        );
+        assert!(
+            !by_name("todo_update")
+                .function
+                .description
+                .contains("updates"),
+            "todo_update description 不应再宣传 updates 形态"
         );
 
         // 文件修改工具选择指引

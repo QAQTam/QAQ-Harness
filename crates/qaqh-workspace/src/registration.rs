@@ -47,9 +47,9 @@ pub fn build_tool_manager(extra_registrars: &[ToolRegistrar]) -> ToolManager {
     confirm_apply::register(&mut mgr);
 
     // ── Todo（直接、会话内状态工具）──
+    // Todo v3（owner 拍板混合制）：todo_write 追加+空清空 / todo_update
+    // 单条状态 / todo_list 只读。无 insert（回填=追加）；修改条目=cancel+重写。
     todo::register(&mut mgr);
-    // W1 拆分（PR-DT-1）：单一职责四分，软迁移期与聚合并存。
-    todo::register_split(&mut mgr);
 
     // ── 交互 ──
     ask_user::register(&mut mgr);
@@ -102,11 +102,9 @@ mod tests {
                 "read",
                 "read_image",
                 "skills",
-                "todo",
-                "todo_create",
-                "todo_insert",
                 "todo_list",
-                "todo_set",
+                "todo_update",
+                "todo_write",
                 "web_fetch",
                 "write",
             ]

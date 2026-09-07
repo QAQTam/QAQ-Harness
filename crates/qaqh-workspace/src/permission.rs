@@ -382,10 +382,7 @@ pub fn needs_permission(
     // touch workspace files, run code, or access external resources. Requiring
     // approval for each model-authored status transition creates recursive,
     // repeated prompts without protecting a user-controlled resource.
-    if matches!(
-        tool_name,
-        "todo" | "todo_create" | "todo_insert" | "todo_set" | "todo_list"
-    ) {
+    if matches!(tool_name, "todo_list" | "todo_update" | "todo_write") {
         return PermissionDecision::AutoApprove;
     }
 
@@ -662,12 +659,12 @@ mod tests {
             PermissionLevel::WorkspaceFree,
             PermissionLevel::Unrestricted,
         ] {
-            let tool_name = "todo";
+            let tool_name = "todo_write";
             {
                 let decision = needs_permission(
                     level,
                     tool_name,
-                    &serde_json::json!({"id": "T1", "status": "completed"}),
+                    &serde_json::json!({"items": [{"title": "t"}]}),
                     Path::new("."),
                     &HashSet::new(),
                     ToolCategory::Write,

@@ -85,8 +85,8 @@
 |---|---|---|
 | **PR-M3-1 ✅**（2026-09-07） | streamable HTTP client（reqwest 0.13 对齐 + headers 进 default_headers，${secret} 插值生效；无子进程——pgid/sweep no-op；crash 语义同构） | `cargo test -p qaqh-mcp --test http_transport` 全绿（3：round_trip/resource_read/unreachable→ConnectFailed） |
 | **PR-M3-2 ✅**（2026-09-07） | **Codex/Claude Code MCP 配置兼容**（A+B 均落地）——A：`QaqhService::init` 用户级只读合并（`~/.codex/config.toml` `[mcp_servers]` + `~/.claude.json` `mcpServers`，`ext-<src>-` 前缀避撞、本地优先、明文 env 直通子进程不落 QAQH secrets、不回写；开关 `[mcp].import_external` 默认开）；B：`qaqh-daemon mcp import --from codex|claude|claude-project`（dry-run 默认 + `--exec` 写入；**项目级 `.mcp.json` 需 `--root` + 逐 server 交互审批**——供应链面，D4 不扩；env 占位符化 `mcp-<server>-<key>` 入 [secrets.mcp]） | `cargo test -p qaqh-config --test mcp_import` 全绿（8：扫描/合并/碰撞/开关/缺文件/导入占位化/审批拒绝/D4 结构守卫） |
-| PR-M3-3 | E2E 门控测试（`QAQH_MCP_E2E=1` 连真实 `npx @upstash/context7-mcp`）；可选测试 gating 惯例先例对齐 | `QAQH_MCP_E2E=1 cargo test -p qaqh-mcp --test e2e_context7` 通过（需网络，默认 skip） |
-| PR-M3-4 | 文档：README 工具表 + `docs/mcp-client-design.md` 状态改"已实施"；`just check`/`clippy`/`fmt`/`test` 全绿 | 见 §5 总闸 |
+| **PR-M3-3 ✅**（2026-09-07） | E2E 门控测试（`QAQH_MCP_E2E=1` 连真实 `npx @upstash/context7-mcp`）——断言结构不变量（≥1 工具/前缀/批次钉底），不锁上游清单；默认 skip，缺 env 打印原因即返回 | `QAQH_MCP_E2E=1 cargo test -p qaqh-mcp --test e2e_context7` **实测通过（1.35s，本机 npx 缓存）；缺 env 默认 skip ✓** |
+| **PR-M3-4 ✅**（2026-09-07） | 文档：`docs/mcp-client-design.md` 状态改 **Phase 1 已实施**（含实施 commit 记录 + S1 传输行更新）；PLAN M3 全表打勾 | 见 §5 总闸（本轮：948 passed / 0 failed、clippy 0、fmt clean、红线零命中） |
 
 ## 5. 质量门禁总闸（每 PR 合入前必跑，继承旧 PLAN §8）
 

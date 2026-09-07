@@ -1,6 +1,8 @@
 # qaqh-mcp 设计：MCP 客户端支持
 
-状态：**设计稿（待评审）** · 2026-09-07 · 作者：Omen Alpha（QAQ-Harness Agent）· 决策人：项目 owner
+状态：**Phase 1 已实施**（M1-M2 全量落地，M3 传输扩展 + 配置兼容进行中）· 2026-09-07 · 作者：Omen Alpha（QAQ-Harness Agent）· 决策人：项目 owner
+>
+> 实施记录：M1（commit `1b2e777`）· M2（`5aa00e7`）· M3-1 HTTP（`90888d2`）· M3-2 配置兼容（`0f47008`）——见 `docs/PLAN.md` §4 对应 PR 行与 §7 实测数字。
 
 ## 1. 背景与目标
 
@@ -23,7 +25,7 @@ QAQ-Harness 当前 19 个内置工具为静态注册，无法消费 MCP（Model 
 
 | # | 决策点 | 建议 | 理由 |
 |---|--------|------|------|
-| S1 | Phase 1 传输 | **仅 stdio**（子进程） | npx 系 server 是绝对主流；跳过 `reqwest` 依赖面；streamable HTTP 放 M3 |
+| S1 | Phase 1 传输 | **stdio + streamable HTTP**（M3-1 已落地；unix socket → Phase 2） | npx 系 server 绝对主流；HTTP 满足远端/托管 server |
 | S2 | 工具命名 | `mcp__{server}__{tool}` 前缀 | 与内置 19 工具零碰撞（`responses_search_function_alias` 已有先例教训）；server 名校验 `[a-z0-9_-]+` |
 | S3 | MCP 工具的 `ToolCategory` | stdio server 的工具 → **`Exec`**；http server → `Net` | 复用"子代理沙箱 exec/net 自动拒绝"机制，**无需为子代理写任何特判**；审计语义准确（调用最终在 server 进程内执行代码/发起网络请求） |
 

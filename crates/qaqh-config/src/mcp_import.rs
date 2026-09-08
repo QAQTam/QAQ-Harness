@@ -2,7 +2,8 @@
 //!
 //! 路线 A（只读合并，[`merge_external`]）：daemon 装配时扫描**用户级**
 //! 外部配置（`~/.codex/config.toml` 的 `[mcp_servers]`、`~/.claude.json`
-//! 顶层 `mcpServers`），以 `ext-<source>-<name>` 前缀并入运行时视图——
+//! 顶层 `mcpServers`、opencode `~/.config/opencode/opencode.json` 顶层
+//! `mcp` 段），以 `ext-<source>-<name>` 前缀并入运行时视图——
 //! **只读不回写**、明文 env 直通子进程（不落 QAQH secrets）、本地手写
 //! 面碰撞时本地优先。开关 `[mcp].import_external`（默认 true）。
 //!
@@ -26,6 +27,8 @@ pub enum ExternalSource {
     Codex,
     ClaudeUser,
     ClaudeProject,
+    /// opencode `~/.config/opencode/opencode.json` 顶层 `mcp` 段（用户级）。
+    Opencode,
 }
 
 impl ExternalSource {
@@ -35,6 +38,7 @@ impl ExternalSource {
             ExternalSource::Codex => "ext-codex-",
             ExternalSource::ClaudeUser => "ext-claude-",
             ExternalSource::ClaudeProject => "ext-claproj-",
+            ExternalSource::Opencode => "ext-opencode-",
         }
     }
 
@@ -44,6 +48,7 @@ impl ExternalSource {
             ExternalSource::Codex => "codex",
             ExternalSource::ClaudeUser => "claude",
             ExternalSource::ClaudeProject => "claude-project",
+            ExternalSource::Opencode => "opencode",
         }
     }
 }
@@ -87,6 +92,10 @@ impl ExternalServer {
             resources_enabled: true,
             default_timeout_secs: 60,
             max_concurrent_calls: 1,
+            // 外部源（Codex/Claude/opencode）无 cwd 语义：
+            // Codex/Claude 无此字段；opencode 的 cwd 相对 workspace 解析，
+            // daemon 侧 workspace 轴不同，直接继承会钉错目录——继承 daemon cwd。
+            cwd: String::new(),
         })
     }
 }
@@ -191,15 +200,99 @@ pub fn scan_claude(path: &Path, source: ExternalSource) -> Vec<ExternalServer> {
         .collect()
 }
 
+/// opencode：`~/.config/opencode/opencode.json` 顶层 `mcp` 段（用户级）。
+///
+/// 形态（以本机实测 opencode.json + 官方 MCP 文档为准）：
+/// - local：`{ "type": "local", "command": ["bin", "args..."],
+///   "environment"?: {...}, "enabled"?: bool }` —— `command[0]` 为 binary，
+///   余项为 args（与 Codex/Claude 的 command+args 字符串形态不同）；
+/// - remote：`{ "type": "remote", "url", "headers"?, "enabled"? }`；
+/// - `enabled: false` → 跳过（与 opencode“启动时禁用”语义对齐）；
+/// - 未知 type / 缺 command[0] / 缺 url → 跳过（merge 计入 skipped_invalid，
+///   import 直接过滤——外部配置缺失/畸形不是错误）。
+///
+/// `cwd`/`environment` 以外字段（`timeout`/`oauth`）不映射：timeout 走 server
+/// 级默认 60s（外部源统一口径）；oauth 另立项。
+pub fn scan_opencode(path: &Path) -> Vec<ExternalServer> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        log::warn!("[mcp import] {} 解析失败，跳过 opencode 源", path.display());
+        return Vec::new();
+    };
+    let Some(servers) = value.get("mcp").and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
+    servers
+        .iter()
+        .filter_map(|(name, entry)| {
+            if entry.get("enabled").and_then(|v| v.as_bool()) == Some(false) {
+                return None;
+            }
+            let server_type = entry.get("type").and_then(|v| v.as_str()).unwrap_or("local");
+            if server_type == "remote" {
+                let url = entry.get("url").and_then(|v| v.as_str())?.to_owned();
+                Some(ExternalServer {
+                    name: name.clone(),
+                    command: String::new(),
+                    args: vec![],
+                    env: BTreeMap::new(),
+                    url,
+                    headers: string_map(entry.get("headers")),
+                    source: ExternalSource::Opencode,
+                })
+            } else if server_type == "local" {
+                let command_arr = entry.get("command").and_then(|v| v.as_array())?;
+                let mut parts = command_arr
+                    .iter()
+                    .filter_map(|a| a.as_str().map(str::to_owned));
+                let command = parts.next()?;
+                if command.trim().is_empty() {
+                    return None;
+                }
+                Some(ExternalServer {
+                    name: name.clone(),
+                    command,
+                    args: parts.collect(),
+                    env: string_map(entry.get("environment")),
+                    url: String::new(),
+                    headers: BTreeMap::new(),
+                    source: ExternalSource::Opencode,
+                })
+            } else {
+                log::warn!(
+                    "[mcp import] opencode server {name:?}: 未知 type {server_type:?}，跳过"
+                );
+                None
+            }
+        })
+        .collect()
+}
+
 /// 默认用户级扫描路径组（A 路线用；文件缺失 → 空结果，不报错）。
-pub fn default_user_paths() -> (std::path::PathBuf, std::path::PathBuf) {
+///
+/// 结构体形态：新增源只加字段，[`merge_external`] 与 service.rs 两处调用点
+/// 签名稳定。`opencode` 为 `~/.config/opencode/opencode.json`。
+#[derive(Debug, Clone)]
+pub struct UserPaths {
+    pub codex: std::path::PathBuf,
+    pub claude: std::path::PathBuf,
+    pub opencode: std::path::PathBuf,
+}
+
+pub fn default_user_paths() -> UserPaths {
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_default();
-    (
-        Path::new(&home).join(".codex").join("config.toml"),
-        Path::new(&home).join(".claude.json"),
-    )
+    UserPaths {
+        codex: Path::new(&home).join(".codex").join("config.toml"),
+        claude: Path::new(&home).join(".claude.json"),
+        opencode: Path::new(&home)
+            .join(".config")
+            .join("opencode")
+            .join("opencode.json"),
+    }
 }
 
 fn string_map(value: Option<&serde_json::Value>) -> BTreeMap<String, String> {
@@ -241,17 +334,18 @@ pub struct MergeReport {
 ///
 /// 合并规则：`ext-<source>-<name>` 前缀避撞；与手写面同名 → **本地优先**
 /// （skip 碰撞 + warn）；transport 推导失败的条目 → skip_invalid。
-pub fn merge_external(
-    cfg: &mut McpConfig,
-    codex_path: &Path,
-    claude_path: &Path,
-) -> Option<MergeReport> {
+///
+/// 参数改为 [`UserPaths`] 结构体（codex/claude/opencode 三源）：调用方一律经
+/// [`default_user_paths`] 拿全量，新增源不再改签名（service.rs 两处调用点
+/// 零改动）。
+pub fn merge_external(cfg: &mut McpConfig, paths: &UserPaths) -> Option<MergeReport> {
     if !cfg.import_external {
         return None;
     }
     let mut report = MergeReport::default();
-    let mut candidates = scan_codex(codex_path);
-    candidates.extend(scan_claude(claude_path, ExternalSource::ClaudeUser));
+    let mut candidates = scan_codex(&paths.codex);
+    candidates.extend(scan_claude(&paths.claude, ExternalSource::ClaudeUser));
+    candidates.extend(scan_opencode(&paths.opencode));
     for external in candidates {
         let merged_name = format!("{}{}", external.source.merge_prefix(), external.name);
         if cfg.servers.contains_key(&merged_name) {

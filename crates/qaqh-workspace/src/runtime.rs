@@ -331,9 +331,31 @@ pub fn replace_dynamic_tools(batch: Vec<(String, crate::DynamicTool)>) -> usize 
     .unwrap_or(0)
 }
 
-/// 当前配置的 provider endpoint 是否接受图片输入（read_image 工具开关）。///
+/// LSP 动态层增量合并（`lsp` 聚合工具 enabled 即在场；不清现有 dynamic——
+/// MCP per-server 工具不受影响）。碰撞拒绝计数跳过并告警。调用方与
+/// [`replace_dynamic_tools`] 同线程约束。返回被拒绝的条目数。
+pub fn merge_dynamic_tools(batch: Vec<(String, crate::DynamicTool)>) -> usize {
+    with_manager(|manager| {
+        let mut rejected = 0usize;
+        for (name, tool) in batch {
+            // 已在册同名（热重载/重复 take）→ 跳过，不计拒绝（幂等）。
+            if manager.dynamic_names().iter().any(|n| n == &name) {
+                continue;
+            }
+            if manager.register_dynamic(name.clone(), tool).is_err() {
+                rejected += 1;
+                log::warn!("[TOOLS] dynamic merge rejected (collision): {name:?}");
+            }
+        }
+        manager.reapply_allowed_after_dynamic_change();
+        rejected
+    })
+    .unwrap_or(0)
+}
+
+/// 当前配置的 provider endpoint 是否接受图片输入（read_image 工具开关）。
+///
 /// PR-1-10 / D2：能力快照由宿主注入（[`set_image_capability`]：daemon
-/// 装配 / config reload / serve 启动），工具调用路径零磁盘读。
 /// 未注入时（单元测试 / 未装配进程）默认放行——工具可见性交给注册方，
 /// 执行路径的自然错误兜底真实不支持的场景。
 pub fn image_tool_enabled() -> bool {

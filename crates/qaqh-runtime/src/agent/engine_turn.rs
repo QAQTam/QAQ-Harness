@@ -993,6 +993,14 @@ impl TurnEngine {
             }
             ctx.agent.tool_defs = qaqh_workspace::runtime::all_tools();
         }
+        // LSP 投影（`lsp` 聚合工具 enabled 即在场；增量合并，不清 MCP 层）。
+        if let Some(batch) = qaqh_lsp::take_projection_batch() {
+            let rejected = qaqh_workspace::runtime::merge_dynamic_tools(batch);
+            if rejected > 0 {
+                log::warn!("[TURN] LSP dynamic refresh: {rejected} tool(s) rejected (collision)");
+            }
+            ctx.agent.tool_defs = qaqh_workspace::runtime::all_tools();
+        }
         // PR-M2-2：MCP 资源清单注入块（回合边界刷新；内容变化才物化，
         // prefix cache 友好——与 skills envelope 同管线）。
         ctx.agent.sync_mcp_resource_injection(ctx.flow);

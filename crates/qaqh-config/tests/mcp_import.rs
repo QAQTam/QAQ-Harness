@@ -9,7 +9,8 @@
 //! | `scan_claude_parses_stdio_and_http` | stdio + http/sse 两形态 |
 //! | `merge_external_prefixes_and_avoids_collisions` | `ext-<src>-` 前缀；本地优先；非法 transport 跳过 |
 //! | `merge_external_respects_switch` | `import_external=false` → None |
-//! | `merge_external_missing_files_are_empty` | 缺文件 → 空结果不报错 |
+//! | `scan_opencode_parses_local_and_remote` | opencode local(command 数组拆分)/remote + enabled:false 跳过 |
+//! | `merge_external_merges_opencode_source` | opencode 源以前缀 `ext-opencode-` 并入 |
 //! | `import_writes_config_and_secretizes_env` | config 写入 + env 占位符化 + secrets 往返 |
 //! | `import_skips_existing_and_respects_rejection` | 碰撞跳过 + 审批拒绝 |
 //!
@@ -22,7 +23,8 @@
 use std::collections::BTreeMap;
 
 use qaqh_config::mcp_import::{
-    self, ExternalServer, ExternalSource, import_servers, merge_external, scan_claude, scan_codex,
+    self, ExternalServer, ExternalSource, UserPaths, import_servers, merge_external, scan_claude,
+    scan_codex, scan_opencode,
 };
 use qaqh_config::secrets::SecretStore;
 use qaqh_types::ConfigStore;
@@ -50,6 +52,30 @@ const CLAUDE_JSON: &str = r#"
   }
 }
 "#;
+
+const OPENCODE_JSON: &str = r#"
+{
+  "mcp": {
+    "context7": { "type": "remote", "url": "https://mcp.context7.com/mcp", "headers": { "Authorization": "Bearer t-9" } },
+    "codegraph": { "type": "local", "command": ["codegraph", "serve", "--mcp"], "environment": { "CG_PORT": "17313" } },
+    "off": { "type": "local", "command": ["never-run"], "enabled": false }
+  }
+}
+"#;
+
+fn write_opencode(dir: &std::path::Path) -> std::path::PathBuf {
+    let path = dir.join("opencode.json");
+    std::fs::write(&path, OPENCODE_JSON).unwrap();
+    path
+}
+
+fn user_paths(codex: std::path::PathBuf, claude: std::path::PathBuf) -> UserPaths {
+    UserPaths {
+        codex,
+        claude,
+        opencode: std::path::PathBuf::from("/nonexistent-opencode.json"),
+    }
+}
 
 fn write_codex(dir: &std::path::Path) -> std::path::PathBuf {
     let path = dir.join("codex-config.toml");
@@ -80,6 +106,7 @@ fn base_cfg(import_external: bool) -> qaqh_config::config::McpConfig {
                 resources_enabled: true,
                 default_timeout_secs: 60,
                 max_concurrent_calls: 1,
+                cwd: String::new(),
             },
         )]),
         import_external,
@@ -122,6 +149,63 @@ fn scan_claude_parses_stdio_and_http() {
 }
 
 #[test]
+fn scan_opencode_parses_local_and_remote() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_opencode(dir.path());
+    let servers = scan_opencode(&path);
+    // enabled:false 的 off 条目被跳过，只剩 2 个。
+    assert_eq!(servers.len(), 2);
+    // remote 形态：url + headers。
+    let context7 = servers.iter().find(|s| s.name == "context7").unwrap();
+    assert_eq!(context7.url, "https://mcp.context7.com/mcp");
+    assert_eq!(
+        context7.headers.get("Authorization").map(String::as_str),
+        Some("Bearer t-9")
+    );
+    assert_eq!(context7.source, ExternalSource::Opencode);
+    // local 形态：command 数组首项为 binary，余项为 args；environment → env。
+    let codegraph = servers.iter().find(|s| s.name == "codegraph").unwrap();
+    assert_eq!(codegraph.command, "codegraph");
+    assert_eq!(codegraph.args, vec!["serve", "--mcp"]);
+    assert_eq!(codegraph.env.get("CG_PORT").map(String::as_str), Some("17313"));
+}
+
+#[test]
+fn scan_opencode_missing_file_is_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let servers = scan_opencode(&dir.path().join("not-exist.json"));
+    assert!(servers.is_empty(), "缺文件 → 空结果不报错");
+}
+
+#[test]
+fn merge_external_merges_opencode_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let codex = write_codex(dir.path());
+    let claude = write_claude(dir.path());
+    let opencode = write_opencode(dir.path());
+    let mut cfg = base_cfg(true);
+    let paths = UserPaths { codex, claude, opencode };
+    let report = merge_external(&mut cfg, &paths).expect("import_external=true → Some");
+    let names: Vec<&str> = cfg.servers.keys().map(String::as_str).collect();
+    assert!(names.contains(&"ext-opencode-context7"), "{names:?}");
+    assert!(names.contains(&"ext-opencode-codegraph"), "{names:?}");
+    assert!(!names.iter().any(|n| n.contains("off")), "enabled:false 不合并：{names:?}");
+    assert!(
+        report.merged.iter().any(|n| n == "ext-opencode-codegraph"),
+        "报告含 opencode 条目：{report:?}"
+    );
+    // transport 推导：local → Stdio，remote → Http。
+    assert!(matches!(
+        cfg.servers.get("ext-opencode-codegraph").unwrap().transport,
+        qaqh_config::config::McpTransportKind::Stdio
+    ));
+    assert!(matches!(
+        cfg.servers.get("ext-opencode-context7").unwrap().transport,
+        qaqh_config::config::McpTransportKind::Http
+    ));
+}
+
+#[test]
 fn merge_external_prefixes_and_avoids_collisions() {
     let dir = tempfile::tempdir().unwrap();
     let codex = write_codex(dir.path());
@@ -133,7 +217,7 @@ fn merge_external_prefixes_and_avoids_collisions() {
         cfg.servers.get("local").unwrap().clone(),
     );
 
-    let report = merge_external(&mut cfg, &codex, &claude).expect("import_external=true → Some");
+    let report = merge_external(&mut cfg, &user_paths(codex, claude)).expect("import_external=true → Some");
     let names: Vec<&str> = cfg.servers.keys().map(String::as_str).collect();
     assert!(names.contains(&"ext-codex-filesystem"), "{names:?}");
     assert!(names.contains(&"ext-claude-deepwiki"), "{names:?}");
@@ -158,7 +242,7 @@ fn merge_external_respects_switch() {
     let codex = write_codex(dir.path());
     let claude = write_claude(dir.path());
     let mut cfg = base_cfg(false);
-    let report = merge_external(&mut cfg, &codex, &claude);
+    let report = merge_external(&mut cfg, &user_paths(codex, claude));
     assert_eq!(report, None, "import_external=false → None（不扫描）");
     assert_eq!(cfg.servers.len(), 1, "未合并");
 }
@@ -168,7 +252,12 @@ fn merge_external_missing_files_are_empty() {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = base_cfg(true);
     let missing = dir.path().join("not-exist.toml");
-    let report = merge_external(&mut cfg, &missing, &missing).expect("开关开 → Some");
+    let paths = UserPaths {
+        codex: missing.clone(),
+        claude: missing.clone(),
+        opencode: missing,
+    };
+    let report = merge_external(&mut cfg, &paths).expect("开关开 → Some");
     assert_eq!(
         report.merged,
         Vec::<String>::new(),
@@ -244,10 +333,11 @@ fn import_skips_existing_and_respects_rejection() {
 
 #[test]
 fn merge_scan_never_touches_project_level() {
-    // D4 结构性守卫：merge_external 只接受显式传入的两个用户级路径——
+    // D4 结构性守卫：merge_external 只接受显式传入的用户级路径结构体——
     // 项目级 .mcp.json 不在任何默认扫描路径里（default_user_paths 只返回
-    // ~/.codex/config.toml 与 ~/.claude.json）。
-    let (codex_path, claude_path) = mcp_import::default_user_paths();
-    assert!(codex_path.ends_with(".codex/config.toml"));
-    assert!(claude_path.ends_with(".claude.json"));
+    // ~/.codex/config.toml、~/.claude.json 与 opencode.json 三个用户级路径）。
+    let paths = mcp_import::default_user_paths();
+    assert!(paths.codex.ends_with(".codex/config.toml"));
+    assert!(paths.claude.ends_with(".claude.json"));
+    assert!(paths.opencode.ends_with(".config/opencode/opencode.json"));
 }

@@ -33,13 +33,12 @@ pub struct QaqhService {
 impl QaqhService {
     pub fn init(sessions: Arc<qaqh_session::SessionManager>) -> Self {
         let mut config = qaqh_config::Config::load().unwrap_or_default();
-        // PR-M3-2 路线 A：用户级外部 MCP 配置只读合并（Codex/Claude，
+        // PR-M3-2 路线 A：用户级外部 MCP 配置只读合并（Codex/Claude/opencode，
         // import_external 默认开）。只改运行时视图，不回写 config；报告落日志。
         // 注意 enabled 总闸不变：外部合并的 server 也受 [mcp].enabled 管辖。
         {
-            let (codex_path, claude_path) = qaqh_config::mcp_import::default_user_paths();
-            if let Some(report) =
-                qaqh_config::mcp_import::merge_external(&mut config.mcp, &codex_path, &claude_path)
+            let paths = qaqh_config::mcp_import::default_user_paths();
+            if let Some(report) = qaqh_config::mcp_import::merge_external(&mut config.mcp, &paths)
             {
                 if !report.merged.is_empty() {
                     log::info!("[mcp] external config merged: {:?}", report.merged);
@@ -60,6 +59,9 @@ impl QaqhService {
         // store 用默认位置（[secrets.mcp] 段）；禁用配置时 manager 以
         // disabled 形态拒绝一切调用（MCP_DISABLED）。
         qaqh_mcp::install_manager(qaqh_mcp::McpManager::new(config.mcp.clone()));
+        // LSP manager 装配（docs/lsp-client-design.md §4：mcp 同款单例；
+        // 默认关闭——enabled=false 时 disabled 形态拒一切调用 LSP_DISABLED）。
+        qaqh_lsp::install_manager(qaqh_lsp::LspManager::new(config.lsp.clone()));
         // P2-1：热重载接线——①重载器：订阅 watch 单写口广播，[mcp] 段变化
         // → 外部配置重扫（Codex/Claude 用户级）→ apply_config diff 保连；
         // ②文件轮询器：手改 config.toml（不经单写口）→ mtime 检测 →
@@ -68,6 +70,7 @@ impl QaqhService {
         // 等同步调用方跳过——热重载只对长驻 daemon 有意义）。
         if tokio::runtime::Handle::try_current().is_ok() {
             spawn_mcp_reloader();
+            spawn_lsp_reloader();
             spawn_config_file_poller();
         }
         // 投影预热（PR-M1-5 冒烟修正）：lazy 连接的唯一触发点是工具执行，
@@ -793,9 +796,8 @@ fn spawn_mcp_reloader() {
             let mut new_mcp = published.mcp.clone();
             // 外部配置重扫：ext-* 条目随用户级外部文件变化增删；本地
             // 手写面优先的碰撞语义与启动路径一致。
-            let (codex_path, claude_path) = qaqh_config::mcp_import::default_user_paths();
-            let _ =
-                qaqh_config::mcp_import::merge_external(&mut new_mcp, &codex_path, &claude_path);
+            let paths = qaqh_config::mcp_import::default_user_paths();
+            let _ = qaqh_config::mcp_import::merge_external(&mut new_mcp, &paths);
             let report = manager.apply_config(new_mcp).await;
             log::info!(
                 "[mcp] hot-reload applied (added={:?} updated={:?} removed={:?} kept={} conn)",
@@ -814,6 +816,35 @@ fn spawn_mcp_reloader() {
             }
         }
         log::warn!("[mcp] hot-reload watcher channel closed; exiting");
+    });
+}
+
+/// P2-1 同款：`[lsp]` 热重载——新配置与 manager 当前配置不等 →
+/// `apply_config` diff 保连。LSP 无外部源重扫（只认手写面）。
+fn spawn_lsp_reloader() {
+    let mut rx = qaqh_config::watch::subscribe();
+    tokio::spawn(async move {
+        if rx.changed().await.is_ok() {
+            rx.borrow_and_update();
+        }
+        while rx.changed().await.is_ok() {
+            let Some(published) = rx.borrow_and_update().clone() else {
+                continue;
+            };
+            let manager = qaqh_lsp::manager_slot();
+            if published.lsp == manager.config() {
+                continue; // 非 [lsp] 段变更：与 LSP 无关，跳过
+            }
+            let report = manager.apply_config(published.lsp.clone()).await;
+            log::info!(
+                "[lsp] hot-reload applied (added={:?} updated={:?} removed={:?} kept={} conn)",
+                report.added,
+                report.updated,
+                report.removed,
+                report.kept.len()
+            );
+        }
+        log::warn!("[lsp] hot-reload watcher channel closed; exiting");
     });
 }
 
@@ -895,12 +926,12 @@ mod tool_mode_tests {
         assert!(optional_tool_mode(&serde_json::json!({ "tool_mode": "custom" })).is_err());
         let (mode, tools) = optional_tool_mode(&serde_json::json!({
             "tool_mode": "custom",
-            "custom_tools": ["bash"],
+            "custom_tools": ["exec"],
         }))
         .unwrap()
         .unwrap();
         assert_eq!(mode, "custom");
-        assert_eq!(tools, vec!["bash"]);
+        assert_eq!(tools, vec!["exec"]);
     }
 
     #[test]

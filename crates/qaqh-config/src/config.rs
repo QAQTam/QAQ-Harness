@@ -1,7 +1,8 @@
 use crate::secrets::{CONFIG_MARKER, SecretSlot, SecretStore};
 use qaqh_types::{
-    ConfigStore, PersistentConfig, PersistentMcpConfig, PersistentMcpServerConfig,
-    PersistentSubagentConfig, PersistentWorkspaceConfig,
+    ConfigStore, PersistentConfig, PersistentLspConfig, PersistentLspServerConfig,
+    PersistentMcpConfig, PersistentMcpServerConfig, PersistentSubagentConfig,
+    PersistentWorkspaceConfig,
 };
 use std::collections::HashMap; // still used by profiles
 use std::sync::{Mutex, OnceLock};
@@ -113,6 +114,8 @@ pub struct Config {
     pub workspace: WorkspaceConfig,
     /// MCP 客户端配置（docs/mcp-client-design.md §6；load 时已 fail-fast 校验）。
     pub mcp: McpConfig,
+    /// LSP 客户端配置（docs/lsp-client-design.md §6；load 时已 fail-fast 校验）。
+    pub lsp: LspConfig,
 }
 
 /// 工具套件运行环境（daemon 据此拉起 qaqh-workspace serve）。
@@ -160,6 +163,10 @@ pub struct McpServerConfig {
     pub default_timeout_secs: u64,
     /// per-server 并发上限；1..=64。
     pub max_concurrent_calls: u32,
+    /// stdio 子进程工作目录；空 = 继承 daemon 进程 cwd（path-sensitive
+    /// server，如按 cwd 推导 root 的索引服务，用此字段钉住工作区）。
+    /// map 层 trim 后入库；http server 上忽略。
+    pub cwd: String,
 }
 
 /// MCP 客户端运行时配置。
@@ -187,6 +194,45 @@ impl Default for McpConfig {
             idle_shutdown_secs: 300,
             servers: std::collections::BTreeMap::new(),
             import_external: default_import_external(),
+        }
+    }
+}
+
+// ── LSP 客户端配置（docs/lsp-client-design.md §6；M1 决策 L1–L6）──
+
+/// 单个 LSP server 的运行时配置（已通过 fail-fast 校验；stdio 唯一形态）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LspServerConfig {
+    /// stdio 启动命令（如 "rust-analyzer"）。
+    pub command: String,
+    pub args: Vec<String>,
+    /// 注入 server 进程的环境变量原值；`${secret:name}` 占位符由 qaqh-lsp
+    /// 在启动时解析（qaqh-config 不做 secret 求值；secret 段复用 `[secrets.mcp]`）。
+    pub env: std::collections::BTreeMap<String, String>,
+    /// 路由键：该 server 负责的文件扩展名（无点小写）；空 = 不参与路由。
+    pub extensions: Vec<String>,
+    /// 启动超时（秒；含进程拉起 + initialize + 索引门）；1..=600。
+    pub startup_timeout_secs: u64,
+    /// 单次 LSP 请求默认超时（秒）；1..=3600。
+    pub default_timeout_secs: u64,
+}
+
+/// LSP 客户端运行时配置。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LspConfig {
+    pub enabled: bool,
+    /// idle 回收阈值（秒）；0 = 常驻不回收。判定口径与 mcp 同款。
+    pub idle_shutdown_secs: u64,
+    /// server 名（已校验 `[a-z0-9_-]+`）→ 配置。
+    pub servers: std::collections::BTreeMap<String, LspServerConfig>,
+}
+
+impl Default for LspConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            idle_shutdown_secs: 120,
+            servers: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -290,6 +336,7 @@ pub(crate) fn map_mcp_config(
                 resources_enabled: ps.resources.unwrap_or(true),
                 default_timeout_secs,
                 max_concurrent_calls,
+                cwd: ps.cwd.unwrap_or_default().trim().to_owned(),
             },
         );
     }
@@ -298,6 +345,84 @@ pub(crate) fn map_mcp_config(
         idle_shutdown_secs: mcp.idle_shutdown_secs.unwrap_or(300),
         servers,
         import_external: mcp.import_external.unwrap_or(true),
+    })
+}
+
+/// PersistentLspConfig → 运行时 [`LspConfig`]，含 fail-fast 校验。
+///
+/// 校验规则（docs/lsp-client-design.md §6）：
+/// - server 名非空、仅 `[a-z0-9_-]`、≤64 字符（与 mcp 同规）；
+/// - command 非空（stdio 唯一形态）；
+/// - extensions 条目：去点转小写后非空（空条目即错，不静默丢弃）；
+/// - `startup_timeout_secs` 缺省 30，∈ 1..=600；
+/// - `default_timeout_secs` 缺省 30，∈ 1..=3600。
+pub(crate) fn map_lsp_config(
+    lsp: Option<qaqh_types::PersistentLspConfig>,
+) -> Result<LspConfig, String> {
+    let Some(lsp) = lsp else {
+        return Ok(LspConfig::default());
+    };
+    let mut servers = std::collections::BTreeMap::new();
+    for (name, ps) in lsp.servers.unwrap_or_default() {
+        validate_server_name(&name)?;
+        let command = ps.command.unwrap_or_default();
+        if command.trim().is_empty() {
+            return Err(format!("[lsp] server {name:?}: 缺少 command（stdio 需要启动命令）"));
+        }
+        let mut extensions = Vec::new();
+        for ext in ps.extensions.unwrap_or_default() {
+            let normalized = ext.trim().trim_start_matches('.').to_ascii_lowercase();
+            if normalized.is_empty() {
+                return Err(format!("[lsp] server {name:?}: extensions 包含空条目"));
+            }
+            if !extensions.iter().any(|e| e == &normalized) {
+                extensions.push(normalized);
+            }
+        }
+        let startup_timeout_secs = match ps.startup_timeout_secs {
+            None => 30,
+            Some(0) => {
+                return Err(format!(
+                    "[lsp] server {name:?}: startup_timeout_secs 必须在 1..=600（得到 0）"
+                ));
+            }
+            Some(n) if n > 600 => {
+                return Err(format!(
+                    "[lsp] server {name:?}: startup_timeout_secs 必须在 1..=600（得到 {n}）"
+                ));
+            }
+            Some(n) => n,
+        };
+        let default_timeout_secs = match ps.default_timeout_secs {
+            None => 30,
+            Some(0) => {
+                return Err(format!(
+                    "[lsp] server {name:?}: default_timeout_secs 必须在 1..=3600（得到 0）"
+                ));
+            }
+            Some(n) if n > 3600 => {
+                return Err(format!(
+                    "[lsp] server {name:?}: default_timeout_secs 必须在 1..=3600（得到 {n}）"
+                ));
+            }
+            Some(n) => n,
+        };
+        servers.insert(
+            name,
+            LspServerConfig {
+                command,
+                args: ps.args.unwrap_or_default(),
+                env: ps.env.unwrap_or_default().into_iter().collect(),
+                extensions,
+                startup_timeout_secs,
+                default_timeout_secs,
+            },
+        );
+    }
+    Ok(LspConfig {
+        enabled: lsp.enabled.unwrap_or(!servers.is_empty()),
+        idle_shutdown_secs: lsp.idle_shutdown_secs.unwrap_or(120),
+        servers,
     })
 }
 
@@ -403,6 +528,32 @@ fn validate_mcp_secret_refs(mcp: &McpConfig, secrets: &SecretStore) -> Result<()
     Ok(())
 }
 
+/// LSP 启动校验：env/args 里的 `${secret:name}` 必须在 `[secrets.mcp]` 已注册
+/// （与 mcp 同段复用：LSP 也是本地子进程 env 注入，同信任面）。
+fn validate_lsp_secret_refs(lsp: &LspConfig, secrets: &SecretStore) -> Result<(), String> {
+    for (name, server) in &lsp.servers {
+        let available = || secrets.list_mcp();
+        let check = |field: &str, value: &str| -> Result<(), String> {
+            for secret_name in secret_placeholder_names(value)? {
+                if !secrets.has_mcp(&secret_name) {
+                    return Err(format!(
+                        "[lsp] server {name:?} {field}: 引用的 secret {secret_name:?} 未注册；已注册：{:?}",
+                        available()
+                    ));
+                }
+            }
+            Ok(())
+        };
+        for (key, value) in &server.env {
+            check(&format!("env[{key}]"), value)?;
+        }
+        for (index, arg) in server.args.iter().enumerate() {
+            check(&format!("args[{index}]"), arg)?;
+        }
+    }
+    Ok(())
+}
+
 /// server 名校验：非空、仅 `[a-z0-9_-]`、≤64 字符。
 fn validate_server_name(name: &str) -> Result<(), String> {
     if name.is_empty() || name.len() > 64 {
@@ -462,6 +613,7 @@ impl Default for Config {
             session_idle_unload_secs: 0,
             workspace: WorkspaceConfig::default(),
             mcp: McpConfig::default(),
+            lsp: LspConfig::default(),
         }
     }
 }
@@ -733,9 +885,12 @@ impl Config {
             // ── MCP 客户端（fail-fast：非法名/互斥冲突/缺 command 直接 load 失败）──
             cfg.mcp = map_mcp_config(pc.mcp.clone())?;
             // E-4 fail-fast：`${secret:name}` 引用的名字必须在 secrets.toml
-            // 已注册（拼错名启动即报，不拖到首次调用；值本身留在占位符，
-            // DTO/save 永不见明文——解析在 qaqh-mcp 连接时）。
+            // 已注册（拼错名启动即报，不拖到首次调用；DTO/save 永不见明文）。
             validate_mcp_secret_refs(&cfg.mcp, &secrets)?;
+            // ── LSP 客户端（fail-fast 口径同 mcp：非法名/缺 command 直接 load 失败）──
+            cfg.lsp = map_lsp_config(pc.lsp.clone())?;
+            // LSP env 的 `${secret:name}` 复用 mcp 校验（同 secrets.toml `[secrets.mcp]` 段）。
+            validate_lsp_secret_refs(&cfg.lsp, &secrets)?;
 
             // 迁移写回：config.toml 中旧明文已入 secret store，把明文替换为
             // "set" 标记（重新 load 磁盘原值，只改"确为明文"的槽位——迁移
@@ -961,6 +1116,34 @@ impl Config {
                                     resources: Some(s.resources_enabled),
                                     default_timeout_secs: Some(s.default_timeout_secs),
                                     max_concurrent_calls: Some(s.max_concurrent_calls),
+                                    cwd: (!s.cwd.trim().is_empty())
+                                        .then(|| s.cwd.trim().to_owned()),
+                                },
+                            )
+                        })
+                        .collect()
+                }),
+            }),
+            lsp: Some(PersistentLspConfig {
+                enabled: Some(self.lsp.enabled),
+                idle_shutdown_secs: (self.lsp.idle_shutdown_secs > 0)
+                    .then_some(self.lsp.idle_shutdown_secs),
+                servers: (!self.lsp.servers.is_empty()).then(|| {
+                    self.lsp
+                        .servers
+                        .iter()
+                        .map(|(name, s)| {
+                            (
+                                name.clone(),
+                                PersistentLspServerConfig {
+                                    command: Some(s.command.clone()),
+                                    args: (!s.args.is_empty()).then(|| s.args.clone()),
+                                    env: (!s.env.is_empty())
+                                        .then(|| s.env.clone().into_iter().collect()),
+                                    extensions: (!s.extensions.is_empty())
+                                        .then(|| s.extensions.clone()),
+                                    startup_timeout_secs: Some(s.startup_timeout_secs),
+                                    default_timeout_secs: Some(s.default_timeout_secs),
                                 },
                             )
                         })

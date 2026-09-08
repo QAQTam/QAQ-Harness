@@ -190,6 +190,7 @@ fn server_cfg(max_concurrent: u32) -> McpServerConfig {
         resources_enabled: true,
         default_timeout_secs: 60,
         max_concurrent_calls: max_concurrent,
+        cwd: String::new(),
     }
 }
 

@@ -9,6 +9,7 @@ qaqh-config = { path = "../qaqh-config" }
 qaqh-config-api = { path = "../qaqh-config-api" }
 qaqh-domain = { path = "../qaqh-domain" }
 qaqh-mcp = { path = "../qaqh-mcp" }
+qaqh-lsp = { path = "../qaqh-lsp" }
 qaqh-message = { path = "../qaqh-message" }
 qaqh-ringing = { path = "../qaqh-ringing" }
 qaqh-session = { path = "../qaqh-session" }

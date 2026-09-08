@@ -1,0 +1,52 @@
+[package]
+name = "qaqh-lsp"
+version.workspace = true
+edition.workspace = true
+description = "QAQ-Harness LSP client support — precise code navigation via language servers (docs/lsp-client-design.md)"
+
+[dependencies]
+# LspConfig 三类型消费（qaqh-config；mcp 同款单向依赖）。
+qaqh-config = { path = "../qaqh-config" }
+qaqh-types = { path = "../qaqh-types" }
+# 工具投影：DynamicTool/register_dynamic/build_dynamic_tool（mcp 同款）。
+qaqh-workspace = { path = "../qaqh-workspace" }
+# LSP client（M1 决策 L-选型）：oxalica/async-lsp 0.2 + lsp-types 0.95
+# （async-lsp 0.2.4 钉住 lsp-types 0.95.0，不追 0.97——feature
+# unification 会炸类型，升级只动 workspace 一行）。
+async-lsp = { workspace = true, features = ["tracing"] }
+lsp-types = { workspace = true }
+# 进程组/Job 隔离（mcp adapter 同款：rmcp 只开 tokio1 须自引并对齐 9.1.0）。
+process-wrap = { version = "9.1", default-features = false, features = [
+    "tokio1",
+    "process-group",
+    "job-object",
+    "creation-flags",
+] }
+# manager/watchdog/bridge 需要 sync(Mutex)/time(timeout/sleep)/process(Command)/
+# rt + rt-multi-thread（bridge 专属 runtime：async-lsp mainloop 宿主，mcp §3 同构）。
+tokio = { version = "1", features = ["sync", "time", "process", "rt", "rt-multi-thread", "io-util"] }
+# tokio ↔ futures IO 桥接（async-lsp mainloop 要 futures AsyncRead/Write；
+# 子进程管道是 tokio IO——inspector.rs 同款 compat 包裹）。
+tokio-util = { version = "0.7", features = ["compat"] }
+futures = { version = "0.3", default-features = false, features = ["async-await", "std"] }
+tower = "0.5"
+log = "0.4"
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "time"] }
+# 内存双工集成（async-lsp unit_test.rs 同款：tokio duplex + compat + LifecycleLayer）。
+tokio-util = { version = "0.7", features = ["compat"] }
+async-lsp = { workspace = true, features = ["tracing"] }
+lsp-types = { workspace = true }
+
+[lints.clippy]
+unwrap_used = "deny"
+string_slice = "deny"
+
+# 组杀兜底清扫（mcp connection.rs sweep_group 同款缺口：server 自行 spawn 的
+# 孙进程在退出后成孤儿）；仅 Unix。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

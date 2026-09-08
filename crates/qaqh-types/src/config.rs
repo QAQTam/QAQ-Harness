@@ -98,6 +98,10 @@ pub struct PersistentConfig {
     /// MCP 客户端配置（docs/mcp-client-design.md §6）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<PersistentMcpConfig>,
+
+    /// LSP 客户端配置（docs/lsp-client-design.md §6；全部 Option）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lsp: Option<PersistentLspConfig>,
 }
 
 /// 工具套件运行环境配置。
@@ -179,6 +183,45 @@ pub struct PersistentMcpServerConfig {
     pub default_timeout_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_concurrent_calls: Option<u32>,
+    /// stdio 子进程工作目录；None/空 = 继承 daemon 进程 cwd。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+}
+
+/// LSP 客户端配置持久层（docs/lsp-client-design.md §6；全部 Option）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PersistentLspConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// idle 回收阈值（秒）；None/0 = 常驻不回收。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_shutdown_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub servers: Option<HashMap<String, PersistentLspServerConfig>>,
+}
+
+/// 单个 LSP server（stdio 子进程；config 声明即信任，D4 同 mcp）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PersistentLspServerConfig {
+    /// stdio 启动命令（如 "rust-analyzer"）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
+    /// 注入 server 进程的环境变量；值可为 `${secret:name}` 占位符
+    /// （secret 本体在 secrets.toml `[secrets.mcp]` 段复用；qaqh-config 不求值）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env: Option<HashMap<String, String>>,
+    /// 路由键：该 server 负责的文件扩展名（无点小写，如 ["rs"]）；
+    /// None/空 = 不参与路由（仅允许显式 server 参数直调，M2）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<Vec<String>>,
+    /// 启动超时（秒；含进程拉起 + initialize + 索引门）；None = 30。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub startup_timeout_secs: Option<u64>,
+    /// 单次 LSP 请求默认超时（秒）；None = 30。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_timeout_secs: Option<u64>,
 }
 
 // ── Profile / Preferences ──

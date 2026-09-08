@@ -453,13 +453,14 @@ fn http_post_json(
 // ───────────────────────── mcp CLI（PR-M3-2 路线 B：显式导入） ─────────────────────────
 //
 // 路线：扫描外部 MCP 配置（Codex `~/.codex/config.toml` / Claude Code 用户级
-// `~/.claude.json` / 项目级 `.mcp.json`）→ 默认 dry-run 列出候选 → `--exec`
+// `~/.claude.json` / opencode `~/.config/opencode/opencode.json` /
+// 项目级 `.mcp.json`）→ 默认 dry-run 列出候选 → `--exec`
 // 写入 QAQH config.toml [mcp.servers] + secrets.toml [secrets.mcp]
 // （env 占位符化，D4 信任边界不扩）。项目级源是仓库内他人提交的文件——
 // 每个 server 必须逐个确认（供应链面，设计见 mcp_import.rs 头注）。
 //
 // 用法：
-//   qaqh-daemon mcp import --from codex|claude|claude-project [--root DIR] [--exec]
+//   qaqh-daemon mcp import --from codex|claude|opencode|claude-project [--root DIR] [--exec]
 
 fn mcp_cli(args: &[String]) -> i32 {
     use qaqh_config::mcp_import::{ExternalServer, ExternalSource};
@@ -475,7 +476,7 @@ fn mcp_cli(args: &[String]) -> i32 {
         }
         None => {
             eprintln!(
-                "usage: qaqh-daemon mcp import --from codex|claude|claude-project [--root DIR] [--exec]"
+                "usage: qaqh-daemon mcp import --from codex|claude|opencode|claude-project [--root DIR] [--exec]"
             );
             return 2;
         }
@@ -489,12 +490,15 @@ fn mcp_cli(args: &[String]) -> i32 {
         match args[i].as_str() {
             "--from" => {
                 let Some(value) = args.get(i + 1) else {
-                    eprintln!("mcp import: --from requires a value (codex|claude|claude-project)");
+                    eprintln!(
+                        "mcp import: --from requires a value (codex|claude|opencode|claude-project)"
+                    );
                     return 2;
                 };
                 from = Some(match value.as_str() {
                     "codex" => ExternalSource::Codex,
                     "claude" => ExternalSource::ClaudeUser,
+                    "opencode" => ExternalSource::Opencode,
                     "claude-project" => ExternalSource::ClaudeProject,
                     other => {
                         eprintln!("mcp import: unknown source {other:?}");
@@ -523,7 +527,7 @@ fn mcp_cli(args: &[String]) -> i32 {
     }
     let Some(source) = from else {
         eprintln!(
-            "usage: qaqh-daemon mcp import --from codex|claude|claude-project [--root DIR] [--exec]"
+            "usage: qaqh-daemon mcp import --from codex|claude|opencode|claude-project [--root DIR] [--exec]"
         );
         return 2;
     };
@@ -535,12 +539,16 @@ fn mcp_cli(args: &[String]) -> i32 {
     // 扫描候选。
     let servers: Vec<ExternalServer> = match source {
         ExternalSource::Codex => {
-            let (codex_path, _) = qaqh_config::mcp_import::default_user_paths();
-            qaqh_config::mcp_import::scan_codex(&codex_path)
+            let paths = qaqh_config::mcp_import::default_user_paths();
+            qaqh_config::mcp_import::scan_codex(&paths.codex)
         }
         ExternalSource::ClaudeUser => {
-            let (_, claude_path) = qaqh_config::mcp_import::default_user_paths();
-            qaqh_config::mcp_import::scan_claude(&claude_path, ExternalSource::ClaudeUser)
+            let paths = qaqh_config::mcp_import::default_user_paths();
+            qaqh_config::mcp_import::scan_claude(&paths.claude, ExternalSource::ClaudeUser)
+        }
+        ExternalSource::Opencode => {
+            let paths = qaqh_config::mcp_import::default_user_paths();
+            qaqh_config::mcp_import::scan_opencode(&paths.opencode)
         }
         ExternalSource::ClaudeProject => {
             let path = Path::new(root.as_deref().unwrap_or(".")).join(".mcp.json");

@@ -157,6 +157,10 @@ impl ToolEngine {
         if effective_name == "mcp" || effective_name.starts_with("mcp__") {
             qaqh_mcp::sync_projection_now();
         }
+        // LSP 同款：`lsp` 聚合工具 enabled 即在场，直调前同步 apply。
+        if effective_name == "lsp" {
+            qaqh_lsp::sync_projection_now();
+        }
 
         match qaqh_workspace::authorize_call(
             &ctx.agent.session.seed,

@@ -160,6 +160,7 @@ fn shared_manager() -> &'static Arc<McpManager> {
                     resources_enabled: true,
                     default_timeout_secs: 60,
                     max_concurrent_calls: 4,
+                    cwd: String::new(),
                 },
             )]),
         };

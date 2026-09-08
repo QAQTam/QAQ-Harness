@@ -68,6 +68,8 @@ pub struct ConfigDto {
     pub workspace: WorkspaceDto,
     /// MCP 客户端配置（Phase 1 只读；写模型随 workspace 隔离权限重构另立）。
     pub mcp: McpDto,
+    /// LSP 客户端配置（M1 只读；写模型另立）。
+    pub lsp: LspDto,
     #[serde(alias = "tokenizer_path")]
     pub tokenizer_path: Option<String>,
 }
@@ -150,6 +152,32 @@ pub struct McpServerDto {
     pub resources_enabled: bool,
     pub default_timeout_secs: u64,
     pub max_concurrent_calls: u32,
+    /// stdio 子进程工作目录；空 = 继承 daemon 进程 cwd。
+    pub cwd: String,
+}
+
+/// LSP 客户端配置读模型（docs/lsp-client-design.md §6）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LspDto {
+    pub enabled: bool,
+    pub idle_shutdown_secs: u64,
+    /// 按 server 名排序（BTreeMap → Vec，确定性 wire 顺序）。
+    pub servers: Vec<LspServerDto>,
+}
+
+/// 单个 LSP server 读模型。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LspServerDto {
+    pub name: String,
+    pub command: String,
+    pub args: Vec<String>,
+    /// 原样回显（值可为 `${secret:name}` 占位符；secret 本体在 secrets.toml）。
+    pub env: std::collections::BTreeMap<String, String>,
+    pub extensions: Vec<String>,
+    pub startup_timeout_secs: u64,
+    pub default_timeout_secs: u64,
 }
 
 /// 写模型：JSON Merge Patch（K3）。反序列化时缺失即 None = 不动；

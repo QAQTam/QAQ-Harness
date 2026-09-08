@@ -44,6 +44,7 @@ async fn e2e_context7_real_server() {
             resources_enabled: true,
             default_timeout_secs: 120,
             max_concurrent_calls: 2,
+            cwd: String::new(),
         },
     );
     let settings = qaqh_mcp::connection::LifecycleSettings {

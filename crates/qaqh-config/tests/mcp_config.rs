@@ -58,6 +58,7 @@ idle_shutdown_secs = 120
 command = "npx"
 args = ["-y", "@upstash/context7-mcp"]
 env = { CONTEXT7_API_KEY = "${secret:context7_key}" }
+cwd = "/tmp/c7-work"
 
 [mcp.servers.figma]
 url = "https://mcp.figma.com/mcp"
@@ -82,11 +83,12 @@ max_concurrent_calls = 2
         Some("${secret:context7_key}"),
         "env 原样保存，secret 占位符不求值"
     );
-    // 默认值：resources 开、超时 60s、并发 1、无白名单
+    // 默认值：resources 开、超时 60s、并发 1、无白名单、无 cwd
     assert!(c7.resources_enabled);
     assert_eq!(c7.default_timeout_secs, 60);
     assert_eq!(c7.max_concurrent_calls, 1);
     assert!(c7.tools.is_none());
+    assert_eq!(c7.cwd, "/tmp/c7-work", "cwd 原样入库");
 
     let figma = cfg.mcp.servers.get("figma").expect("figma 存在");
     assert!(matches!(figma.transport, McpTransportKind::Http));
@@ -95,6 +97,7 @@ max_concurrent_calls = 2
     assert!(!figma.resources_enabled, "显式关闭 resources");
     assert_eq!(figma.default_timeout_secs, 120);
     assert_eq!(figma.max_concurrent_calls, 2);
+    assert!(figma.cwd.is_empty(), "未配 cwd → 空（继承 daemon cwd）");
 }
 
 // ── fail-fast 校验 ──

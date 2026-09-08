@@ -100,6 +100,7 @@ mod tests {
             resources_enabled: true,
             default_timeout_secs: timeout_secs,
             max_concurrent_calls: 1,
+            cwd: String::new(),
         }
     }
 

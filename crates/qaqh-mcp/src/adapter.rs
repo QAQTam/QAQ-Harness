@@ -114,6 +114,9 @@ pub(crate) fn build_stdio_command(cfg: &McpServerConfig) -> CommandWrap {
     let mut command = tokio::process::Command::new(&cfg.command);
     command.args(&cfg.args);
     command.envs(cfg.env.iter());
+    if !cfg.cwd.trim().is_empty() {
+        command.current_dir(cfg.cwd.trim());
+    }
     let mut wrap = CommandWrap::from(command);
     #[cfg(unix)]
     wrap.wrap(ProcessGroup::leader());
@@ -313,6 +316,7 @@ mod tests {
             resources_enabled: true,
             default_timeout_secs: 60,
             max_concurrent_calls: 1,
+            cwd: String::new(),
         }
     }
 
@@ -358,5 +362,26 @@ mod tests {
         );
         let error = resolve_server_secrets(&cfg, &secrets).unwrap_err();
         assert_eq!(error.kind, McpErrorKind::ConnectFailed);
+    }
+
+    #[test]
+    fn build_stdio_command_applies_configured_cwd() {
+        // 配了 cwd → 透进子进程 Command（tokio as_std 可观测）。
+        let mut cfg = server_cfg(BTreeMap::new(), vec![]);
+        cfg.cwd = "/tmp/qaqh-cwd-probe".to_owned();
+        let wrap = build_stdio_command(&cfg);
+        assert_eq!(
+            wrap.command().as_std().get_current_dir(),
+            Some(std::path::Path::new("/tmp/qaqh-cwd-probe")),
+            "cwd 应透进子进程工作目录"
+        );
+        // 未配 cwd → 不设 current_dir（继承 daemon cwd）。
+        let cfg = server_cfg(BTreeMap::new(), vec![]);
+        let wrap = build_stdio_command(&cfg);
+        assert_eq!(
+            wrap.command().as_std().get_current_dir(),
+            None,
+            "空 cwd 不钉目录"
+        );
     }
 }

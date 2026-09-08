@@ -57,6 +57,7 @@ async fn secret_placeholder_resolves_into_child_env() {
         resources_enabled: true,
         default_timeout_secs: 60,
         max_concurrent_calls: 1,
+        cwd: String::new(),
     };
     let cfg = McpConfig {
         import_external: false,

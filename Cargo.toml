@@ -16,10 +16,13 @@ members = [
     "crates/qaqh-subagent",
     "crates/qaqh-client",
     "crates/qaqh-mcp",
+    "crates/qaqh-lsp",
 ]
 
 [workspace.dependencies]
 rmcp = { version = "3.2", default-features = false, features = ["client", "transport-child-process"] }
+async-lsp = { version = "0.2", default-features = false, features = ["tokio", "omni-trait"] }
+lsp-types = "0.95"
 
 [workspace.package]
 version = "1.0.0"

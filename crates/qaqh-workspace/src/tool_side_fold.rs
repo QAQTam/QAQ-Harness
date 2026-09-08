@@ -4,7 +4,8 @@
 //! LLM 之前统一调用 [`apply`]；`qaqh-message` 的 message 层不再改写工具结果
 //! （原 message 侧折叠已取消）。
 //!
-//! 折叠策略通过 [`ToolResultFoldPolicy`] 接口注入，运行时全局切换：
+//! 折叠策略通过 [`ToolResultFoldPolicy`] 接口注入，按 actor 线程切换（工具
+//! 模式是会话级概念，策略因此不能是进程级状态）：
 //! - [`StandardPolicy`]（默认）：统一折叠/截断（见 [`StandardPolicy::limit_for`]）；
 //! - [`NoFoldPolicy`]（极限模式）：完全透传，连 exec/bash 内部的 token 截断
 //!   也关闭——上下文大小完全由模型自己控制。
@@ -24,7 +25,8 @@
 //! `read` / `edit` 按约定暂不在此施加策略（更名完成后随工具一起优化），
 //! StandardPolicy 下与其它透传工具一样原样返回。
 
-use std::sync::{Arc, LazyLock, RwLock};
+use std::cell::RefCell;
+use std::sync::Arc;
 
 use qaqh_types::ToolResult;
 
@@ -98,22 +100,32 @@ impl ToolResultFoldPolicy for NoFoldPolicy {
     }
 }
 
-/// 当前生效的全局折叠策略（默认 StandardPolicy）。
-static CURRENT_POLICY: LazyLock<RwLock<Arc<dyn ToolResultFoldPolicy>>> =
-    LazyLock::new(|| RwLock::new(Arc::new(StandardPolicy)));
-
-/// 切换全局折叠策略（如进入/退出极限模式）。
-pub fn set_policy(policy: Arc<dyn ToolResultFoldPolicy>) {
-    let mut guard = CURRENT_POLICY.write().unwrap_or_else(|e| e.into_inner());
-    *guard = policy;
+// 当前**线程**生效的折叠策略（默认 `StandardPolicy`）。
+//
+// 与 `runtime` 的 `RUNTIME_CTX` / `ACTOR_TOOL_MANAGER` / `AGENT_MODE` 同理：
+// 每个 in-process actor 跑在自己的 daemon 线程上，而工具模式是**按会话**切换
+// 的，所以折叠策略必须属于 actor 状态。若放在进程级 `static`，会话 A 切
+// minimal（联动 `NoFoldPolicy`）会连带关掉会话 B 的命令输出截断——见
+// `tests/tool_fold_scope.rs`。
+//
+// 非 actor 线程（daemon 主线程、serve、CLI）从不设置，恒为 `StandardPolicy`。
+thread_local! {
+    static CURRENT_POLICY: RefCell<Arc<dyn ToolResultFoldPolicy>> =
+        RefCell::new(Arc::new(StandardPolicy));
 }
 
-/// 读取当前全局折叠策略。
+/// 切换**当前线程**的折叠策略（如进入/退出极限模式）。
+///
+/// 只影响调用线程：actor 线程的工具工作线程经
+/// [`ActorToolScope::install`](crate::runtime::ActorToolScope::install) 继承
+/// actor 的策略。需要进程级行为的调用方不存在，也不应新增。
+pub fn set_thread_policy(policy: Arc<dyn ToolResultFoldPolicy>) {
+    CURRENT_POLICY.with(|slot| *slot.borrow_mut() = policy);
+}
+
+/// 读取当前线程的折叠策略。
 pub fn policy() -> Arc<dyn ToolResultFoldPolicy> {
-    CURRENT_POLICY
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
+    CURRENT_POLICY.with(|slot| slot.borrow().clone())
 }
 
 /// 对工具结果应用当前策略。仅在成功/后台结果上截断；错误/部分结果原样透传。

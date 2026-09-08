@@ -3,10 +3,11 @@
 //! Knife-1 step 2: per-actor state moved from process-wide `static`s into
 //! **thread-local** slots. Each in-process actor runs its Loop on its own daemon
 //! thread and tool execution is synchronous on that actor thread, so
-//! [`RUNTIME_CTX`], [`ACTOR_TOOL_MANAGER`], [`AGENT_MODE`] and the sandbox flag
-//! live per-thread and give concurrent actors real isolation without
-//! `ACTOR_SERIAL`. The process-level [`TOOL_MANAGER`] stays as the stable
-//! fallback for non-actor threads (daemon `skills.list_tools`, serve, CLI).
+//! [`RUNTIME_CTX`], [`ACTOR_TOOL_MANAGER`], [`AGENT_MODE`], the sandbox flag and
+//! the tool-result fold policy live per-thread and give concurrent actors real
+//! isolation without `ACTOR_SERIAL`. The process-level [`TOOL_MANAGER`] stays as
+//! the stable fallback for non-actor threads (daemon `skills.list_tools`,
+//! serve, CLI).
 
 use qaqh_types::ToolDef;
 use std::cell::Cell;
@@ -157,13 +158,17 @@ pub(crate) fn is_plan_mode() -> bool {
 /// which never inherit the actor thread's thread-locals. The actor captures its
 /// scope with [`ActorToolScope::capture`] before spawning a tool worker, and the
 /// worker reinstalls it with [`ActorToolScope::install`], so concurrent actors
-/// each run their tools under their own context/manager/mode/sandbox.
+/// each run their tools under their own context/manager/mode/sandbox/fold-policy.
 #[derive(Clone, Default)]
 pub struct ActorToolScope {
     runtime: Option<RuntimeContext>,
     manager: Option<Arc<Mutex<crate::ToolManager>>>,
     mode: u8,
     sandbox: bool,
+    /// 工具结果折叠策略（Standard / NoFold）。随工具模式按会话切换，因此必须
+    /// 跟着 actor 走——留在进程级 static 会让一个会话的 minimal 模式关掉其它
+    /// 会话的命令输出截断。
+    policy: Option<Arc<dyn crate::tool_side_fold::ToolResultFoldPolicy>>,
 }
 
 impl ActorToolScope {
@@ -174,6 +179,7 @@ impl ActorToolScope {
             manager: ACTOR_TOOL_MANAGER.with(|slot| slot.borrow().clone()),
             mode: AGENT_MODE.with(|slot| slot.get()),
             sandbox: crate::authorization::is_subagent_sandbox(),
+            policy: Some(crate::tool_side_fold::policy()),
         }
     }
 
@@ -185,6 +191,9 @@ impl ActorToolScope {
         ACTOR_TOOL_MANAGER.with(|slot| *slot.borrow_mut() = self.manager.clone());
         AGENT_MODE.with(|slot| slot.set(self.mode));
         crate::authorization::set_subagent_sandbox(self.sandbox);
+        if let Some(policy) = &self.policy {
+            crate::tool_side_fold::set_thread_policy(policy.clone());
+        }
         ActorToolScopeGuard { previous }
     }
 }
@@ -200,6 +209,9 @@ impl Drop for ActorToolScopeGuard {
         ACTOR_TOOL_MANAGER.with(|slot| *slot.borrow_mut() = self.previous.manager.clone());
         AGENT_MODE.with(|slot| slot.set(self.previous.mode));
         crate::authorization::set_subagent_sandbox(self.previous.sandbox);
+        if let Some(policy) = &self.previous.policy {
+            crate::tool_side_fold::set_thread_policy(policy.clone());
+        }
     }
 }
 

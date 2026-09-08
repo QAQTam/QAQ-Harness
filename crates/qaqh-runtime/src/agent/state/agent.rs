@@ -472,14 +472,17 @@ impl AgentState {
         self.session.tool_mode = tool_mode.to_string();
         self.session.custom_tools = custom_tools.to_vec();
         // 极限模式（minimal 系列）联动折叠策略：完全不折叠任何工具结果
-        // （含 exec/bash 内部 token 截断），上下文大小由模型自己控制；
+        // （含 exec 内部 token 截断），上下文大小由模型自己控制；
         // 其它模式恢复标准折叠。
+        //
+        // 只作用于**本 actor 线程**：工具模式是会话级概念，若写成进程级全局，
+        // 一个会话切 minimal 会连带关掉其它会话的命令输出截断。
         if qaqh_types::is_minimal_family(tool_mode) {
-            qaqh_workspace::tool_side_fold::set_policy(std::sync::Arc::new(
+            qaqh_workspace::tool_side_fold::set_thread_policy(std::sync::Arc::new(
                 qaqh_workspace::tool_side_fold::NoFoldPolicy,
             ));
         } else {
-            qaqh_workspace::tool_side_fold::set_policy(std::sync::Arc::new(
+            qaqh_workspace::tool_side_fold::set_thread_policy(std::sync::Arc::new(
                 qaqh_workspace::tool_side_fold::StandardPolicy,
             ));
         }

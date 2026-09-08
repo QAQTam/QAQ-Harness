@@ -54,3 +54,18 @@
   （vite `base: './'`），资源引用不得写绝对路径。
 - 生产布局：daemon 与匹配版本的 renderer 产物同目录分发
   （`resources/out/renderer`），避免版本漂移触发能力协商拒绝。
+## 5. 工具结果展示面（澄清，非新增契约）
+
+对着 `bindings/qaqh/*.ts` 实现时，以下几个字段容易按字面误解，此处明确：
+
+| 字段 | 真相 |
+|---|---|
+| `TimelineTool.output` | **不是完整输出**，就是前端能拿到的全部。标准模式下模型文本已被 `TOOL_MODEL_MAX_CHARS`（24K 字符）封顶。 |
+| `ToolResult.output_ref` | **几乎恒为 `null`**。内容外置阈值是 10 MiB，而标准模式文本上限约 96 KiB，差两个数量级 → 只有 NoFold 极限模式下的超长输出才会产生。它是传输保护阀，不是"大输出分页通道"；前端应视为可选字段，不要为其设计主流程。 |
+| `TimelineTool.state` | 只有 4 态（`prepared`/`running`/`succeeded`/`failed`）。工具侧 `ToolStatus` 另有 `backgrounded` 与 `cancelled`，**当前投影会折叠进 succeeded/failed**，前端无法仅凭 state 区分"被取消"与"失败"（待后端补态）。 |
+| `TimelineTool.diff` | 展示面专属，模型看不到（`project_for_model()` 不含它）。别假设模型知道 diff 内容。 |
+| `ToolResult.data` | 结构化载荷，**仅少数工具填充**（apply_patch / confirm_apply / journal / copy_range / file_glob / file_mutate 等），多数工具为空对象。不要当作必有字段。 |
+
+渲染建议见本仓库 issue 讨论：工具块应按"状态机 + 补丁"实现（会被 `ToolUpdated` /
+`ToolProgress` 反复更新），而非一次性 props 渲染的静态卡片。
+

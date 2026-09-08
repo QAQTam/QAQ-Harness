@@ -748,7 +748,7 @@ pub(crate) fn externalize_large_content(
     else {
         return event;
     };
-    let full_text = result.model.text.as_str();
+    let full_text = result.model_text();
     if full_text.len() <= crate::ringing::CONTENT_STORE_THRESHOLD_BYTES {
         return qaqh_domain::DomainEvent::Tool(qaqh_domain::ToolEvent::ToolFinished {
             tool_call_id,
@@ -758,20 +758,24 @@ pub(crate) fn externalize_large_content(
         });
     }
     let content_id = hub.put_content(seed, "text/plain", full_text.as_bytes().to_vec(), true);
+    // 保留尾部（命令输出通常尾部才是结论），但展示行取**全文开头**——
+    // 取 tail 的前 512 字符只会得到输出中段，作为 summary 毫无意义。
     let tail = tail_text(full_text, CONTENT_TAIL_BYTES);
-    let mut projected = result;
-    projected.summary = tail
+    let head: String = full_text
         .chars()
         .take(qaqh_types::TOOL_SUMMARY_MAX_CHARS)
         .collect();
-    projected.model.text = tail;
-    projected.model.truncated = true;
-    projected.output_ref = Some(qaqh_domain::ContentRef {
-        content_id: content_id.clone(),
-        media_type: "text/plain".into(),
-        sha256: content_id.clone(),
-        truncated: true,
-    });
+    let mut projected = result;
+    projected.externalize_output(
+        tail,
+        head,
+        qaqh_domain::ContentRef {
+            content_id: content_id.clone(),
+            media_type: "text/plain".into(),
+            sha256: content_id.clone(),
+            truncated: true,
+        },
+    );
     qaqh_domain::DomainEvent::Tool(qaqh_domain::ToolEvent::ToolFinished {
         tool_call_id,
         turn_id,
@@ -812,14 +816,14 @@ mod tests {
     use super::*;
 
     fn tool_finished(summary: String) -> qaqh_domain::DomainEvent {
-        let mut result = qaqh_domain::ToolResult::ok(summary.clone());
         // The worker normally sends the bounded model projection. This test
         // helper also covers the pre-projection large-output boundary used by
-        // the content store.
-        if summary.len() > qaqh_types::TOOL_MODEL_MAX_CHARS {
-            result.model.text = summary;
-            result.model.truncated = false;
-        }
+        // the content store: `limit = None` 即 NoFold 语义，模型文本不截断。
+        let result = if summary.len() > qaqh_types::TOOL_MODEL_MAX_CHARS {
+            qaqh_domain::ToolResult::ok_with_limit(summary, None)
+        } else {
+            qaqh_domain::ToolResult::ok(summary)
+        };
         qaqh_domain::DomainEvent::Tool(qaqh_domain::ToolEvent::ToolFinished {
             tool_call_id: "t1".into(),
             turn_id: "turn1".into(),
@@ -837,9 +841,9 @@ mod tests {
             qaqh_domain::DomainEvent::Tool(qaqh_domain::ToolEvent::ToolFinished {
                 result, ..
             }) => {
-                assert!(result.model.text.len() <= CONTENT_TAIL_BYTES);
-                assert!(result.summary.chars().count() <= qaqh_types::TOOL_SUMMARY_MAX_CHARS);
-                let rf = result.output_ref.expect("output_ref set");
+                assert!(result.model_text().len() <= CONTENT_TAIL_BYTES);
+                assert!(result.summary().chars().count() <= qaqh_types::TOOL_SUMMARY_MAX_CHARS);
+                let rf = result.output_ref().expect("output_ref set").clone();
                 assert!(rf.truncated);
                 assert_eq!(rf.media_type, "text/plain");
                 // 完整内容可从 ContentStore 读回（会话所有权校验）
@@ -861,8 +865,8 @@ mod tests {
             qaqh_domain::DomainEvent::Tool(qaqh_domain::ToolEvent::ToolFinished {
                 result, ..
             }) => {
-                assert_eq!(result.summary, "small");
-                assert!(result.output_ref.is_none());
+                assert_eq!(result.summary(), "small");
+                assert!(result.output_ref().is_none());
             }
             other => panic!("expected ToolFinished, got {other:?}"),
         }

@@ -568,8 +568,7 @@ fn serialize_messages(head: &[&qaqh_types::Message], kept: &[&qaqh_types::Messag
                 }
                 qaqh_types::ContentBlock::ToolResult { result, .. } => {
                     let compact: String = result
-                        .model
-                        .text
+                        .model_text()
                         .lines()
                         .take(5)
                         .map(|l| l.chars().take(200).collect::<String>())
@@ -597,8 +596,7 @@ fn serialize_messages(head: &[&qaqh_types::Message], kept: &[&qaqh_types::Messag
             && let Some(qaqh_types::ContentBlock::ToolResult { result, .. }) = m.content.first()
         {
             let compact: String = result
-                .model
-                .text
+                .model_text()
                 .lines()
                 .take(3)
                 .map(|l| l.chars().take(200).collect::<String>())

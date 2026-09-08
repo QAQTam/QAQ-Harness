@@ -506,7 +506,7 @@ fn build_turns(
                         {
                             Some(qaqh_domain::ToolResultDef {
                                 tool_call_id: tool_use_id.clone(),
-                                output: result.model.text.clone(),
+                                output: result.model_text().to_string(),
                                 success: result.is_success(),
                                 file: None,
                             })

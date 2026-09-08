@@ -383,7 +383,7 @@ impl MessageStore {
                             tool_use_id,
                             result,
                         } = block
-                            && result.model.text.starts_with(SYNTHETIC_RESTORE_PREFIX)
+                            && result.model_text().starts_with(SYNTHETIC_RESTORE_PREFIX)
                         {
                             ids.push(tool_use_id.clone());
                         }
@@ -408,9 +408,9 @@ impl MessageStore {
                             result,
                         } = block
                             && tool_use_id == call_id
-                            && result.model.text.starts_with(SYNTHETIC_RESTORE_PREFIX)
+                            && result.model_text().starts_with(SYNTHETIC_RESTORE_PREFIX)
                         {
-                            result.model.text = note.to_string();
+                            result.rewrite_text(note);
                             return true;
                         }
                     }
@@ -983,7 +983,7 @@ impl MessageStore {
                 {
                     Some((
                         tool_use_id.clone(),
-                        result.model.text.clone(),
+                        result.model_text().to_string(),
                         result.is_success(),
                         result.diff.clone(),
                     ))
@@ -1197,7 +1197,7 @@ impl MessageStore {
                             {
                                 Some((
                                     tool_use_id.clone(),
-                                    result.model.text.clone(),
+                                    result.model_text().to_string(),
                                     result.is_success(),
                                 ))
                             } else {
@@ -1557,7 +1557,7 @@ impl MessageStore {
                             tool_call_blocks += 1;
                         }
                         qaqh_types::ContentBlock::ToolResult { result, .. } => {
-                            tool_results += qaqh_types::count_tokens(&result.model.text) as u64;
+                            tool_results += qaqh_types::count_tokens(result.model_text()) as u64;
                         }
                         qaqh_types::ContentBlock::Image { .. }
                         | qaqh_types::ContentBlock::ImageRef { .. } => {
@@ -1599,7 +1599,7 @@ impl MessageStore {
                         {
                             // 存储字节即最终形态：工具侧折叠已定型，直接按实际
                             // 文本统计（不再按位置模拟折叠）。
-                            tool_results += qaqh_types::count_tokens(&result.model.text) as u64;
+                            tool_results += qaqh_types::count_tokens(result.model_text()) as u64;
                         }
                     }
                 }
@@ -1687,7 +1687,7 @@ mod tests {
                     tool_use_id,
                     result,
                     ..
-                } if tool_use_id == id => Some(result.model.text.clone()),
+                } if tool_use_id == id => Some(result.model_text().to_string()),
                 _ => None,
             })
             .expect("tool result must be present in gate context")

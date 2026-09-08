@@ -209,8 +209,8 @@ pub fn exec_edit(args: &serde_json::Value) -> ToolResult {
                     data["code"] = json!(code);
                 }
                 let mut result = ToolResult::ok_data(data, text);
-                result.summary.push_str(&format!(
-                    "pending_id={pending_id} — confirm with confirm_apply {{\"pending_id\":\"{pending_id}\",\"action\":\"apply\"}}\n"
+                result.push_hint(&format!(
+                    "pending_id={pending_id} — confirm with confirm_apply {{\"pending_id\":\"{pending_id}\",\"action\":\"apply\"}}"
                 ));
                 return result;
             }

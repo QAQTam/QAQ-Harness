@@ -12,6 +12,14 @@ use std::time::{Duration, Instant};
 use qaqh_types::sha256_hex;
 
 /// 超过该阈值的内容应外置（10 MiB）。
+///
+/// ⚠ 这是**传输保护阀**，而非常规路径。工具结果走向本 store 的唯一入口是
+/// `registry::externalize_large_content`，在标准模式下模型文本已被
+/// `TOOL_MODEL_MAX_CHARS`（24K 字符，上限约 96 KiB）封顶，永远够不到 10 MiB；
+/// 只有 NoFold 极限模式下的超长输出才会触发。别把它当成"大输出的分页通道"。
+///
+/// 此外本 store 还服务于附件/图片（`attachment.rs`、`host_impl.rs`）与 HTTP
+/// content 端点，那部分与工具结果外置无关，不受上述可达性限制。
 pub const CONTENT_STORE_THRESHOLD_BYTES: usize = 10 * 1024 * 1024;
 
 /// 默认生命周期（30 分钟）。

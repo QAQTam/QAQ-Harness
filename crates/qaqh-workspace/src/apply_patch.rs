@@ -53,8 +53,8 @@ pub(super) fn exec_apply_patch(args: &serde_json::Value) -> ToolResult {
         let pending_id = crate::pending::store("apply_patch", &pending_args);
         result.data["pending_id"] = serde_json::json!(pending_id);
         result.data["dry_run"] = serde_json::json!(true);
-        result.summary.push_str(&format!(
-            "pending_id={pending_id} — confirm with confirm_apply {{\"pending_id\":\"{pending_id}\",\"action\":\"apply\"}}\n"
+        result.push_hint(&format!(
+            "pending_id={pending_id} — confirm with confirm_apply {{\"pending_id\":\"{pending_id}\",\"action\":\"apply\"}}"
         ));
     }
     result

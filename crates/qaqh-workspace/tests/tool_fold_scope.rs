@@ -40,7 +40,7 @@ fn folded_exec_chars() -> usize {
     let body = "line of output\n".repeat(2_000); // ~30K chars，远超 8K 命令输出限额
     let mut result = qaqh_types::ToolResult::ok(body);
     tool_side_fold::apply("exec", &mut result);
-    result.model.text.chars().count()
+    result.model_text().chars().count()
 }
 
 #[test]

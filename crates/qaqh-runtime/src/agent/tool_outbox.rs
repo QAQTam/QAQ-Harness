@@ -267,7 +267,7 @@ mod tests {
             .find_map(|result| {
                 result.content.iter().find_map(|block| match block {
                     qaqh_types::ContentBlock::ToolResult { result, .. } => {
-                        Some(result.model.text.clone())
+                        Some(result.model_text().to_string())
                     }
                     _ => None,
                 })

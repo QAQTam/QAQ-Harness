@@ -137,12 +137,12 @@ pub fn apply(tool_name: &str, result: &mut ToolResult) {
     let Some(limit) = policy.limit_for(tool_name) else {
         return; // 透传：工具自身自限 / 24K 硬顶 / 极限模式全透传
     };
-    let text = &result.model.text;
+    let text = result.model_text();
     if text.chars().count() <= limit {
         return;
     }
-    result.model.text = truncate_with_marker(&*policy, tool_name, text, limit);
-    result.model.truncated = true;
+    let truncated = truncate_with_marker(&*policy, tool_name, text, limit);
+    result.set_model_projection(truncated, true);
 }
 
 /// 保留头部（按行对齐到 limit 内最后一个换行），追加策略的截断标记。
@@ -203,8 +203,8 @@ mod tests {
         let listing = "src/a.rs:10:fn alpha() {}\nsrc/b.rs:20:fn beta() {}\n";
         let mut result = ok(listing);
         apply("grep", &mut result);
-        assert_eq!(result.model.text, listing);
-        assert!(!result.model.truncated);
+        assert_eq!(result.model_text(), listing);
+        assert!(!result.model_truncated());
     }
 
     #[test]
@@ -213,12 +213,12 @@ mod tests {
         let read_body = "L1: line one\nL2: line two\n";
         let mut result = ok(read_body);
         apply("read", &mut result);
-        assert_eq!(result.model.text, read_body);
+        assert_eq!(result.model_text(), read_body);
 
         let edit_receipt = "[OK] edit src/lib.rs\n  2/2 hunks applied (new_hash a1b2c3d4)\n";
         let mut result = ok(edit_receipt);
         apply("edit", &mut result);
-        assert_eq!(result.model.text, edit_receipt);
+        assert_eq!(result.model_text(), edit_receipt);
     }
 
     #[test]
@@ -230,7 +230,7 @@ mod tests {
         ] {
             let mut result = ok(body);
             apply(name, &mut result);
-            assert_eq!(result.model.text, body, "{name} must pass through");
+            assert_eq!(result.model_text(), body, "{name} must pass through");
         }
     }
 
@@ -239,13 +239,13 @@ mod tests {
         let body = "line of output\n".repeat(2_000); // ~34K chars > 8K cap
         let mut result = ok(&body);
         apply("exec", &mut result);
-        assert!(result.model.truncated);
-        assert!(result.model.text.len() < body.len());
-        assert!(result.model.text.starts_with("line of output\n"));
-        assert!(result.model.text.contains("[truncated:"));
-        assert!(result.model.text.contains("call exec again"));
+        assert!(result.model_truncated());
+        assert!(result.model_text().len() < body.len());
+        assert!(result.model_text().starts_with("line of output\n"));
+        assert!(result.model_text().contains("[truncated:"));
+        assert!(result.model_text().contains("call exec again"));
         // 行对齐：头部到截断标记之间没有半行。
-        assert!(result.model.text.contains("…\n[truncated:"));
+        assert!(result.model_text().contains("…\n[truncated:"));
     }
 
     #[test]
@@ -255,8 +255,11 @@ mod tests {
             let body = "x\n".repeat(6_000); // 12K chars > 8K cap
             let mut result = ok(&body);
             apply(name, &mut result);
-            assert!(!result.model.truncated, "{name} retired: must pass through");
-            assert_eq!(result.model.text, body, "{name} retired: verbatim");
+            assert!(
+                !result.model_truncated(),
+                "{name} retired: must pass through"
+            );
+            assert_eq!(result.model_text(), body, "{name} retired: verbatim");
         }
     }
 
@@ -265,8 +268,8 @@ mod tests {
         let body = "done in 12ms\n";
         let mut result = ok(body);
         apply("exec", &mut result);
-        assert_eq!(result.model.text, body);
-        assert!(!result.model.truncated);
+        assert_eq!(result.model_text(), body);
+        assert!(!result.model_truncated());
     }
 
     #[test]
@@ -275,8 +278,8 @@ mod tests {
             let body = "content\n".repeat(5_000); // 40K chars > 16K cap
             let mut result = ok(&body);
             apply(name, &mut result);
-            assert!(result.model.truncated, "{name} must be truncated");
-            assert!(result.model.text.len() <= 16_000 + 128);
+            assert!(result.model_truncated(), "{name} must be truncated");
+            assert!(result.model_text().len() <= 16_000 + 128);
         }
     }
 
@@ -288,12 +291,12 @@ mod tests {
         let mut result =
             ToolResult::error_with("NO_MATCH", error.clone(), true, Some("refine old".into()));
         apply("exec", &mut result);
-        assert_eq!(result.model.text, error);
+        assert_eq!(result.model_text(), error);
 
         let mut partial = ToolResult::partial("x\n".repeat(5_000));
         apply("web_fetch", &mut partial);
         assert_eq!(partial.status, ToolStatus::Partial);
-        assert_eq!(partial.model.text, "x\n".repeat(5_000));
+        assert_eq!(partial.model_text(), "x\n".repeat(5_000));
     }
 
     #[test]
@@ -301,6 +304,6 @@ mod tests {
         let body = "custom tool output\n";
         let mut result = ok(body);
         apply("custom_tool", &mut result);
-        assert_eq!(result.model.text, body);
+        assert_eq!(result.model_text(), body);
     }
 }

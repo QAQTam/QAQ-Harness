@@ -90,9 +90,7 @@ pub struct ToolImage {
 #[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "qaqh/"))]
 pub struct ToolResult {
     pub status: ToolStatus,
-    pub summary: String,
     pub data: serde_json::Value,
-    pub model: ToolModelPayload,
     /// Images to attach to the tool result message (e.g. `read_image`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ToolImage>,
@@ -104,9 +102,30 @@ pub struct ToolResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_ref: Option<ContentRef>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<ToolError>,
+
+    // ── 投影区（私有）──────────────────────────────────────────────
+    //
+    // 以下三项是同一份工具输出的不同投影，历史上是 `pub` 字段，任何调用方都
+    // 能单独改写其中一个而让另外两个失真（实例：`externalize_large_content`
+    // 改 model.text 却让 summary 停留在原文；`amend_synthetic_repair` 改
+    // model.text 而 summary 仍是占位符）。现收为私有，一律经本模块的构造函数
+    // 或受控改写接口整体更新，**漂移因此变成编译错误**。
+    //
+    // serde 仍会序列化这三项：线上 JSON 与 ts-rs 生成的 TS 契约保持不变。
+    //
+    // `summary` 并非纯派生——部分工具会往里追加提示行（见 [`Self::push_hint`]）。
+    /// 展示/模型提示行（≤ [`TOOL_SUMMARY_MAX_CHARS`]），可被工具追加。
+    summary: String,
+    /// 模型可见投影（文本、截断标记、token 估算、续调参数）。
+    model: ToolModelPayload,
+    /// 大输出外置引用。**仅在 NoFold 极限模式且模型文本超过
+    /// `CONTENT_STORE_THRESHOLD_BYTES`（10 MiB）时才会产生**——标准模式下
+    /// 模型文本已被 [`TOOL_MODEL_MAX_CHARS`] 封顶（≤ 约 96 KiB），永远到不了
+    /// 该阈值。因此它是传输保护阀，而非常规路径：前端应视为可选字段，
+    /// 不要指望靠它拿"完整输出"。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output_ref: Option<ContentRef>,
 }
 
 impl ToolResult {
@@ -258,6 +277,68 @@ impl ToolResult {
 
     pub fn model_text(&self) -> &str {
         &self.model.text
+    }
+
+    /// 展示/模型提示行（`summary` 投影，只读）。
+    pub fn summary(&self) -> &str {
+        &self.summary
+    }
+
+    /// 模型投影是否被截断。
+    pub fn model_truncated(&self) -> bool {
+        self.model.truncated
+    }
+
+    /// 大输出外置引用（通常见 [`Self::output_ref`] 字段说明：极少产生）。
+    pub fn output_ref(&self) -> Option<&ContentRef> {
+        self.output_ref.as_ref()
+    }
+
+    /// 往提示行追加一行（如 `pending_id=… confirm with confirm_apply …`），
+    /// 并**重新按 [`TOOL_SUMMARY_MAX_CHARS`] 收敛**。
+    ///
+    /// 直接 `push_str` 会让 summary 突破 512 上限（历史上 `apply_patch` /
+    /// `edit` 的 dry-run 分支正是这么写的，而 `validate()` 在生产路径上从不
+    /// 被调用，于是契约被静默违反）。走这个方法就不会。
+    pub fn push_hint(&mut self, hint: &str) {
+        self.summary.push('\n');
+        self.summary.push_str(hint);
+        self.summary = bounded_text(&self.summary, TOOL_SUMMARY_MAX_CHARS).0;
+    }
+
+    /// 整体替换模型文本，并重算 summary 与 token 估算。
+    ///
+    /// 用于"占位符 → 真实内容"的修复（如 `amend_synthetic_repair`）：这类场景
+    /// 若只改模型文本，summary 会停留在占位符上，正是投影漂移的典型形态。
+    /// `truncated` 与 `output_ref` 不在本方法职责内，保持不变。
+    pub fn rewrite_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        self.summary = bounded_text(&text, TOOL_SUMMARY_MAX_CHARS).0;
+        self.model.text = text;
+        self.model.total_tokens = estimate_tokens(&self.model.text);
+    }
+
+    /// 套用工具侧折叠结果：替换模型文本并标记截断。
+    ///
+    /// 供 `tool_side_fold` 使用。summary **不随之改变**——它是全文的前 512
+    /// 字符，而折叠只保留头部（命令输出限额 8K 远大于 512），两者天然一致。
+    pub fn set_model_projection(&mut self, text: String, truncated: bool) {
+        self.model.text = text;
+        self.model.truncated = truncated;
+        self.model.total_tokens = estimate_tokens(&self.model.text);
+    }
+
+    /// 大输出外置：一次性改写模型文本、截断标记、summary 与外置引用。
+    ///
+    /// 四项必须同时改写——历史上逐字段赋值导致 summary 与 `model.text` 语义
+    /// 错乱（那时 summary 取的是 tail 的前 512 字符，等于输出中段，作为展示
+    /// 行毫无意义）。`summary` 因此单独入参，由调用方给出**全文开头**。
+    pub fn externalize_output(&mut self, retained: String, summary: String, reference: ContentRef) {
+        self.summary = bounded_text(&summary, TOOL_SUMMARY_MAX_CHARS).0;
+        self.model.text = retained;
+        self.model.truncated = true;
+        self.model.total_tokens = estimate_tokens(&self.model.text);
+        self.output_ref = Some(reference);
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {

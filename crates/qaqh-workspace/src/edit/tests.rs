@@ -245,7 +245,7 @@ fn crlf_file_roundtrip_via_execute() {
         "expected_hash": hash,
         "hunks": [{"kind": "replace", "old": "b", "new": "c"}],
     }));
-    assert!(result.is_success(), "model text: {}", result.model.text);
+    assert!(result.is_success(), "model text: {}", result.model_text());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\r\nc\r\n");
 }
 
@@ -281,7 +281,7 @@ fn edit_existing_file_without_hash() {
         "path": path.to_string_lossy(),
         "hunks": [{"kind": "replace", "old": "x", "new": "y"}],
     }));
-    assert!(result.is_success(), "model text: {}", result.model.text);
+    assert!(result.is_success(), "model text: {}", result.model_text());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "y\n");
 }
 
@@ -294,7 +294,7 @@ fn create_new_file_with_prepend() {
         "path": path.to_string_lossy(),
         "hunks": [{"kind": "prepend_file", "new": "hello\n"}],
     }));
-    assert!(result.is_success(), "model text: {}", result.model.text);
+    assert!(result.is_success(), "model text: {}", result.model_text());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello\n");
 }
 
@@ -324,7 +324,7 @@ fn new_hash_chains_into_next_call() {
         "expected_hash": content_hash("a\nb\n"),
         "hunks": [{"kind": "replace", "old": "a", "new": "A"}],
     }));
-    assert!(r1.is_success(), "model text: {}", r1.model.text);
+    assert!(r1.is_success(), "model text: {}", r1.model_text());
     let new_hash = r1.data["new_hash"].as_str().unwrap().to_string();
     assert!(!new_hash.is_empty());
     let r2 = exec_edit(&json!({
@@ -332,7 +332,7 @@ fn new_hash_chains_into_next_call() {
         "expected_hash": new_hash,
         "hunks": [{"kind": "replace", "old": "b", "new": "B"}],
     }));
-    assert!(r2.is_success(), "model text: {}", r2.model.text);
+    assert!(r2.is_success(), "model text: {}", r2.model_text());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "A\nB\n");
 }
 
@@ -689,7 +689,7 @@ fn hint_line_via_json_parses_and_reports() {
         "path": path.to_string_lossy(),
         "hunks": [{"kind": "replace", "old": "x", "new": "X", "hint_line": 14}],
     }));
-    assert!(r.is_success(), "model text: {}", r.model.text);
+    assert!(r.is_success(), "model text: {}", r.model_text());
     // 只改 L14 的 x（L3 保持小写）。
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
@@ -712,7 +712,7 @@ fn hint_line_zero_via_json_is_normalized_to_one() {
         "path": path.to_string_lossy(),
         "hunks": [{"kind": "replace", "old": "x", "new": "X", "hint_line": 0}],
     }));
-    assert!(r.is_success(), "model text: {}", r.model.text);
+    assert!(r.is_success(), "model text: {}", r.model_text());
     // 只改 L2 的 x（L16 保持小写）。
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),

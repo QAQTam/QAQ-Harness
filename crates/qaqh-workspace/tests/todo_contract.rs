@@ -1,5 +1,5 @@
 #[test]
-fn public_schema_exposes_one_todo_tool_with_no_alias_and_no_goal_entrypoint() {
+fn public_schema_exposes_todo_write_update_list_with_no_legacy_names() {
     let manager = qaqh_workspace::registration::build_tool_manager(&[]);
     let definitions = manager.all_defs();
     let names: Vec<&str> = definitions
@@ -7,70 +7,88 @@ fn public_schema_exposes_one_todo_tool_with_no_alias_and_no_goal_entrypoint() {
         .map(|definition| definition.function.name.as_str())
         .collect();
 
-    // 主工具：todo（prompt/文档统一命名）。
-    assert!(names.contains(&"todo"), "missing todo tool");
-    // 旧名别名 task 已移除：公开 schema 不得再暴露，避免模型调用失效工具。
+    // Todo v3（owner 拍板混合制）：todo_write / todo_update / todo_list 三件套。
+    let todo_tools = ["todo_write", "todo_update", "todo_list"];
+    for expected in todo_tools {
+        assert!(
+            names.contains(&expected),
+            "missing {expected} in public schema"
+        );
+    }
+    // todo_* 前缀下不允许存在三件套之外的残留（W1 的 todo_create /
+    // todo_insert / todo_set 已随聚合与再拆分退役）。
+    let todo_prefixed: Vec<_> = names
+        .iter()
+        .filter(|name| name.starts_with("todo_"))
+        .copied()
+        .collect();
+    assert_eq!(
+        todo_prefixed.len(),
+        3,
+        "exactly the three v3 todo tools must be exposed, got {todo_prefixed:?}"
+    );
+    // 旧聚合工具 todo 与更早的别名 task 都不得再暴露。
+    assert!(
+        !names.contains(&"todo"),
+        "aggregated todo tool must not be exposed (v3 splits it)"
+    );
     assert!(
         !names.contains(&"task"),
         "removed task alias must not be exposed"
     );
-    assert!(
-        !names.contains(&"todo_") || !names.iter().any(|name| name.starts_with("todo_")),
-        "split todo tools must stay hidden"
-    );
-    let todo = definitions
-        .iter()
-        .find(|definition| definition.function.name == "todo")
-        .expect("todo definition");
-    assert!(
-        !todo.function.description.contains("Goal"),
-        "the frozen Goal workflow must not be advertised to the model"
-    );
-    assert_eq!(
-        todo.function.parameters["properties"]["action"]["enum"],
-        serde_json::json!(["create", "insert", "set", "list"])
-    );
-    assert_eq!(
-        todo.function.parameters["properties"]["status"]["enum"],
-        serde_json::json!(["idle", "in_progress", "completed", "cancelled"])
-    );
-    let branches = todo.function.parameters["oneOf"]
-        .as_array()
-        .expect("action-specific schema branches");
-    // Schema slimmed: 10 branches (create×2 + insert×4 + set×3 + list) → 4 (create/insert/set/list).
-    // Detailed sub-variant validation stays server-side; schema keeps only action discriminator.
-    assert_eq!(
-        branches.len(),
-        4,
-        "create/insert/set/list 4 branches (sub-variants validated server-side)"
-    );
-    let set_branches: Vec<_> = branches
-        .iter()
-        .filter(|branch| branch["properties"]["action"]["const"] == "set")
-        .collect();
-    assert_eq!(
-        set_branches.len(),
-        1,
-        "set collapsed to single branch (single/batch/parallel discriminated server-side)"
-    );
-    let set_branch = set_branches[0];
-    assert_eq!(set_branch["required"], serde_json::json!(["action"]));
-    assert!(
-        set_branches
+    for definition in &definitions {
+        if !definition.function.name.starts_with("todo_") {
+            continue;
+        }
+        assert!(
+            !definition.function.description.contains("Goal"),
+            "the frozen Goal workflow must not be advertised to the model"
+        );
+    }
+
+    let find = |name: &str| {
+        definitions
             .iter()
-            .all(|branch| branch.get("not").is_none()),
-        "set branches must not carry redundant not anti-constraints"
+            .find(|definition| definition.function.name == name)
+            .expect("todo definition")
+    };
+    let write = find("todo_write");
+    assert_eq!(write.function.parameters["required"], json!(["items"]));
+    assert_eq!(
+        write.function.parameters["additionalProperties"],
+        json!(false)
     );
-    let insert_branches: Vec<_> = branches
-        .iter()
-        .filter(|branch| branch["properties"]["action"]["const"] == "insert")
-        .collect();
-    assert_eq!(insert_branches.len(), 1);
-    assert!(insert_branches.iter().all(|branch| {
-        let required = branch["required"].as_array().expect("required array");
-        required == &vec![serde_json::json!("action")]
-    }));
+    assert_eq!(
+        write.function.parameters["properties"]["items"]["maxItems"],
+        json!(20)
+    );
+
+    let update = find("todo_update");
+    assert_eq!(
+        update.function.parameters["required"],
+        json!(["id", "status"])
+    );
+    assert_eq!(
+        update.function.parameters["properties"]["status"]["enum"],
+        json!(["idle", "in_progress", "completed", "cancelled"])
+    );
+    assert_eq!(
+        update.function.parameters["additionalProperties"],
+        json!(false)
+    );
+
+    let list = find("todo_list");
+    assert_eq!(
+        list.function.parameters["additionalProperties"],
+        json!(false)
+    );
+    assert_eq!(
+        list.function.parameters["properties"]["status"]["enum"],
+        json!(["idle", "in_progress", "completed", "cancelled"])
+    );
 }
+
+use serde_json::json;
 
 #[test]
 fn manual_status_transitions_round_trip_to_the_frontend_contract() {
@@ -93,7 +111,8 @@ fn manual_status_transitions_round_trip_to_the_frontend_contract() {
     }
     qaqh_workspace::runtime::init_tools("todo-contract", &[], vec![]);
     qaqh_workspace::runtime::set_context("todo-contract", 1);
-    // PR-3-2：显式上下文（permission_level=1 与旧环境一致）。
+    // PR-3-2：显式上下文。刻意用 Level 1（MaxLockdown）：todo_* 是会话内
+    // 状态工具，permission 层对其豁免（永不弹确认），本测试同时验证这一点。
     let ctx = qaqh_workspace::runtime::ToolCtx {
         session_id: "todo-contract".into(),
         permission_level: 1,
@@ -101,26 +120,26 @@ fn manual_status_transitions_round_trip_to_the_frontend_contract() {
         workspace_root: None,
     };
 
-    for (index, title) in ["Working", "Done", "Cancelled", "Waiting"]
-        .into_iter()
-        .enumerate()
-    {
-        let create = qaqh_workspace::execution::execute_with_context(
-            "todo",
-            "",
-            &serde_json::json!({"action":"create", "title": title, "description": format!("item {index}")})
-                .to_string(),
-            &format!("todo-create-{index}"),
-            None,
-            &ctx,
-        );
-        assert!(create.success, "create failed: {}", create.content);
-    }
+    let create = qaqh_workspace::execution::execute_with_context(
+        "todo_write",
+        "",
+        &serde_json::json!({"items": [
+            {"title": "Working", "description": "item 0"},
+            {"title": "Done", "description": "item 1"},
+            {"title": "Cancelled", "description": "item 2"},
+            {"title": "Waiting", "description": "item 3"}
+        ]})
+        .to_string(),
+        "todo-create",
+        None,
+        &ctx,
+    );
+    assert!(create.success, "create failed: {}", create.content);
 
     let working = qaqh_workspace::execution::execute_with_context(
-        "todo",
+        "todo_update",
         "",
-        r#"{"action":"set","id":1,"status":"in_progress"}"#,
+        r#"{"id":"T1","status":"in_progress"}"#,
         "todo-working",
         None,
         &ctx,
@@ -132,9 +151,9 @@ fn manual_status_transitions_round_trip_to_the_frontend_contract() {
     );
 
     let completed = qaqh_workspace::execution::execute_with_context(
-        "todo",
+        "todo_update",
         "",
-        r#"{"action":"set","id":"T2","status":"completed","evidence":"verified"}"#,
+        r#"{"id":"T2","status":"completed","evidence":"verified"}"#,
         "todo-completed",
         None,
         &ctx,
@@ -146,9 +165,9 @@ fn manual_status_transitions_round_trip_to_the_frontend_contract() {
     );
 
     let cancelled = qaqh_workspace::execution::execute_with_context(
-        "todo",
+        "todo_update",
         "",
-        r#"{"action":"set","id":"3","status":"cancelled"}"#,
+        r#"{"id":"T3","status":"cancelled"}"#,
         "todo-cancelled",
         None,
         &ctx,
@@ -160,9 +179,9 @@ fn manual_status_transitions_round_trip_to_the_frontend_contract() {
     );
 
     let list = qaqh_workspace::execution::execute_with_context(
-        "todo",
+        "todo_list",
         "",
-        r#"{"action":"list"}"#,
+        r#"{}"#,
         "todo-list",
         None,
         &ctx,

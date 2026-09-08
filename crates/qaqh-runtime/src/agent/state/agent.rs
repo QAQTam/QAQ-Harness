@@ -444,7 +444,14 @@ impl AgentState {
     /// 持久化值在恢复/应用时切回 standard；保持现状 + 告警。
     pub fn apply_tool_mode(&mut self, tool_mode: &str, custom_tools: &[String]) {
         let allowed: Vec<String> = match tool_mode {
-            qaqh_types::CUSTOM => custom_tools.to_vec(),
+            qaqh_types::CUSTOM => {
+                let mut seen = std::collections::HashSet::new();
+                custom_tools
+                    .iter()
+                    .map(|name| Self::normalize_tool_name_for_mode(qaqh_types::CUSTOM, name))
+                    .filter(|name| seen.insert(name.clone()))
+                    .collect()
+            }
             qaqh_types::STANDARD | "" => Vec::new(),
             mode => {
                 let Some(preset) = qaqh_types::preset_tools(mode) else {
@@ -487,9 +494,16 @@ impl AgentState {
         );
     }
 
-    /// 模型面工具名 → 内部注册 key（当前恒等：投影已随 minimal:dsh 下线移除）。
+    /// 模型面工具名 -> 内部注册 key。exec 独占后旧会话 custom_tools 里的
+    /// bash/pwsh 映射到 exec（存量兼容；日志告警，新名单直接写 exec）。
     pub fn normalize_tool_name_for_mode(_tool_mode: &str, name: &str) -> String {
-        name.to_string()
+        match name {
+            "bash" | "pwsh" => {
+                log::warn!("[TOOL MODE] renamed tool mapped to exec (exec exclusive)");
+                "exec".to_string()
+            }
+            _ => name.to_string(),
+        }
     }
 
     /// Consume any pending cache diagnostics set by build_context().
@@ -1140,15 +1154,37 @@ mod tests {
         }
 
         // custom → 自定义表（精确集合）
-        agent.apply_tool_mode("custom", &["bash".to_string(), "grep".to_string()]);
+        agent.apply_tool_mode("custom", &["exec".to_string(), "grep".to_string()]);
         assert_eq!(agent.session.tool_mode, "custom");
-        assert_eq!(agent.session.custom_tools, vec!["bash", "grep"]);
+        assert_eq!(agent.session.custom_tools, vec!["exec", "grep"]);
         let names2: Vec<&str> = agent
             .tool_defs
             .iter()
             .map(|d| d.function.name.as_str())
             .collect();
-        assert_eq!(names2, vec!["bash", "grep"], "got: {names2:?}");
+        assert_eq!(names2, vec!["exec", "grep"], "got: {names2:?}");
+
+        // 旧名兼容：存量 custom_tools 里的 bash/pwsh 映射到 exec。
+        agent.apply_tool_mode("custom", &["bash".to_string(), "pwsh".to_string()]);
+        let names_compat: Vec<&str> = agent
+            .tool_defs
+            .iter()
+            .map(|d| d.function.name.as_str())
+            .collect();
+        // bash+pwsh 同映射到 exec：set_allowed 去重前为 [exec, exec]，
+        // filtered_defs 按名过滤后 exec 恰好一次（允许集含 exec 即可见）。
+        assert!(
+            names_compat.contains(&"exec"),
+            "compat must map to exec: {names_compat:?}"
+        );
+        assert!(
+            !names_compat.contains(&"bash"),
+            "bash must not leak: {names_compat:?}"
+        );
+        assert!(
+            !names_compat.contains(&"pwsh"),
+            "pwsh must not leak: {names_compat:?}"
+        );
 
         // standard → 全量恢复（> 固定档位）
         agent.apply_tool_mode("standard", &[]);

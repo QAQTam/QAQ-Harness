@@ -12,7 +12,7 @@
 /// Full tool set, restored after any minimal/custom mode.
 pub const STANDARD: &str = "standard";
 
-/// Minimal tier A: bash/pwsh + file four-piece + search + confirm.
+/// Minimal tier A: exec + file four-piece + search + confirm.
 pub const MINIMAL: &str = "minimal";
 
 /// Minimal tier B: reduced six-tool set.
@@ -33,8 +33,7 @@ pub const MINIMAL_PREFIX: &str = "minimal";
 
 /// Minimal tier A (internal registration keys).
 pub const MINIMAL_TOOLS: &[&str] = &[
-    "bash",
-    "pwsh",
+    "exec",
     "write",
     "edit",
     "read",
@@ -44,10 +43,10 @@ pub const MINIMAL_TOOLS: &[&str] = &[
 ];
 
 /// Minimal tier B (internal registration keys).
-pub const MINIMAL_TOOLS_B: &[&str] = &["bash", "edit", "glob", "grep", "read", "confirm_apply"];
+pub const MINIMAL_TOOLS_B: &[&str] = &["exec", "edit", "glob", "grep", "read", "confirm_apply"];
 
 /// Minimal tier C (internal registration keys).
-pub const MINIMAL_TOOLS_C: &[&str] = &["bash", "edit", "glob", "confirm_apply"];
+pub const MINIMAL_TOOLS_C: &[&str] = &["exec", "edit", "glob", "confirm_apply"];
 
 /// Returns `true` for every mode accepted by the daemon action whitelist.
 pub fn is_known(mode: &str) -> bool {

@@ -197,8 +197,8 @@ pub fn extract_target_paths(tool_name: &str, args: &serde_json::Value) -> Vec<Pa
             paths.push(PathBuf::from(o));
         }
     }
-    // exec/bash/pwsh 同 schema，都取 cwd（W3：原先只匹配 exec）。
-    if matches!(tool_name, "exec" | "bash" | "pwsh")
+    // exec 独占后唯一命令入口：取 cwd 进授权资源。
+    if tool_name == "exec"
         && let Some(cwd) = args.get("cwd").and_then(|v| v.as_str())
     {
         paths.push(PathBuf::from(cwd));
@@ -822,13 +822,13 @@ mod w3_w7_tests {
         let ws_canon = std::fs::canonicalize(&ws).unwrap_or_else(|_| ws.clone());
         let inside_ws = |p: &std::path::Path| p.starts_with(&ws_canon) || p.starts_with(&ws);
 
-        // W3：bash/pwsh 与 exec 同 schema，cwd 必须进授权资源。
+        // exec 独占后唯一命令入口：cwd 必须进授权资源。
         let res = extract_target_paths(
-            "bash",
+            "exec",
             &serde_json::json!({ "command": "ls", "cwd": "./src" }),
         );
-        assert_eq!(res.len(), 1, "bash cwd missing from resources: {res:?}");
-        assert!(inside_ws(&res[0]), "bash cwd not under ws: {:?}", res[0]);
+        assert_eq!(res.len(), 1, "exec cwd missing from resources: {res:?}");
+        assert!(inside_ws(&res[0]), "exec cwd not under ws: {:?}", res[0]);
 
         // W3：apply_patch 目标从 patch 文本解析进授权资源（两条目标）。
         let res2 = extract_target_paths(

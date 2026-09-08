@@ -12,7 +12,7 @@
 //! 原则：模型必须“看得到、看得清”。
 //! - 清单类 / 自限工具（`glob` / `grep` / `read` / `skills` / 收据类…）结果
 //!   **原样透传**——产物就是模型要继续工作的输入，折叠成首行会剪断反馈闭环；
-//! - 大内容工具（`exec` / `bash` / `pwsh` / `web_fetch` / `image` / `process`）
+//! - 大内容工具（`exec` / `web_fetch` / `image` / `process`）
 //!   保留**头部内容 + 明确截断标记**，不再折叠成“首行 + [details folded]”这类
 //!   无信息形态（StandardPolicy 行为；NoFoldPolicy 下全部透传）；
 //! - 失败/部分结果一律透传——模型需要失败原因、候选与详情才能修正重试。
@@ -28,7 +28,7 @@ use std::sync::{Arc, LazyLock, RwLock};
 
 use qaqh_types::ToolResult;
 
-/// 命令输出（exec/bash/pwsh）的默认字符上限（StandardPolicy）。
+/// 命令输出（exec）的默认字符上限（StandardPolicy）。
 const EXEC_CHAR_LIMIT: usize = 8_000;
 /// 大内容工具（网络/图像/进程输出）的默认字符上限。
 const CONTENT_BEARING_CHAR_LIMIT: usize = 16_000;
@@ -43,7 +43,7 @@ pub trait ToolResultFoldPolicy: Send + Sync + std::fmt::Debug {
     /// 该工具结果模型可见文本的字符上限；`None` = 完全透传（不截断）。
     fn limit_for(&self, tool_name: &str) -> Option<usize>;
 
-    /// exec/bash/pwsh 内部 token 截断上限；`None` = 不截断（极限模式）。
+    /// exec 内部 token 截断上限；`None` = 不截断（极限模式）。
     /// 模型显式传入 `max_output_tokens` 参数时以模型参数为准。
     fn exec_max_output_tokens(&self) -> Option<u32>;
 
@@ -68,7 +68,7 @@ impl ToolResultFoldPolicy for StandardPolicy {
             | "grep" | "read" | "skills" | "todo" | "todo_create" | "todo_insert" | "todo_list"
             | "todo_set" | "write" => None,
             // 命令输出
-            "bash" | "exec" | "pwsh" => Some(EXEC_CHAR_LIMIT),
+            "exec" => Some(EXEC_CHAR_LIMIT),
             // 大内容
             "read_image" | "web_fetch" | "process" => Some(CONTENT_BEARING_CHAR_LIMIT),
             // 未知工具：透传（ToolResult 构造时默认 24K 硬顶兜底）
@@ -83,7 +83,7 @@ impl ToolResultFoldPolicy for StandardPolicy {
 
 /// 极限模式策略：完全不折叠任何工具结果。
 ///
-/// 模型自己控制上下文——exec/bash 输出全量透传（连 24K 字符硬顶也放开，
+/// 模型自己控制上下文——exec 输出全量透传（连 24K 字符硬顶也放开，
 /// 仅保留工具内部的 IO 资源保护如 `read_stream` 字节上限）。
 #[derive(Debug, Default)]
 pub struct NoFoldPolicy;
@@ -170,8 +170,6 @@ mod tests {
         assert_eq!(p.limit_for("edit"), None);
         assert_eq!(p.limit_for("skills"), None);
         assert_eq!(p.limit_for("exec"), Some(EXEC_CHAR_LIMIT));
-        assert_eq!(p.limit_for("bash"), Some(EXEC_CHAR_LIMIT));
-        assert_eq!(p.limit_for("pwsh"), Some(EXEC_CHAR_LIMIT));
         assert_eq!(p.limit_for("web_fetch"), Some(CONTENT_BEARING_CHAR_LIMIT));
         assert_eq!(p.limit_for("read_image"), Some(CONTENT_BEARING_CHAR_LIMIT));
         assert_eq!(p.limit_for("unknown_tool"), None);
@@ -181,7 +179,7 @@ mod tests {
     #[test]
     fn no_fold_policy_passes_everything_through() {
         let p = NoFoldPolicy;
-        for name in ["exec", "bash", "pwsh", "web_fetch", "grep", "read", "edit"] {
+        for name in ["exec", "web_fetch", "grep", "read", "edit"] {
             assert_eq!(p.limit_for(name), None, "{name} must not be limited");
         }
         assert_eq!(p.exec_max_output_tokens(), None);
@@ -239,13 +237,14 @@ mod tests {
     }
 
     #[test]
-    fn bash_and_pwsh_are_truncated_like_exec() {
+    fn exec_alias_retired_passes_through() {
+        // 旧名不再注册：未知工具透传（24K 硬顶兜底），不得再走 exec 限额。
         for name in ["bash", "pwsh"] {
             let body = "x\n".repeat(6_000); // 12K chars > 8K cap
             let mut result = ok(&body);
             apply(name, &mut result);
-            assert!(result.model.truncated, "{name} must be truncated");
-            assert!(result.model.text.contains("[truncated:"));
+            assert!(!result.model.truncated, "{name} retired: must pass through");
+            assert_eq!(result.model.text, body, "{name} retired: verbatim");
         }
     }
 

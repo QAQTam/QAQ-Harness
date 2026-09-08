@@ -21,3 +21,9 @@ crates/qaqh-daemon/webui-dist/
 #.idea/
 # ts-rs 各 crate 散落导出（合并后真相在根 bindings/）
 crates/*/bindings/
+
+# HarmonyOS hvigor 构建缓存（build-logs 等，非源码）
+.hvigor/
+
+# WorkBuddy 会话/记忆目录（项目级 scratch，不入库）
+.workbuddy/

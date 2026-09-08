@@ -165,16 +165,72 @@ fn pwsh_command_with_args_uses_command_with_args() {
 }
 
 #[test]
+fn posix_shell_args_become_positional_params() {
+    // POSIX `sh -c 'script' name arg...`：name 占 $0，args 进 $1/$@。
+    // Harness 固定 $0 为 `_`，模型只用 $1 起。
+    for shell in [Shell::Bash, Shell::Zsh, Shell::Sh] {
+        let args = vec!["hello world".to_string(), "a\"b".to_string()];
+        let v = shell.derive_exec_args_with("echo $1; echo $2", Some(&args));
+        assert_eq!(&v[1..4], ["-c", "echo $1; echo $2", "_"]);
+        assert_eq!(&v[4..], &args);
+        assert_eq!(v.len(), 6);
+    }
+    // 无 args / 空 args 时保持旧形态（不追加 `_`，兼容旧断言）。
+    let bare = Shell::Bash.derive_exec_args("ls -la");
+    assert_eq!(bare.len(), 3);
+    let empty = Shell::Bash.derive_exec_args_with("ls -la", Some(&[]));
+    assert_eq!(empty.len(), 3);
+    assert!(!empty.contains(&"_".to_string()));
+}
+
+#[test]
+fn exec_with_bash_shell_and_args_executes_via_positional_params() {
+    if !shell_available(Shell::Bash) {
+        eprintln!("skipping: bash not available on this machine");
+        return;
+    }
+    let ctx = make_ctx(
+        "exec",
+        serde_json::json!({ "command": "echo \"$1\"; echo \"$2\"", "shell": "bash", "args": ["hello world", "a\"b"], "cwd": std::env::current_dir().unwrap() }),
+    );
+    let r = handle_run_exec(ctx);
+    assert!(r.is_success(), "model text: {}", r.model_text());
+    let v: serde_json::Value = serde_json::from_str(r.model_text()).expect("valid json");
+    let output = v.get("output").and_then(|x| x.as_str()).unwrap_or("");
+    assert!(output.contains("hello world"), "output: {output}");
+    assert!(output.contains("a\"b"), "output: {output}");
+}
+
+#[test]
+fn cmd_tool_with_args_rejected() {
+    // cmd 无位置参数语义：args 必须拒绝（而非静默忽略）。
+    let ctx = make_ctx(
+        "exec",
+        serde_json::json!({ "command": "dir", "shell": "cmd", "args": ["x"], "cwd": std::env::current_dir().unwrap() }),
+    );
+    let r = super::handler::handle_run_with_shell(ctx, None);
+    assert!(!r.is_success(), "cmd + args must fail");
+    assert!(
+        r.error
+            .as_ref()
+            .is_some_and(|e| e.code == "ARGS_NOT_SUPPORTED"),
+        "error code: {:?}, model text: {}",
+        r.error,
+        r.model_text()
+    );
+}
+
+#[test]
 fn pwsh_tool_with_args_executes_via_command_with_args() {
     if !shell_available(Shell::PowerShell) {
         eprintln!("skipping: powershell not available on this machine");
         return;
     }
     let ctx = make_ctx(
-        "pwsh",
-        serde_json::json!({ "command": "$args | % { \"arg: $_\" }", "args": ["hello world", "a\"b"], "cwd": std::env::current_dir().unwrap() }),
+        "exec",
+        serde_json::json!({ "command": "$args | % { \"arg: $_\" }", "shell": "pwsh", "args": ["hello world", "a\"b"], "cwd": std::env::current_dir().unwrap() }),
     );
-    let r = handle_run_pwsh(ctx);
+    let r = handle_run_exec(ctx);
     assert!(r.is_success(), "model text: {}", r.model_text());
     // model_text 是 ExecOutput 的 JSON，output 字段内才是原始 stdout；需解析后检查
     let v: serde_json::Value = serde_json::from_str(r.model_text()).expect("valid json");
@@ -190,10 +246,10 @@ fn pwsh_tool_with_chinese_args_via_command_with_args() {
         return;
     }
     let ctx = make_ctx(
-        "pwsh",
-        serde_json::json!({ "command": "Write-Output $args[0]", "args": ["中文测试"], "cwd": std::env::current_dir().unwrap() }),
+        "exec",
+        serde_json::json!({ "command": "Write-Output $args[0]", "shell": "pwsh", "args": ["中文测试"], "cwd": std::env::current_dir().unwrap() }),
     );
-    let r = handle_run_pwsh(ctx);
+    let r = handle_run_exec(ctx);
     assert!(r.is_success(), "model text: {}", r.model_text());
     assert!(
         r.model_text().contains("中文测试"),
@@ -557,10 +613,10 @@ fn wait_for_returns_promptly_on_per_call_cancel() {
 
 /// Linux 侧 3.2 冒烟：工具层全生命周期（真 handler 调用，非 direct_exec 直调）。
 /// 前台执行 → background_after_secs 快速移交 → 注册表 check → kill → 终态。
-/// 验证的是 bash 工具 → handle_run_with_shell → direct_exec → registry 的完整链路。
+/// 验证的是 exec 工具 → handle_run_with_shell → direct_exec → registry 的完整链路。
 #[cfg(not(windows))]
 #[test]
-fn bash_tool_full_lifecycle_smoke_foreground_handoff_kill() {
+fn exec_tool_full_lifecycle_smoke_foreground_handoff_kill() {
     if !shell_available(Shell::Bash) {
         eprintln!("skipping: bash not available");
         return;
@@ -568,21 +624,21 @@ fn bash_tool_full_lifecycle_smoke_foreground_handoff_kill() {
     let cwd = std::env::current_dir().unwrap();
     // ① 前台：echo 经完整 tool 层（spawn → poll → seal → 汇聚）
     let ctx = make_ctx(
-        "bash",
+        "exec",
         serde_json::json!({ "command": "echo SMOKE-FOREGROUND-OK", "cwd": cwd }),
     );
-    let r = handle_run_bash(ctx);
+    let r = handle_run_exec(ctx);
     assert!(r.is_success(), "foreground: {}", r.model_text());
     assert!(r.model_text().contains("SMOKE-FOREGROUND-OK"));
 
     // ② 快速移交：30s 长任务 + 1s 观察窗 → backgrounded + process_id
     let ctx = make_ctx(
-        "bash",
+        "exec",
         serde_json::json!({ "command": "sleep 30", "cwd": cwd, "background_after_secs": 1 }),
     );
-    let r = handle_run_bash(ctx);
+    let r = handle_run_exec(ctx);
     let v: serde_json::Value =
-        serde_json::from_str(r.model_text()).expect("bash 工具结果必须是 ExecOutput JSON");
+        serde_json::from_str(r.model_text()).expect("exec 工具结果必须是 ExecOutput JSON");
     assert_eq!(v["status"], "backgrounded", "移交状态: {v}");
     let pid = v["process_id"].as_u64().expect("移交必须携带 process_id") as u32;
 
@@ -622,19 +678,19 @@ fn background_derivation_detection_boundaries() {
 /// `sleep 1 &` 同时覆盖"孙进程持写端 → settle 有界封口"路径。
 #[cfg(not(windows))]
 #[test]
-fn bash_tool_appends_background_derivation_hint() {
+fn exec_tool_appends_background_derivation_hint() {
     if !shell_available(Shell::Bash) {
         eprintln!("skipping: bash not available");
         return;
     }
     let ctx = make_ctx(
-        "bash",
+        "exec",
         serde_json::json!({
             "command": "sleep 1 & echo HINT-E2E",
             "cwd": std::env::current_dir().unwrap()
         }),
     );
-    let r = handle_run_bash(ctx);
+    let r = handle_run_exec(ctx);
     assert!(r.is_success(), "result: {}", r.model_text());
     assert!(r.model_text().contains("HINT-E2E"));
     assert!(
@@ -871,7 +927,7 @@ fn backgrounded_status_refreshes_when_child_exits_while_grandchild_holds_pipe() 
     assert_eq!(after["status"], "killed");
 }
 
-// ── 独立 shell 工具（4.2：bash / pwsh）──
+// ── exec 通用入口（方案 A 独占：shell 参数选壳）──
 
 fn make_ctx(name: &str, args: serde_json::Value) -> crate::ToolCallCtx {
     crate::ToolCallCtx {
@@ -887,40 +943,41 @@ fn make_ctx(name: &str, args: serde_json::Value) -> crate::ToolCallCtx {
 }
 
 #[test]
-fn shell_tools_registered_without_shell_param() {
+fn exec_registered_alone_with_shell_param() {
+    // 方案 A 独占：生产注册仅 exec（旧 register_shell_tool 退为单测载体）。
     let mut mgr = crate::ToolManager::new();
-    register_shell_tool(&mut mgr, "bash", Shell::Bash, handle_run_bash);
-    register_shell_tool(&mut mgr, "pwsh", Shell::PowerShell, handle_run_pwsh);
+    super::register::register(&mut mgr);
     let defs = mgr.all_defs();
-    assert_eq!(defs.len(), 2);
-    for d in &defs {
-        let props = d.function.parameters.get("properties").unwrap();
+    assert_eq!(
+        defs.len(),
+        1,
+        "exec must be the only command tool: {:?}",
+        defs.iter().map(|d| &d.function.name).collect::<Vec<_>>()
+    );
+    let exec = &defs[0];
+    assert_eq!(exec.function.name, "exec");
+    let props = exec.function.parameters.get("properties").unwrap();
+    // exec 必须暴露 shell 参数（含 powershell 别名）+ argv/command 双模式。
+    let shell_enum = props["shell"]["enum"].as_array().expect("shell enum");
+    for name in ["bash", "zsh", "sh", "pwsh", "powershell", "cmd"] {
         assert!(
-            props.get("shell").is_none(),
-            "{} must NOT expose a shell param (tool name is the shell)",
-            d.function.name
+            shell_enum.contains(&serde_json::json!(name)),
+            "shell enum missing {name}: {shell_enum:?}"
         );
-        assert!(props.get("command").is_some());
-        assert!(props.get("argv").is_some());
     }
-    let bash_desc = &defs
-        .iter()
-        .find(|d| d.function.name == "bash")
-        .unwrap()
-        .function
-        .description;
-    assert!(bash_desc.contains("bash"), "desc: {bash_desc}");
-    let pwsh_desc = &defs
-        .iter()
-        .find(|d| d.function.name == "pwsh")
-        .unwrap()
-        .function
-        .description;
-    assert!(pwsh_desc.contains("pwsh"), "desc: {pwsh_desc}");
+    assert!(props.get("command").is_some());
+    assert!(props.get("argv").is_some());
+    assert!(props.get("args").is_some());
+    // description 必须讲清 argv 无 shell（防误导回归）。
+    assert!(
+        exec.function.description.contains("without a shell"),
+        "desc: {}",
+        exec.function.description
+    );
 }
 
 #[test]
-fn bash_tool_executes_command_through_fixed_shell() {
+fn exec_tool_executes_command_through_default_shell() {
     if !shell_available(Shell::Bash) {
         eprintln!("skipping: bash not available on this machine");
         return;
@@ -928,10 +985,10 @@ fn bash_tool_executes_command_through_fixed_shell() {
     // cwd 显式传当前目录：并行测试会污染 CURRENT_WORKSPACE（可能指向已删除
     // 的 tempdir），不传则 spawn 带无效 cwd → os error 267。
     let ctx = make_ctx(
-        "bash",
+        "exec",
         serde_json::json!({ "command": "echo shell-tool-ok", "cwd": std::env::current_dir().unwrap() }),
     );
-    let r = handle_run_bash(ctx);
+    let r = handle_run_exec(ctx);
     assert!(r.is_success(), "model text: {}", r.model_text());
     assert!(r.model_text().contains("shell-tool-ok"));
 }
@@ -943,25 +1000,58 @@ fn pwsh_tool_executes_command_through_fixed_shell() {
         return;
     }
     let ctx = make_ctx(
-        "pwsh",
-        serde_json::json!({ "command": "Write-Output shell-tool-ok", "cwd": std::env::current_dir().unwrap() }),
+        "exec",
+        serde_json::json!({ "command": "Write-Output shell-tool-ok", "shell": "pwsh", "cwd": std::env::current_dir().unwrap() }),
     );
-    let r = handle_run_pwsh(ctx);
+    let r = handle_run_exec(ctx);
     assert!(r.is_success(), "model text: {}", r.model_text());
     assert!(r.model_text().contains("shell-tool-ok"));
 }
 
 #[test]
-fn bash_tool_argv_mode_still_direct_exec() {
-    // argv 模式与 shell 无关：bash 工具也能直跑程序（无包装）。
+fn exec_argv_mode_still_direct_exec() {
+    // argv 模式与 shell 无关：exec 直接跑程序（无包装）。
     #[cfg(windows)]
     let argv = serde_json::json!(["cmd", "/c", "echo", "shell-tool-ok"]);
     #[cfg(not(windows))]
     let argv = serde_json::json!(["echo", "shell-tool-ok"]);
     let ctx = make_ctx(
-        "bash",
+        "exec",
         serde_json::json!({ "argv": argv, "cwd": std::env::current_dir().unwrap() }),
     );
-    let r = handle_run_bash(ctx);
+    let r = handle_run_exec(ctx);
     assert!(r.is_success(), "model text: {}", r.model_text());
+}
+
+#[test]
+fn exec_argv_rejects_shell_and_args_params() {
+    // argv + shell/args 同传是模型误解：显式拒绝（ARGV_IGNORES_*），不静默忽略。
+    let ctx = make_ctx(
+        "exec",
+        serde_json::json!({ "argv": ["echo", "hi"], "shell": "bash", "cwd": std::env::current_dir().unwrap() }),
+    );
+    let r = handle_run_exec(ctx);
+    assert!(!r.is_success(), "argv + shell must fail");
+    assert!(
+        r.error
+            .as_ref()
+            .is_some_and(|e| e.code == "ARGV_IGNORES_SHELL"),
+        "error code: {:?}, model text: {}",
+        r.error,
+        r.model_text()
+    );
+    let ctx = make_ctx(
+        "exec",
+        serde_json::json!({ "argv": ["echo", "hi"], "args": ["x"], "cwd": std::env::current_dir().unwrap() }),
+    );
+    let r = handle_run_exec(ctx);
+    assert!(!r.is_success(), "argv + args must fail");
+    assert!(
+        r.error
+            .as_ref()
+            .is_some_and(|e| e.code == "ARGV_IGNORES_ARGS"),
+        "error code: {:?}, model text: {}",
+        r.error,
+        r.model_text()
+    );
 }

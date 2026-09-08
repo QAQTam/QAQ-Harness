@@ -55,18 +55,14 @@ pub(crate) fn normalize_command_rg(command: &str) -> String {
     .into_owned()
 }
 
-/// bash 独立工具：固定 Shell::Bash（Windows 解析 git-for-windows/MSYS2，避开 WSL wrapper）。
-pub(crate) fn handle_run_bash(ctx: ToolCallCtx) -> ToolResult {
-    handle_run_with_shell(ctx, Some(Shell::Bash))
+/// exec 通用入口：`shell` 参数显式选壳（默认平台自动检测），`command` 经
+/// 选定 shell 包装执行，`argv` 直调（无 shell）。pwsh 特判收敛在 Shell 枚举
+/// 内（-EncodedCommand/-CommandWithArgs 降级链），此层不分支。
+pub(crate) fn handle_run_exec(ctx: ToolCallCtx) -> ToolResult {
+    handle_run_with_shell(ctx, None)
 }
-
-/// pwsh 独立工具：固定 Shell::PowerShell（pwsh7 → powershell.exe 降级链）。
-pub(crate) fn handle_run_pwsh(ctx: ToolCallCtx) -> ToolResult {
-    handle_run_with_shell(ctx, Some(Shell::PowerShell))
-}
-
-/// 独立 shell 工具的软检测：注册不拒绝，调用时解析路径不可用才报错。
-/// 先触发探测缓存（Windows git-bash 标准路径解析、pwsh 降级链），再判可用性。
+/// shell 可用性软检测：注册不拒绝，调用时解析路径不可用才报错。
+/// shell 可用性软检测：注册不拒绝，调用时解析路径不可用才报错。
 pub(crate) fn shell_available(shell: Shell) -> bool {
     let _ = Shell::detect();
     let _ = Shell::from_name("bash");
@@ -98,8 +94,10 @@ pub(crate) fn available_shells() -> String {
     }
 }
 
-/// 共享执行引擎。`fixed` = 独立 shell 工具（bash/pwsh）固定包装 shell；
-/// None = 平台默认检测（`shell` 参数模式；exec 通用工具已下线，当前仅测试可达）。
+/// 共享执行引擎。`fixed` = 强制指定壳（仅单测）；
+/// None = exec 通用入口（`shell` 参数显式选壳，缺省平台自动检测）。
+/// `argv` 直调无 shell：`shell`/`args` 与 `argv` 同传时显式拒绝（静默忽略
+/// 比报错更贵——模型会误以为参数生效）。
 pub(crate) fn handle_run_with_shell(ctx: ToolCallCtx, fixed: Option<Shell>) -> ToolResult {
     // ── Resolve argv ──
     // Two modes: `command` (auto-wrapped in platform shell) or `argv` (direct exec).
@@ -137,16 +135,17 @@ pub(crate) fn handle_run_with_shell(ctx: ToolCallCtx, fixed: Option<Shell>) -> T
                         return crate::json_err(
                             "UNKNOWN_SHELL",
                             format!("unknown shell '{name}'"),
-                            "Use one of: bash, zsh, sh, pwsh, cmd. The default is auto-detected (bash on Windows).",
+                            "Use one of: bash, zsh, sh, pwsh, powershell, cmd. The default is auto-detected (pwsh on Windows, bash elsewhere).",
                         );
                     }
                 },
                 _ => Shell::detect(),
             },
         };
-        // PowerShell 7.6 LTS 新用法：-CommandWithArgs 支持把额外参数原样填入 $args，
-        // 避免在脚本字符串内拼接引号。Harness 侧用 `args: string[]` 透传。
-        let pwsh_args: Option<Vec<String>> = ctx
+        // `args: string[]` 透传（模板与数据分离，避免在脚本字符串内拼接引号）：
+        // - PowerShell 7.6 LTS：-CommandWithArgs 把额外参数原样填入 $args；
+        // - POSIX（bash/zsh/sh）：`sh -c 'script' _ arg...`，参数进 $1/$2/$@（$0 固定占位 `_`）。
+        let extra_args: Option<Vec<String>> = ctx
             .args
             .get("args")
             .and_then(|v| v.as_array())
@@ -156,15 +155,38 @@ pub(crate) fn handle_run_with_shell(ctx: ToolCallCtx, fixed: Option<Shell>) -> T
                     .collect()
             })
             .filter(|v: &Vec<String>| !v.is_empty());
-        if pwsh_args.is_some() && shell != Shell::PowerShell {
+        if extra_args.is_some() && shell == Shell::Cmd {
             return crate::json_err(
                 "ARGS_NOT_SUPPORTED",
-                "args is only supported for pwsh -CommandWithArgs",
-                "Use pwsh tool or exec with shell:\"pwsh\" and provide args as string array.",
+                "args is only supported for bash/zsh/sh ($1/$@) and pwsh -CommandWithArgs ($args)",
+                "Use exec with shell bash/zsh/sh and args as string array (positional $1...), or shell pwsh.",
             );
         }
-        shell.derive_exec_args_with(&command, pwsh_args.as_deref())
+        shell.derive_exec_args_with(&command, extra_args.as_deref())
     } else {
+        // argv 直调无 shell：shell/args 与 argv 同传是模型误解（以为参数
+        // 会生效），显式拒绝比静默忽略便宜。
+        if let Some(name) = ctx.args.get("shell").and_then(|v| v.as_str())
+            && !name.is_empty()
+        {
+            return crate::json_err(
+                "ARGV_IGNORES_SHELL",
+                format!("argv mode runs direct exec without a shell; 'shell: {name}' is ignored"),
+                "Use command (not argv) to run through a shell, or drop the shell parameter.",
+            );
+        }
+        if ctx
+            .args
+            .get("args")
+            .and_then(|v| v.as_array())
+            .is_some_and(|a| !a.is_empty())
+        {
+            return crate::json_err(
+                "ARGV_IGNORES_ARGS",
+                "argv mode runs direct exec without a shell; 'args' only applies to command mode",
+                "Use command + args (positional $1... / $args), or drop args.",
+            );
+        }
         match ctx.args.get("argv").and_then(|v| v.as_array()) {
             Some(arr) => {
                 let mut argv: Vec<String> = arr
@@ -307,20 +329,20 @@ pub(crate) fn exec_schema(with_shell: bool) -> serde_json::Value {
     let mut props = serde_json::Map::new();
     props.insert(
         "argv".into(),
-        serde_json::json!({ "type": "array", "items": {"type": "string"}, "description": "argv: [exe,args] no shell" }),
+        serde_json::json!({ "type": "array", "items": {"type": "string"}, "description": "Direct exec without a shell (e.g. [\"cargo\", \"check\"]); must not combine with shell/args" }),
     );
     props.insert(
         "command".into(),
-        serde_json::json!({ "type": "string", "description": "Shell command string" }),
+        serde_json::json!({ "type": "string", "description": "Shell command string (runs via `shell`, default auto-detected)" }),
     );
     props.insert(
         "args".into(),
-        serde_json::json!({ "type": "array", "items": {"type": "string"}, "description": "pwsh -CommandWithArgs args" }),
+        serde_json::json!({ "type": "array", "items": {"type": "string"}, "description": "Extra args for command: bash/zsh/sh fills $1/$2/$@ ($0 is placeholder `_`); pwsh fills $args (-CommandWithArgs). cmd does not support args." }),
     );
     if with_shell {
         props.insert(
             "shell".into(),
-            serde_json::json!({ "type": "string", "enum": ["bash", "zsh", "sh", "pwsh", "cmd"], "description": "Shell for command" }),
+            serde_json::json!({ "type": "string", "enum": ["bash", "zsh", "sh", "pwsh", "powershell", "cmd"], "description": "Shell for command (default auto-detected: pwsh on Windows, bash elsewhere)" }),
         );
     }
     props.insert(

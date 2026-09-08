@@ -594,7 +594,7 @@ fn llm_four_pending_bash_calls_defer_execution_until_all_resolved() {
         .collect::<Vec<_>>();
     let call_refs = calls
         .iter()
-        .map(|(id, args)| (id.as_str(), "bash", args.clone()))
+        .map(|(id, args)| (id.as_str(), "exec", args.clone()))
         .collect::<Vec<_>>();
     let expected_markers = markers.clone();
 
@@ -743,7 +743,7 @@ fn llm_approval_forwards_bash_via_http_backend() {
     let temp = tempfile::tempdir().expect("tempdir");
     let marker = temp.path().join("http-bash.txt");
     let expected_marker = marker.clone();
-    let calls = tool_round(&[("http-bash", "bash", marker_bash_args(&marker))]);
+    let calls = tool_round(&[("http-bash", "exec", marker_bash_args(&marker))]);
 
     // 起真实 serve 进程（本地，模拟 WSL 模式的 Http backend 执行路径）。
     // 平台适配：Windows 产物带 .exe；CARGO_TARGET_DIR 覆盖时跟随覆盖目录。

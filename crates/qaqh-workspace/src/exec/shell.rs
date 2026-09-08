@@ -133,6 +133,9 @@ impl Shell {
     /// Win32 命令行解析中的转义地狱；stdout/stderr 仍通过管道捕获，编码不影响输出。
     /// 当 `args` 非空且为 PowerShell 时，自动走 `-CommandWithArgs`（7.6 LTS 主流），
     /// 把 `args` 原样作为 CommandParameters 填入 `$args`，避免在脚本内拼接引号。
+    /// 当 `args` 非空且为 POSIX shell（bash/zsh/sh）时，透传为位置参数
+    /// `[sh, -c, command, _, args...]`（`$0` 占位 `_`，`args` 进 `$1/$2/$@`），
+    /// 与 pwsh 侧对称：模板与数据分离，避免在脚本字符串内拼接引号。
     pub(crate) fn derive_exec_args_with(
         &self,
         command: &str,
@@ -140,12 +143,18 @@ impl Shell {
     ) -> Vec<String> {
         match self {
             Shell::Bash | Shell::Zsh | Shell::Sh => {
-                // bash 暂不消费 args（POSIX 侧可用 `bash -c '... ' _ arg1` 但 Harness 未暴露）
-                vec![
+                // POSIX `sh -c 'script' name arg...`：name 占 $0，arg 进 $1/$@。
+                // Harness 固定 $0 为 `_`，模型只关心 $1 起。
+                let mut v = vec![
                     self.path().to_string(),
                     "-c".to_string(),
                     command.to_string(),
-                ]
+                ];
+                if let Some(a) = args.filter(|a| !a.is_empty()) {
+                    v.push("_".to_string());
+                    v.extend(a.iter().cloned());
+                }
+                v
             }
             Shell::PowerShell => {
                 if let Some(a) = args.filter(|a| !a.is_empty()) {

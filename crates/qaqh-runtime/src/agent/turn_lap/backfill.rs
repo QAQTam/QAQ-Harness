@@ -50,23 +50,22 @@ pub(crate) fn emit_completed_tool_round(
     ctx: &mut RingContext,
     turn_id: &str,
     round_num: u32,
-) -> Vec<(String, String, String, bool, Option<String>)> {
+) -> Vec<qaqh_message::StepToolResult> {
     let results = ctx.agent.msg.last_step_tool_results();
     let ts = util::chrono_local_datetime();
-    for (tc_id, name, content, success, diff) in &results {
+    for step_result in &results {
+        let qaqh_message::StepToolResult {
+            tool_call_id: tc_id,
+            tool_name: name,
+            result,
+        } = step_result;
         let args = ctx
             .agent
             .msg
             .tool_call_args(tc_id)
             .map(|a| a.to_string())
             .unwrap_or_default();
-        let summary: String = content
-            .lines()
-            .next()
-            .unwrap_or("")
-            .chars()
-            .take(120)
-            .collect();
+        let content = result.model_text();
         ToolEngine::emit_timeline_tool_result(
             ctx,
             turn_id,
@@ -75,38 +74,41 @@ pub(crate) fn emit_completed_tool_round(
             name,
             &args,
             content,
-            *success,
-            diff.clone(),
+            result.status,
+            result.diff.clone(),
         );
         // Ringing 双发：AuditRecorded（args 只进 content store，事件仅携带引用）
         ctx.emitter.emit_domain(qaqh_domain::DomainEvent::Tool(
             qaqh_domain::ToolEvent::AuditRecorded {
                 tool_name: name.clone(),
-                result_summary: summary.clone(),
-                success: *success,
+                result_summary: content
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(120)
+                    .collect(),
+                success: result.is_success(),
                 time: ts.clone(),
                 args_ref: None,
             },
         ));
         // Ringing 终态：ToolFinished（legacy 汇总 ToolResults 退役后的替代——
-        // 批量执行路径每个工具单独发终态，与 UI 主动调用路径一致）。发射
-        // 时机在 round 交互全部裁决之后（ask/plan/permission 收口处），
-        // 保证事件顺序为"裁决先、终态后"，前端/测试按序消费。
+        // 批量执行路径每个工具单独发终态，与 UI 主动调用路径一致）。载荷即
+        // 归档的 canonical ToolResult（含五态 status），不再按 success 布尔
+        // 伪造 ok/error。发射时机在 round 交互全部裁决之后（ask/plan/
+        // permission 收口处），保证事件顺序为"裁决先、终态后"。
         ctx.emitter.emit_domain(qaqh_domain::DomainEvent::Tool(
             qaqh_domain::ToolEvent::ToolFinished {
                 tool_call_id: tc_id.clone(),
                 turn_id: turn_id.to_string(),
                 round_num,
-                result: if *success {
-                    qaqh_types::ToolResult::ok(content.clone())
-                } else {
-                    qaqh_types::ToolResult::error(content.clone())
-                },
+                result: result.clone(),
             },
         ));
     }
 
-    for (tool_call_id, _, _, _, _) in &results {
+    for qaqh_message::StepToolResult { tool_call_id, .. } in &results {
         ctx.emitter
             .emit_timeline(qaqh_domain::TimelineIntent::BlockSealed {
                 turn_id: turn_id.to_string(),

@@ -6,7 +6,7 @@ import type { ToolImage } from "./ToolImage";
 import type { ToolModelPayload } from "./ToolModelPayload";
 import type { ToolStatus } from "./ToolStatus";
 
-export type ToolResult = { status: ToolStatus, summary: string, data: JsonValue, model: ToolModelPayload, 
+export type ToolResult = { status: ToolStatus, data: JsonValue, 
 /**
  * Images to attach to the tool result message (e.g. `read_image`).
  */
@@ -18,4 +18,20 @@ images?: Array<ToolImage>,
  * 紧凑摘要行，diff 只供 timeline/前端抽屉消费。发送方在成功路径上
  * 显式填充；缺失时默认 None（向后兼容）。
  */
-diff?: string | null, output_ref?: ContentRef | null, error?: ToolError | null, };
+diff?: string | null, error?: ToolError | null, 
+/**
+ * 展示/模型提示行（≤ [`TOOL_SUMMARY_MAX_CHARS`]），可被工具追加。
+ */
+summary: string, 
+/**
+ * 模型可见投影（文本、截断标记、token 估算、续调参数）。
+ */
+model: ToolModelPayload, 
+/**
+ * 大输出外置引用。**仅在 NoFold 极限模式且模型文本超过
+ * `CONTENT_STORE_THRESHOLD_BYTES`（10 MiB）时才会产生**——标准模式下
+ * 模型文本已被 [`TOOL_MODEL_MAX_CHARS`] 封顶（≤ 约 96 KiB），永远到不了
+ * 该阈值。因此它是传输保护阀，而非常规路径：前端应视为可选字段，
+ * 不要指望靠它拿"完整输出"。
+ */
+output_ref?: ContentRef | null, };

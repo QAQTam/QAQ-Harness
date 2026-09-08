@@ -109,10 +109,10 @@ impl ToolEngine {
         name: &str,
         args: &str,
         output: &str,
-        success: bool,
+        status: qaqh_types::ToolStatus,
         diff: Option<String>,
     ) {
-        let failure = (!success).then(|| qaqh_domain::TimelineFailure {
+        let failure = status.is_failure().then(|| qaqh_domain::TimelineFailure {
             code: "TOOL_EXECUTION_FAILED".into(),
             message: output.to_string(),
         });
@@ -124,11 +124,7 @@ impl ToolEngine {
                 tool: timeline_tool(
                     tool_call_id,
                     name,
-                    if success {
-                        qaqh_domain::TimelineToolState::Succeeded
-                    } else {
-                        qaqh_domain::TimelineToolState::Failed
-                    },
+                    qaqh_domain::TimelineToolState::from(status),
                     Some(args.to_string()),
                     Some(output.to_string()),
                     diff,
@@ -660,12 +656,12 @@ impl ToolEngine {
             )
         });
         let output = result.model_text().to_string();
-        let success = result.is_success();
+        let status = result.status;
 
         ctx.agent.apply_tool_effects(skill_effects, ctx.flow);
 
         // Instant refresh for todo tools
-        if matches!(name, "todo") {
+        if matches!(name, "todo_write" | "todo_update" | "todo_list") {
             // Ringing 双发：DashboardUpdated（replaceable 覆盖）
             ctx.emitter.emit_domain(qaqh_domain::DomainEvent::Control(
                 qaqh_domain::ControlEvent::DashboardUpdated {
@@ -711,12 +707,8 @@ impl ToolEngine {
                 result,
             },
         ));
-        let terminal_state = if success {
-            qaqh_domain::TimelineToolState::Succeeded
-        } else {
-            qaqh_domain::TimelineToolState::Failed
-        };
-        let failure = (!success).then(|| qaqh_domain::TimelineFailure {
+        let terminal_state = qaqh_domain::TimelineToolState::from(status);
+        let failure = status.is_failure().then(|| qaqh_domain::TimelineFailure {
             code: "TOOL_EXECUTION_FAILED".into(),
             message: output.clone(),
         });
@@ -750,12 +742,12 @@ impl ToolEngine {
         ctx.emitter
             .emit_timeline(qaqh_domain::TimelineIntent::TurnSealed {
                 turn_id: turn_id.clone(),
-                state: if success {
+                state: if status.is_success() {
                     qaqh_domain::TimelineTurnState::Completed
                 } else {
                     qaqh_domain::TimelineTurnState::Failed
                 },
-                failure: (!success).then(|| qaqh_domain::TimelineFailure {
+                failure: status.is_failure().then(|| qaqh_domain::TimelineFailure {
                     code: "TOOL_EXECUTION_FAILED".into(),
                     message: output.clone(),
                 }),
@@ -843,7 +835,15 @@ impl ToolEngine {
                 });
         }
         Self::emit_timeline_tool_result(
-            ctx, &turn_id, 0, call_id, tool_name, args_json, &output, false, None,
+            ctx,
+            &turn_id,
+            0,
+            call_id,
+            tool_name,
+            args_json,
+            &output,
+            qaqh_types::ToolStatus::Error,
+            None,
         );
         ctx.emitter
             .emit_timeline(qaqh_domain::TimelineIntent::BlockSealed {

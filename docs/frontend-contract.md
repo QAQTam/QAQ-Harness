@@ -62,7 +62,7 @@
 |---|---|
 | `TimelineTool.output` | **不是完整输出**，就是前端能拿到的全部。标准模式下模型文本已被 `TOOL_MODEL_MAX_CHARS`（24K 字符）封顶。 |
 | `ToolResult.output_ref` | **几乎恒为 `null`**。内容外置阈值是 10 MiB，而标准模式文本上限约 96 KiB，差两个数量级 → 只有 NoFold 极限模式下的超长输出才会产生。它是传输保护阀，不是"大输出分页通道"；前端应视为可选字段，不要为其设计主流程。 |
-| `TimelineTool.state` | 只有 4 态（`prepared`/`running`/`succeeded`/`failed`）。工具侧 `ToolStatus` 另有 `backgrounded` 与 `cancelled`，**当前投影会折叠进 succeeded/failed**，前端无法仅凭 state 区分"被取消"与"失败"（待后端补态）。 |
+| `TimelineTool.state` | **6 态**：`prepared` / `running` / `succeeded` / `failed` / `cancelled`（被用户或系统取消，不是失败）/ `backgrounded`（转入后台继续运行）。与工具侧 `ToolStatus` 五态经固定映射对应（`Ok→succeeded`，`Error/Partial→failed`，`Cancelled→cancelled`，`Backgrounded→backgrounded`）。 |
 | `TimelineTool.diff` | 展示面专属，模型看不到（`project_for_model()` 不含它）。别假设模型知道 diff 内容。 |
 | `ToolResult.data` | 结构化载荷，**仅少数工具填充**（apply_patch / confirm_apply / journal / copy_range / file_glob / file_mutate 等），多数工具为空对象。不要当作必有字段。 |
 

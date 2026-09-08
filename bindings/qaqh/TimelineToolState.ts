@@ -3,4 +3,4 @@
 /**
  * State updates for a tool block; all updates retain the block's position.
  */
-export type TimelineToolState = "prepared" | "running" | "succeeded" | "failed";
+export type TimelineToolState = "prepared" | "running" | "succeeded" | "failed" | "cancelled" | "backgrounded";

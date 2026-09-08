@@ -286,12 +286,18 @@ fn rebuild_tool(
 ) -> TimelineTool {
     let result = results.iter().find(|result| result.tool_call_id == card.id);
     let success = result.is_some_and(|result| result.success);
-    let state = if success {
-        TimelineToolState::Succeeded
-    } else {
-        TimelineToolState::Failed
+    // 优先用归档里的五态 status（新 journal）；历史记录无 status 时按
+    // success 布尔二值回退，保持向后兼容。
+    let state = match result.and_then(|result| result.status) {
+        Some(status) => TimelineToolState::from(status),
+        None if success => TimelineToolState::Succeeded,
+        None => TimelineToolState::Failed,
     };
-    let failure = (!success).then(|| TimelineFailure {
+    let failure = match result.and_then(|result| result.status) {
+        Some(status) => status.is_failure(),
+        None => !success,
+    }
+    .then(|| TimelineFailure {
         code: "tool_execution_failed".into(),
         message: result
             .map(|result| result.output.clone())
@@ -346,6 +352,7 @@ mod tests {
                     tool_call_id: "call-1".into(),
                     output: "line one\nline two".into(),
                     success: true,
+                    status: None,
                     file: None,
                 }],
                 blocks: vec![
@@ -436,6 +443,7 @@ mod tests {
             tool_call_id: "call-1".into(),
             output: "boom".into(),
             success: false,
+            status: None,
             file: None,
         }];
 
@@ -447,6 +455,45 @@ mod tests {
             .expect("tool block");
         assert_eq!(tool.state, qaqh_domain::TimelineToolState::Failed);
         assert_eq!(tool.failure.as_ref().expect("failure").message, "boom");
+    }
+
+    #[test]
+    fn rebuild_maps_archived_cancelled_status_to_cancelled_state() {
+        // 新 journal 携带五态 status：cancelled 不再折叠进 failed。
+        let mut turn = turn_with_blocks();
+        turn.rounds[0].blocks = vec![RoundBlock::Tool {
+            card: ToolCallDef {
+                id: "call-1".into(),
+                name: "exec".into(),
+                args_display: "exec".into(),
+                args_json: "{}".into(),
+            },
+        }];
+        turn.rounds[0].tool_calls = vec![ToolCallDef {
+            id: "call-1".into(),
+            name: "exec".into(),
+            args_display: "exec".into(),
+            args_json: "{}".into(),
+        }];
+        turn.rounds[0].tool_results = vec![ToolResultDef {
+            tool_call_id: "call-1".into(),
+            output: "cancelled by user".into(),
+            success: false,
+            status: Some(qaqh_types::ToolStatus::Cancelled),
+            file: None,
+        }];
+
+        let (snapshot, _) =
+            timeline_snapshot_from_turns("seed", &[turn]).expect("snapshot rebuilt");
+        let tool = snapshot.turns[0].rounds[0].blocks[0]
+            .tool
+            .as_ref()
+            .expect("tool block");
+        assert_eq!(tool.state, qaqh_domain::TimelineToolState::Cancelled);
+        assert_eq!(
+            tool.failure.as_ref().expect("failure").message,
+            "cancelled by user"
+        );
     }
 
     #[test]

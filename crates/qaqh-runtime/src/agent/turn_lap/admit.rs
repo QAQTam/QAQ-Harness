@@ -160,12 +160,10 @@ pub(crate) fn execute_admitted_batch(
                 continue;
             }
             match handle.join() {
-                Ok((_id, content, success, canonical_result, code_delta, skill_effects)) => {
-                    ctx.agent.msg.push_tool_result_direct_with_attachments(
+                Ok((_id, _content, _success, canonical_result, code_delta, skill_effects)) => {
+                    ctx.agent.msg.push_tool_result_canonical(
                         &call_id,
-                        &content,
-                        success,
-                        None,
+                        &canonical_result,
                         &canonical_result.images,
                     );
                     ordered_skill_effects.push((call_id.clone(), skill_effects));
@@ -260,12 +258,10 @@ pub(crate) fn execute_admitted_batch(
             handle.is_finished()
         });
         match handle.join() {
-            Ok((content, success, canonical_result, code_delta, skill_effects)) => {
-                ctx.agent.msg.push_tool_result_direct_with_attachments(
+            Ok((_content, _success, canonical_result, code_delta, skill_effects)) => {
+                ctx.agent.msg.push_tool_result_canonical(
                     &call_id,
-                    &content,
-                    success,
-                    None,
+                    &canonical_result,
                     &canonical_result.images,
                 );
                 ordered_skill_effects.push((call_id.clone(), skill_effects));
@@ -588,12 +584,10 @@ pub(crate) fn admit_and_dispatch(
                 let _ = h.join(); // reap
             } else {
                 match h.join() {
-                    Ok((_cid, content, success, canonical_result, code_delta, skill_effects)) => {
-                        ctx.agent.msg.push_tool_result_direct_with_attachments(
+                    Ok((_cid, _content, _success, canonical_result, code_delta, skill_effects)) => {
+                        ctx.agent.msg.push_tool_result_canonical(
                             &call_id,
-                            &content,
-                            success,
-                            canonical_result.diff.clone(),
+                            &canonical_result,
                             &canonical_result.images,
                         );
                         ordered_skill_effects.push((call_id.clone(), skill_effects));
@@ -691,12 +685,10 @@ pub(crate) fn admit_and_dispatch(
             handle.is_finished()
         });
         match handle.join() {
-            Ok((content, success, canonical_result, code_delta, skill_effects)) => {
-                ctx.agent.msg.push_tool_result_direct_with_attachments(
+            Ok((_content, _success, canonical_result, code_delta, skill_effects)) => {
+                ctx.agent.msg.push_tool_result_canonical(
                     &call_id,
-                    &content,
-                    success,
-                    canonical_result.diff.clone(),
+                    &canonical_result,
                     &canonical_result.images,
                 );
                 ordered_skill_effects.push((call_id.clone(), skill_effects));

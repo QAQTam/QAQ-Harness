@@ -92,6 +92,18 @@ pub struct Turn {
     pub steps: Vec<Step>,
 }
 
+/// 一个工具调用的结果快照（`MessageStore::last_step_tool_results` 的产物）。
+///
+/// 携带工具侧五态 [`qaqh_types::ToolStatus`]（含 Cancelled/Backgrounded）
+/// 与展示面 diff——timeline 投影（qaqh-runtime backfill）据此区分
+/// succeeded / failed / cancelled / backgrounded，不再经布尔坍缩。
+#[derive(Debug, Clone)]
+pub struct StepToolResult {
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub result: qaqh_types::ToolResult,
+}
+
 impl Turn {
     pub fn new(user: Message) -> Self {
         Self {
@@ -751,18 +763,39 @@ impl MessageStore {
         diff: Option<String>,
         images: &[qaqh_types::ToolImage],
     ) -> bool {
+        let mut canonical = if success {
+            qaqh_types::ToolResult::ok(result)
+        } else {
+            qaqh_types::ToolResult::error(result)
+        };
+        canonical.diff = diff;
+        self.push_tool_canonical_inner(tool_call_id, canonical, images)
+    }
+
+    /// 工具结果的 canonical 归档：保留工具侧五态 `ToolStatus` 与展示面
+    /// diff，不再经 success 布尔坍缩重建。
+    pub fn push_tool_result_canonical(
+        &mut self,
+        tool_call_id: &str,
+        result: &qaqh_types::ToolResult,
+        images: &[qaqh_types::ToolImage],
+    ) {
+        if self.push_tool_canonical_inner(tool_call_id, result.clone(), images) {
+            self.context_revision = self.context_revision.saturating_add(1);
+        }
+        // G3：结果落地后尝试回灌延后的 trailing 注入。
+        self.flush_deferred_trailing();
+    }
+
+    fn push_tool_canonical_inner(
+        &mut self,
+        tool_call_id: &str,
+        result: qaqh_types::ToolResult,
+        images: &[qaqh_types::ToolImage],
+    ) -> bool {
         // 工具结果已在工具侧定型（qaqh-workspace::tool_side_fold）：
         // 存储的就是最终形态，message 层不再改写。
-        let final_result = result.to_string();
-        let mut tool_msg = Message::tool(tool_call_id, &final_result, success);
-        // 展示平面 diff 附着在结构化 ToolResult 上（project_for_model 不携带，
-        // 模型上下文不受影响）；供 last_step_tool_results → timeline 消费。
-        if let Some(diff) = diff
-            && let Some(qaqh_types::ContentBlock::ToolResult { result, .. }) =
-                tool_msg.content.first_mut()
-        {
-            result.diff = Some(diff);
-        }
+        let mut tool_msg = Message::tool_result(tool_call_id, result);
         // 工具附着的图片（read_image）：字节外置磁盘后以 ImageRef 追加。
         // gate 投影时按需读盘，降级为紧随 tool 结果的合成 user 消息
         // （image_url / input_image / anthropic base64 source）。落盘失败
@@ -966,27 +999,22 @@ impl MessageStore {
         self.flush_deferred_trailing();
     }
 
-    /// Snapshot of the last step's tool results as
-    /// `(tool_call_id, tool_name, result_text, success, diff)`.
-    pub fn last_step_tool_results(&self) -> Vec<(String, String, String, bool, Option<String>)> {
+    /// Snapshot of the last step's tool results, preserving the tool-side
+    /// five-state [`qaqh_types::ToolStatus`] and display-plane diff.
+    pub fn last_step_tool_results(&self) -> Vec<StepToolResult> {
         let step = match self.turns.last().and_then(|t| t.steps.last()) {
             Some(s) => s,
             None => return Vec::new(),
         };
         let mut results = Vec::new();
         for tr in &step.tool_results {
-            if let Some((tc_id, result_text, ok, diff)) = tr.content.iter().find_map(|b| {
+            if let Some((tc_id, result)) = tr.content.iter().find_map(|b| {
                 if let qaqh_types::ContentBlock::ToolResult {
                     tool_use_id,
                     result,
                 } = b
                 {
-                    Some((
-                        tool_use_id.clone(),
-                        result.model_text().to_string(),
-                        result.is_success(),
-                        result.diff.clone(),
-                    ))
+                    Some((tool_use_id.clone(), result.clone()))
                 } else {
                     None
                 }
@@ -1007,7 +1035,11 @@ impl MessageStore {
                         }
                     })
                     .unwrap_or_default();
-                results.push((tc_id, tool_name, result_text, ok, diff));
+                results.push(StepToolResult {
+                    tool_call_id: tc_id,
+                    tool_name,
+                    result,
+                });
             }
         }
         results
@@ -2098,11 +2130,11 @@ mod tests {
 
         let results = store.last_step_tool_results();
         assert_eq!(results.len(), 1);
-        let (tc_id, _name, content, success, got_diff) = &results[0];
-        assert_eq!(tc_id, "edit-1");
-        assert!(content.starts_with("[OK] edit"));
-        assert!(*success);
-        assert_eq!(got_diff.as_deref(), Some(diff));
+        let step_result = &results[0];
+        assert_eq!(step_result.tool_call_id, "edit-1");
+        assert!(step_result.result.model_text().starts_with("[OK] edit"));
+        assert_eq!(step_result.result.status, qaqh_types::ToolStatus::Ok);
+        assert_eq!(step_result.result.diff.as_deref(), Some(diff));
 
         // 模型投影保持精简：diff 正文缺席（展示平面单独携带）。
         let context = store.build_context_for_gate(&[]);

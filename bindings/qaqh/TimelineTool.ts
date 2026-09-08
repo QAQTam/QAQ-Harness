@@ -12,9 +12,13 @@ export type TimelineTool = { tool_call_id: string, name: string, state: Timeline
  */
 args_json?: string | null, 
 /**
- * The retained tool-output tail. Large output remains an explicit content
- * reference in the eventual transport record rather than being silently
- * truncated by the transcript protocol.
+ * 保留下来的工具输出片段。
+ *
+ * ⚠ 这不是"完整输出"，也**不是**靠 `output_ref` 补齐的：标准模式下模型
+ * 文本先被 `TOOL_MODEL_MAX_CHARS`（24K 字符）封顶，而内容外置的阈值是
+ * 10 MiB，二者差两个数量级——外置路径在标准模式下永远不会触发。因此
+ * `output` 就是前端能拿到的全部；想看更多应让模型用更窄的参数重调工具
+ * （截断标记里也是这么提示模型的），而不是期待一个 content 下载端点。
  */
 output?: string | null, 
 /**

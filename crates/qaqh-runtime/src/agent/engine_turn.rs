@@ -1250,7 +1250,7 @@ impl TurnEngine {
         ctx: &mut RingContext,
         turn_id: &str,
         round_num: u32,
-    ) -> Vec<(String, String, String, bool, Option<String>)> {
+    ) -> Vec<qaqh_message::StepToolResult> {
         // Delegates to turn_lap::backfill (knife-7 A2 step6) — keeps handle_* sites thin
         // while sharing one verbatim implementation.
         turn_backfill::emit_completed_tool_round(ctx, turn_id, round_num)

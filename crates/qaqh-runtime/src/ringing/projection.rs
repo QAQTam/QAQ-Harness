@@ -508,6 +508,7 @@ fn build_turns(
                                 tool_call_id: tool_use_id.clone(),
                                 output: result.model_text().to_string(),
                                 success: result.is_success(),
+                                status: Some(result.status),
                                 file: None,
                             })
                         } else {

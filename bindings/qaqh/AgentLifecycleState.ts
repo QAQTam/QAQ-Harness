@@ -2,6 +2,6 @@
 
 /**
  * agent **进程**生命周期（决策记录 Q8：只含进程状态；回合结束走
- * `SessionActivityChanged(Idle)`，transport 状态另由客户端健康判定）。
+ * 会话活动变更事件（Idle），transport 状态另由客户端健康判定）。
  */
 export type AgentLifecycleState = "booting" | "ready" | "stopping" | "stopped";

@@ -14,5 +14,5 @@ pub use context_flow::{
     builtin,
 };
 pub use effect::{PendingTool, PersistOp};
-pub use store::{MessageStore, Turn};
+pub use store::{MessageStore, StepToolResult, Turn};
 pub use wal::WalWriter;

@@ -37,6 +37,23 @@ pub enum TimelineToolState {
     Running,
     Succeeded,
     Failed,
+    /// 工具被用户/系统取消（ToolStatus::Cancelled）。终态：不是失败——
+    /// 前端应区分「失败（有错误输出）」与「取消（无输出或被中断）」。
+    Cancelled,
+    /// 工具转入后台继续运行（ToolStatus::Backgrounded）。终态：调用已
+    /// 返回（副作用已发生），但进程/任务仍在输出，可经后续查询跟进。
+    Backgrounded,
+}
+
+impl From<qaqh_types::ToolStatus> for TimelineToolState {
+    fn from(status: qaqh_types::ToolStatus) -> Self {
+        match status {
+            qaqh_types::ToolStatus::Ok => Self::Succeeded,
+            qaqh_types::ToolStatus::Error | qaqh_types::ToolStatus::Partial => Self::Failed,
+            qaqh_types::ToolStatus::Cancelled => Self::Cancelled,
+            qaqh_types::ToolStatus::Backgrounded => Self::Backgrounded,
+        }
+    }
 }
 
 /// Terminal state of a transcript turn. This is distinct from block sealing:
@@ -315,6 +332,10 @@ pub struct ToolResultDef {
     pub tool_call_id: String,
     pub output: String,
     pub success: bool,
+    /// 工具侧五态（Ok/Error/Partial/Cancelled/Backgrounded），历史归档无此
+    /// 字段（serde default 兼容旧 journal）；缺失时 rebuild 按 success 二值回退。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<qaqh_types::ToolStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file: Option<FileSnapshotInfo>,
 }

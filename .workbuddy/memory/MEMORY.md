@@ -2,6 +2,8 @@
 
 ## 仓库与工作流
 
+- **项目记忆已入库**（2026-09-09 起）：`.workbuddy/memory/` 随 git 走，clone 即恢复。写完记忆要随手 `git commit`（可并入当次工作提交），别让记忆停在未提交状态。系统重置的恢复入口：`docs/handover-2026-09-09.md`。
+
 - 主仓库 `/home/qaqtamsy/Projects/QAQ-Harness`（Rust，15 crates，Edition 2024，alpha）。
 - 外部壳与配套仓库（均 github.com/QAQTam，public）：
   - `qaqh-electron`（Electron 44 + SolidJS 2 RC + Vite 8，2026-09-09 初始导入 fcff0e5）

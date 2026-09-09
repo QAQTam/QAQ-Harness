@@ -25,5 +25,7 @@ crates/*/bindings/
 # HarmonyOS hvigor 构建缓存（build-logs 等，非源码）
 .hvigor/
 
-# WorkBuddy 会话/记忆目录（项目级 scratch，不入库）
-.workbuddy/
+# WorkBuddy 会话目录不入库，但项目记忆例外——
+# 记忆随仓库走：重置/换机后 clone 即自动恢复（handover 见 docs/handover-2026-09-09.md）
+.workbuddy/*
+!.workbuddy/memory/

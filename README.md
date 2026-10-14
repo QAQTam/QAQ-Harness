@@ -7,11 +7,12 @@
 本仓**不放产品代码**。它是这个项目的门面与索引：哪个仓是什么、当前版本锁了哪些 commit、
 包在哪下载。
 
-> 为什么要有这一层：跨仓事实写在各个代码仓里必然漂移——`qaqh-js-sdk` 与
-> `qaqh-winui-app` 的 README 至今还在引用 `QAQ-Harness/docs/frontend-contract.md`，
+> 为什么要有这一层：跨仓事实写在各个代码仓里必然漂移。**实例（2026-10-14 已修）**：
+> `qaqh-js-sdk` 与 `qaqh-winui-app` 的 README 曾引用 `QAQ-Harness/docs/frontend-contract.md`，
 > 而那份文档**从来没有存在过**（`qaqh-backend/crates/qaqh-client/src/discovery.rs:316`
-> 的注释已承认这一点），同一批 README 里的 `../QAQ-Harness` 指的是**改名前的** backend
-> monorepo（现名 `qaqh-backend`）。
+> 的注释已承认这一点）；同一批 README 里的 `../QAQ-Harness` 指的是**改名前的** backend
+> monorepo（现名 `qaqh-backend`），`qaqh-winui-app` 的 5 处 path 依赖也照旧名写死。
+> 两处已于同日改到与事实一致（`qaqh-js-sdk@977806e`、`qaqh-winui-app@72e7586`）。
 
 ## 当前版本
 
@@ -63,3 +64,24 @@ Rust + egui）与 [`qaq-pe`](https://github.com/QAQTam/qaq-pe)（恢复环境工
 1. 不放产品代码、不放生成物；只放索引、发布清单与说明。
 2. 每个版本一个 `releases/<version>.md`：锁定哪些 commit、tag、产物、已知问题。
 3. 跨仓事实一律**链接**到真源，不抄内容。
+
+## 许可
+
+| 仓 | 许可 | 文件 |
+|---|---|---|
+| `qaqh-backend` | **MIT OR Apache-2.0**（下游任选其一） | `LICENSE-MIT` + `LICENSE-APACHE` |
+| `qaqh-desktop-app` | **MIT OR Apache-2.0** | `LICENSE-MIT` + `LICENSE-APACHE` + `NOTICE` |
+| `qaqh-winui-app` · `qaqh-tui-app` | MIT | `LICENSE` |
+| 其它自研客户端与工具（`qaqh-electron` · `qaqh-webUI` · `qaqh-js-sdk` · `qaqh-macios` · `qaqh-harmony` · `qaqh-android` · `qaq-shell` · `qaq-pe`） | MIT | `LICENSE` |
+| 上游 vendor / fork（`qaqh-winui-reactor-vendor` · `qaq-winui-reactor` 等） | 随上游，本账号未改动 | 上游自带 |
+
+**为什么后端与桌面是双许可**：下游可**任选其一**；Apache-2.0 附带**显式专利授权**（§3），
+对会被公司 / 客户拿去用的客户端比纯 MIT 更稳。
+
+**许可是许可，商标是商标**：Apache-2.0 §6 明文排除商标、服务标记与商品名的许可，MIT 全文
+根本未涉及商标——所以「加不加 Apache-2.0」既不带来商标授权，也不解决商标问题。客户端界面
+里出现的「ChatGPT」「OpenAI」等名称，只用于**如实描述用户可登录的对象**；本项目与其权利人
+**无隶属、无赞助、无背书**关系。官方图形资产默认不随仓分发（见桌面包内 `NOTICE` 与
+`qaqh-desktop-app/docs/siwc-brand-posture.md`）。
+
+本仓自身（仅文档与索引）为 MIT。

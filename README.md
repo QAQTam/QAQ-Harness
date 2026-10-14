@@ -69,14 +69,17 @@ Rust + egui）与 [`qaq-pe`](https://github.com/QAQTam/qaq-pe)（恢复环境工
 
 | 仓 | 许可 | 文件 |
 |---|---|---|
-| `qaqh-backend` | **MIT OR Apache-2.0**（下游任选其一） | `LICENSE-MIT` + `LICENSE-APACHE` |
-| `qaqh-desktop-app` | **MIT OR Apache-2.0** | `LICENSE-MIT` + `LICENSE-APACHE` + `NOTICE` |
-| `qaqh-winui-app` · `qaqh-tui-app` | MIT | `LICENSE` |
-| 其它自研客户端与工具（`qaqh-electron` · `qaqh-webUI` · `qaqh-js-sdk` · `qaqh-macios` · `qaqh-harmony` · `qaqh-android` · `qaq-shell` · `qaq-pe`） | MIT | `LICENSE` |
+| `qaqh-backend` | **受限开源 → 2027 转 MIT OR Apache-2.0**（延迟开源，许可工具待定） | 见下 |
+| `qaqh-desktop-app` | **受限开源 → 2027 转 MIT OR Apache-2.0**（同上） | 见下 |
+| 其余自研仓（`qaqh-winui-app` · `qaqh-tui-app` · `qaqh-electron` · `qaqh-webUI` · `qaqh-js-sdk` · `qaqh-macios` · `qaqh-harmony` · `qaqh-android` · `qaq-shell` · `qaq-pe`） | **MIT OR Apache-2.0**（下游任选其一） | `LICENSE-MIT` + `LICENSE-APACHE` |
+| 本仓（仅文档与索引） | **MIT OR Apache-2.0** | `LICENSE-MIT` + `LICENSE-APACHE` |
 | 上游 vendor / fork（`qaqh-winui-reactor-vendor` · `qaq-winui-reactor` 等） | 随上游，本账号未改动 | 上游自带 |
 
-**为什么后端与桌面是双许可**：下游可**任选其一**；Apache-2.0 附带**显式专利授权**（§3），
+**为什么双许可**：下游可**任选其一**；Apache-2.0 附带**显式专利授权**（§3），
 对会被公司 / 客户拿去用的客户端比纯 MIT 更稳。
+
+**后端与桌面为什么是「延迟开源」**：这两个仓是发布出去的那两块（daemon 与默认壳），
+先以**受限许可**发布、**2027 年**再转 `MIT OR Apache-2.0`。转换日期与工具定稿后在此登记。
 
 **许可是许可，商标是商标**：Apache-2.0 §6 明文排除商标、服务标记与商品名的许可，MIT 全文
 根本未涉及商标——所以「加不加 Apache-2.0」既不带来商标授权，也不解决商标问题。客户端界面
